@@ -13,6 +13,7 @@ import AskYourDataPage from './app/(auth)/ai/page';
 import AISettingsPage from './app/(auth)/settings/ai/page';
 import RecurringPage from './app/(auth)/recurring/page';
 import BudgetsPage from './app/(auth)/budgets/page';
+import { InvoiceList } from './components/invoices/InvoiceList';
 import { useIdleLogout } from './hooks/useIdleLogout';
 import { IdleWarningModal } from './components/auth/IdleWarningModal';
 import { AuthNavShell } from './components/navigation/AuthNavShell';
@@ -42,7 +43,7 @@ import {
 export default function App() {
   const { user, isAuthenticated, isLoading } = useAuth();
   const [currentRoute, setCurrentRoute] = useState<
-    '/' | '/dashboard' | '/accounts' | '/account-detail' | '/upload' | '/transactions' | '/recurring' | '/budgets' | '/rules' | '/reports' | '/ai' | '/settings' | '/settings/ai' | '/playground'
+    '/' | '/dashboard' | '/accounts' | '/account-detail' | '/upload' | '/transactions' | '/invoices' | '/recurring' | '/budgets' | '/rules' | '/reports' | '/ai' | '/settings' | '/settings/ai' | '/playground'
   >('/');
   const [selectedAccountId, setSelectedAccountId] = useState<string>('acc_hdfc_01');
   const [authNotice, setAuthNotice] = useState<string | null>(null);
@@ -78,6 +79,7 @@ export default function App() {
       }
       else if (hash === 'upload') setCurrentRoute('/upload');
       else if (hash === 'transactions') setCurrentRoute('/transactions');
+      else if (hash === 'invoices') setCurrentRoute('/invoices');
       else if (hash === 'recurring') setCurrentRoute('/recurring');
       else if (hash === 'budgets') setCurrentRoute('/budgets');
       else if (hash === 'rules') setCurrentRoute('/rules');
