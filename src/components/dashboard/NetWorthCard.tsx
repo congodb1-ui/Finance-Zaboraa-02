@@ -63,7 +63,10 @@ export const NetWorthCard: React.FC<NetWorthCardProps> = ({
 
         {/* Large Net Worth Figure */}
         <div className="flex flex-wrap items-baseline gap-3 my-2">
-          <h2 className="font-heading font-extrabold text-3xl sm:text-4xl text-slate-900 dark:text-white font-tabular tracking-tight">
+          <h2
+            data-testid="net-worth-value"
+            className="font-heading font-extrabold text-3xl sm:text-4xl text-slate-900 dark:text-white font-tabular tracking-tight"
+          >
             {formatINR(netWorth)}
           </h2>
 

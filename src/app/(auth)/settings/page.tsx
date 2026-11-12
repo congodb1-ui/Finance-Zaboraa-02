@@ -92,15 +92,18 @@ export default function SettingsPage() {
         </CardContent>
       </Card>
 
-      {/* 3. Session & Sign Out */}
+      {/* 3. Encrypted Vault Backup (Batch 7) */}
+      <BackupSection />
+
+      {/* 4. Session & Sign Out */}
       <Card>
         <CardHeader>
           <div className="flex items-center gap-2">
             <User className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />
-            <CardTitle>Account Session</CardTitle>
+            <CardTitle>Account Session & Security</CardTitle>
           </div>
           <CardDescription>
-            Currently signed in via Google OAuth. Only allowlisted emails can access this vault.
+            Currently signed in via Google OAuth. Only allowlisted emails can access this vault. Automatic 30-minute idle logout active.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4 pt-2">
@@ -109,6 +112,10 @@ export default function SettingsPage() {
               <span className="text-slate-400 block">Signed in as:</span>
               <span className="font-medium font-mono text-slate-900 dark:text-slate-100 text-sm">
                 {user?.email || 'wasimssayyed@gmail.com'}
+              </span>
+              <span className="text-[11px] text-emerald-600 dark:text-emerald-400 flex items-center gap-1 mt-1 font-medium">
+                <ShieldCheck className="w-3.5 h-3.5" />
+                Single-user vault protection active • 30-min idle timeout
               </span>
             </div>
             <Button
@@ -122,52 +129,6 @@ export default function SettingsPage() {
           </div>
         </CardContent>
       </Card>
-
-      {/* 3. Placeholder Sections for Future Batches */}
-      <div className="space-y-4 pt-4 border-t border-slate-200 dark:border-slate-800">
-        <h3 className="font-heading font-semibold text-sm uppercase tracking-wider text-slate-400">
-          Planned Future Settings (Batches 6 & 7)
-        </h3>
-
-        {/* Account Security Placeholder */}
-        <Card className="opacity-60">
-          <CardHeader>
-            <div className="flex items-center gap-2">
-              <KeyRound className="w-4 h-4 text-slate-400" />
-              <CardTitle className="text-sm">Account Security & Idle Logout</CardTitle>
-            </div>
-            <CardDescription className="text-xs">
-              30-minute idle session timeout, allowlist verification, and active session controls (coming in Batch 7).
-            </CardDescription>
-          </CardHeader>
-        </Card>
-
-        {/* Data & Privacy Placeholder */}
-        <Card className="opacity-60">
-          <CardHeader>
-            <div className="flex items-center gap-2">
-              <Database className="w-4 h-4 text-slate-400" />
-              <CardTitle className="text-sm">Data & Encrypted Backups</CardTitle>
-            </div>
-            <CardDescription className="text-xs">
-              Password-protected ZIP export, statement retention, and zero-PII storage audit (coming in Batch 7).
-            </CardDescription>
-          </CardHeader>
-        </Card>
-
-        {/* Notifications Placeholder */}
-        <Card className="opacity-60">
-          <CardHeader>
-            <div className="flex items-center gap-2">
-              <Bell className="w-4 h-4 text-slate-400" />
-              <CardTitle className="text-sm">Alerts & Reminders</CardTitle>
-            </div>
-            <CardDescription className="text-xs">
-              Bill due date alerts and monthly ITR reconciliation notifications.
-            </CardDescription>
-          </CardHeader>
-        </Card>
-      </div>
     </div>
   );
 }

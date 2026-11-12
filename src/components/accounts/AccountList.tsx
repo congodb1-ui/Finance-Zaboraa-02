@@ -114,7 +114,7 @@ export const AccountList: React.FC<AccountListProps> = ({
         </div>
 
         <div className="flex items-center gap-3">
-          <Button variant="primary" size="md" onClick={handleOpenCreate} leftIcon={<Plus className="w-4 h-4" />}>
+          <Button variant="primary" size="md" data-testid="add-account-button" onClick={handleOpenCreate} leftIcon={<Plus className="w-4 h-4" />}>
             Add Account
           </Button>
         </div>

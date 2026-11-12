@@ -49,7 +49,7 @@ const rateLimiter = new TokenBucketRateLimiter();
  * Never exposes GEMINI_API_KEY to the client bundle.
  */
 function getAIClient(): GoogleGenAI | null {
-  const apiKey = process.env.GEMINI_API_KEY;
+  const apiKey = typeof process !== 'undefined' && process.env ? process.env.GEMINI_API_KEY : undefined;
   if (!apiKey || apiKey.trim() === '' || apiKey.includes('placeholder')) {
     return null;
   }

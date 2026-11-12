@@ -142,6 +142,8 @@ let localTransactionsStore: Transaction[] = [
     tags: ['office', 'rent'],
     is_manual: false,
     source_staged_id: 'stg_3',
+    is_recurring: true,
+    recurring_id: 'rec_01',
     created_at: '2026-11-01T10:30:00.000Z',
     updated_at: '2026-11-01T10:30:00.000Z',
     account: {
@@ -552,6 +554,26 @@ export async function commitUploadTransactions(
     };
 
     newlyInsertedTransactions.push(newTx);
+  }
+
+  // STEP 5b — Passive Recurring Transaction Matching (Batch 7)
+  try {
+    const { matchAndAdvanceRecurring } = await import('./recurring.ts');
+    for (const newTx of newlyInsertedTransactions) {
+      const amt = newTx.debit ?? newTx.credit ?? 0;
+      const matchedRec = await matchAndAdvanceRecurring({
+        description: newTx.description,
+        amount: amt,
+        txn_date: newTx.txn_date,
+        account_id: newTx.account_id,
+      });
+      if (matchedRec) {
+        newTx.is_recurring = true;
+        newTx.recurring_id = matchedRec.id;
+      }
+    }
+  } catch (recErr) {
+    console.warn('Recurring match notice:', recErr);
   }
 
   // Prepend newly inserted to local ledger

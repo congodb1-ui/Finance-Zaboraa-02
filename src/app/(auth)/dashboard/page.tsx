@@ -13,6 +13,8 @@ import { getAccounts } from '../../../lib/actions/accounts';
 import type { AccountWithBalance } from '../../../types/accounts';
 import { AnomalyBanner } from '../../../components/ai/AnomalyBanner';
 import { MonthlyReport } from '../../../components/ai/MonthlyReport';
+import { BudgetHealthRow } from '../../../components/dashboard/BudgetHealthRow';
+import { UpcomingRecurringWidget } from '../../../components/dashboard/UpcomingRecurringWidget';
 import { Button } from '../../../components/ui/Button';
 import {
   LayoutDashboard,
@@ -225,6 +227,9 @@ export default function DashboardPage() {
           />
         </div>
 
+        {/* Compact Budget Health Row (Batch 7) */}
+        <BudgetHealthRow />
+
         {/* Row 2: Cashflow Summary Card (Full width or Two Column) */}
         <CashflowSummaryCard
           totalIncome={metrics?.totalIncome ?? 0}
@@ -233,7 +238,7 @@ export default function DashboardPage() {
           monthlyData={metrics?.monthlyCashflow ?? []}
         />
 
-        {/* Row 3: Two Column Grid for Spending by Category Donut & Account Balance List */}
+        {/* Row 3: Two Column Grid for Spending by Category Donut & Upcoming Recurring Bills */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           {/* Spending by Category Donut Chart */}
           <SpendingByCategoryChart
@@ -241,14 +246,17 @@ export default function DashboardPage() {
             onSelectCategory={handleNavigateToTransactionsWithCategory}
           />
 
-          {/* Account Health & Balance List */}
-          <AccountBalanceList
-            accounts={accounts}
-            onSelectAccount={handleNavigateToAccountDetail}
-          />
+          {/* Upcoming Recurring Bills Widget (Batch 7) */}
+          <UpcomingRecurringWidget />
         </div>
 
-        {/* Row 4: Recent Transactions */}
+        {/* Row 4: Account Health & Balance List */}
+        <AccountBalanceList
+          accounts={accounts}
+          onSelectAccount={handleNavigateToAccountDetail}
+        />
+
+        {/* Row 5: Recent Transactions */}
         <RecentTransactions
           transactions={metrics?.recentTransactions ?? []}
           onViewAll={handleNavigateToAllTransactions}

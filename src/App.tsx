@@ -11,6 +11,10 @@ import ITRReportPage from './app/(auth)/reports/itr/page';
 import SettingsPage from './app/(auth)/settings/page';
 import AskYourDataPage from './app/(auth)/ai/page';
 import AISettingsPage from './app/(auth)/settings/ai/page';
+import RecurringPage from './app/(auth)/recurring/page';
+import BudgetsPage from './app/(auth)/budgets/page';
+import { useIdleLogout } from './hooks/useIdleLogout';
+import { IdleWarningModal } from './components/auth/IdleWarningModal';
 import { AuthNavShell } from './components/navigation/AuthNavShell';
 import { DesignSystemPlayground } from './components/showcase/DesignSystemPlayground';
 import { ThemeToggle } from './components/ui/ThemeToggle';
@@ -27,6 +31,8 @@ import {
   LayoutDashboard,
   Upload,
   Receipt,
+  Repeat,
+  Target,
   Sliders,
   FileSpreadsheet,
   Settings,
@@ -36,10 +42,28 @@ import {
 export default function App() {
   const { user, isAuthenticated, isLoading } = useAuth();
   const [currentRoute, setCurrentRoute] = useState<
-    '/' | '/dashboard' | '/accounts' | '/account-detail' | '/upload' | '/transactions' | '/rules' | '/reports' | '/ai' | '/settings' | '/settings/ai' | '/playground'
+    '/' | '/dashboard' | '/accounts' | '/account-detail' | '/upload' | '/transactions' | '/recurring' | '/budgets' | '/rules' | '/reports' | '/ai' | '/settings' | '/settings/ai' | '/playground'
   >('/');
   const [selectedAccountId, setSelectedAccountId] = useState<string>('acc_hdfc_01');
   const [authNotice, setAuthNotice] = useState<string | null>(null);
+
+  // 30-min idle auto-logout with 25-min warning
+  const {
+    showWarning: isIdleWarningOpen,
+    remainingSeconds: idleRemainingSeconds,
+    resetTimer: handleStayLoggedIn,
+    performLogout: handleIdleLogout,
+  } = useIdleLogout({
+    idleTimeoutMs: 30 * 60 * 1000,
+    warningTimeoutMs: 25 * 60 * 1000,
+    enabled: isAuthenticated,
+    onLogout: async () => {
+      await signOut('/');
+      setCurrentRoute('/');
+      window.location.hash = '';
+      setAuthNotice('Logged out due to 30 minutes of inactivity for your vault security.');
+    },
+  });
 
   // Sync route with browser hash or location if available
   useEffect(() => {
@@ -54,6 +78,8 @@ export default function App() {
       }
       else if (hash === 'upload') setCurrentRoute('/upload');
       else if (hash === 'transactions') setCurrentRoute('/transactions');
+      else if (hash === 'recurring') setCurrentRoute('/recurring');
+      else if (hash === 'budgets') setCurrentRoute('/budgets');
       else if (hash === 'rules') setCurrentRoute('/rules');
       else if (hash === 'reports' || hash === 'reports-itr' || hash === 'reports/itr') setCurrentRoute('/reports');
       else if (hash === 'ai' || hash === 'ask-ai') setCurrentRoute('/ai');
@@ -94,6 +120,8 @@ export default function App() {
       targetRoute === '/account-detail' ||
       targetRoute === '/upload' ||
       targetRoute === '/transactions' ||
+      targetRoute === '/recurring' ||
+      targetRoute === '/budgets' ||
       targetRoute === '/rules' ||
       targetRoute === '/reports' ||
       targetRoute === '/ai' ||
@@ -163,12 +191,12 @@ export default function App() {
             <span className="text-slate-500">|</span>
             <span className="inline-flex items-center gap-1 text-[11px] font-medium text-emerald-400 bg-emerald-950/60 px-2 py-0.5 rounded border border-emerald-800/60">
               <CheckCircle2 className="w-3 h-3" />
-              Batch 6: Gemini AI Complete
+              Batch 7: Extras & Hardening Complete
             </span>
           </div>
 
           {/* Active Route Simulator Tabs */}
-          <div className="flex items-center p-0.5 bg-slate-800 rounded-lg border border-slate-700">
+          <div className="flex items-center p-0.5 bg-slate-800 rounded-lg border border-slate-700 overflow-x-auto max-w-full">
             <button
               type="button"
               onClick={() => navigateTo('/')}
@@ -227,6 +255,30 @@ export default function App() {
             >
               <Receipt className="w-3 h-3" />
               <span>/transactions</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => navigateTo('/recurring')}
+              className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium transition-colors cursor-pointer ${
+                currentRoute === '/recurring'
+                  ? 'bg-indigo-600 text-white shadow-xs'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              <Repeat className="w-3 h-3" />
+              <span>/recurring</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => navigateTo('/budgets')}
+              className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium transition-colors cursor-pointer ${
+                currentRoute === '/budgets'
+                  ? 'bg-indigo-600 text-white shadow-xs'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              <Target className="w-3 h-3" />
+              <span>/budgets</span>
             </button>
             <button
               type="button"
@@ -343,6 +395,14 @@ export default function App() {
         </div>
       )}
 
+      {/* 25-Minute Idle Logout Warning Modal with Countdown */}
+      <IdleWarningModal
+        isOpen={isIdleWarningOpen}
+        remainingSeconds={idleRemainingSeconds}
+        onStayLoggedIn={handleStayLoggedIn}
+        onLogoutNow={handleIdleLogout}
+      />
+
       {/* Main View Area */}
       <main className="flex-1">
         {currentRoute === '/' && <LandingSkeleton onLoginClick={handleLogin} />}
@@ -377,6 +437,18 @@ export default function App() {
         {currentRoute === '/transactions' && (
           <AuthNavShell activePathOverride="/transactions" onNavigateOverride={(p) => navigateTo(p as any)}>
             <TransactionsPage />
+          </AuthNavShell>
+        )}
+
+        {currentRoute === '/recurring' && (
+          <AuthNavShell activePathOverride="/recurring" onNavigateOverride={(p) => navigateTo(p as any)}>
+            <RecurringPage />
+          </AuthNavShell>
+        )}
+
+        {currentRoute === '/budgets' && (
+          <AuthNavShell activePathOverride="/budgets" onNavigateOverride={(p) => navigateTo(p as any)}>
+            <BudgetsPage />
           </AuthNavShell>
         )}
 

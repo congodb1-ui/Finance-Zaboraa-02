@@ -168,6 +168,7 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
               type="button"
               variant="primary"
               size="md"
+              data-testid="confirm-import-button"
               onClick={handleConfirm}
               isLoading={isSubmitting}
               disabled={isSubmitting || (overlapInfo?.has_overlap && !replaceDecision)}

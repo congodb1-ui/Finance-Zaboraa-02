@@ -92,6 +92,7 @@ export const TransactionFilters: React.FC<TransactionFiltersProps> = ({
             <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
             <input
               type="text"
+              data-testid="filter-search"
               placeholder="Search description, reference, UTR..."
               value={searchInput}
               onChange={(e) => setSearchInput(e.target.value)}

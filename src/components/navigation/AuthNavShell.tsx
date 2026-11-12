@@ -10,6 +10,8 @@ import {
   Building2,
   Upload,
   Receipt,
+  Repeat,
+  Target,
   Sliders,
   FileSpreadsheet,
   Settings,
@@ -45,8 +47,18 @@ export const AuthNavShell: React.FC<AuthNavShellProps> = ({
     { name: 'Accounts', path: '/accounts', icon: Building2 },
     { name: 'Upload Statements', path: '/upload', icon: Upload },
     { name: 'Transactions', path: '/transactions', icon: Receipt },
+    { name: 'Recurring', path: '/recurring', icon: Repeat },
+    { name: 'Budgets', path: '/budgets', icon: Target },
     { name: 'Rules', path: '/rules', icon: Sliders },
     { name: 'Reports', path: '/reports/itr', icon: FileSpreadsheet },
+    { name: 'Ask AI', path: '/ai', icon: Sparkles },
+    { name: 'Settings', path: '/settings', icon: Settings },
+  ];
+
+  const mobileNavItems: NavItem[] = [
+    { name: 'Dashboard', path: '/dashboard', icon: LayoutDashboard },
+    { name: 'Ledger', path: '/transactions', icon: Receipt },
+    { name: 'Upload', path: '/upload', icon: Upload },
     { name: 'Ask AI', path: '/ai', icon: Sparkles },
     { name: 'Settings', path: '/settings', icon: Settings },
   ];
@@ -165,24 +177,24 @@ export const AuthNavShell: React.FC<AuthNavShellProps> = ({
         <main className="flex-1">{children}</main>
       </div>
 
-      {/* Mobile Bottom Tab Bar */}
+      {/* Mobile Bottom Tab Bar (5 main destinations, min 44x44px touch targets) */}
       <nav className="md:hidden fixed bottom-0 left-0 right-0 h-14 bg-white/95 dark:bg-[#0B1120]/95 backdrop-blur-md border-t border-slate-200 dark:border-slate-800 flex items-center justify-around px-2 z-30">
-        {navItems.map((item) => {
+        {mobileNavItems.map((item) => {
           const Icon = item.icon;
-          const isActive = currentPath === item.path || currentPath.startsWith(item.path + '/');
+          const isActive = currentPath === item.path || (item.path !== '/' && currentPath.startsWith(item.path));
 
           return (
             <a
               key={item.name}
               href={item.path}
               onClick={(e) => handleNavClick(e, item.path, item.placeholder)}
-              className={`flex flex-col items-center justify-center py-1 px-2 text-[10px] font-medium transition-colors ${
+              className={`flex flex-col items-center justify-center min-w-[48px] min-h-[44px] py-1 px-2 rounded-lg text-[10px] font-medium transition-colors ${
                 isActive
-                  ? 'text-indigo-600 dark:text-indigo-400'
-                  : 'text-slate-500 dark:text-slate-400'
+                  ? 'text-indigo-600 dark:text-indigo-400 font-semibold'
+                  : 'text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'
               }`}
             >
-              <Icon className="w-4 h-4 mb-0.5" />
+              <Icon className={`w-5 h-5 mb-0.5 ${isActive ? 'stroke-[2.5px] text-indigo-600 dark:text-indigo-400' : 'stroke-[1.75px]'}`} />
               <span>{item.name}</span>
             </a>
           );

@@ -21,6 +21,8 @@ export interface Transaction {
   tags: string[] | null;
   is_manual: boolean;
   source_staged_id: string | null;
+  is_recurring?: boolean;
+  recurring_id?: string | null;
   ai_suggestion?: {
     category_id: string | null;
     confidence: 'high' | 'medium' | 'low';

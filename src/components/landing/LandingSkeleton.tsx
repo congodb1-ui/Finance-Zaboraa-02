@@ -76,6 +76,7 @@ export const LandingSkeleton: React.FC<LandingSkeletonProps> = ({ onLoginClick }
             <Button
               variant="primary"
               size="md"
+              data-testid="login-button"
               onClick={handleLogin}
               leftIcon={
                 <svg className="w-4 h-4 fill-current" viewBox="0 0 24 24">

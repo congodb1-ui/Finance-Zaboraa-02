@@ -19,6 +19,15 @@
     "paths": {
       "@/*": [
         "./*"
+      ],
+      "next/headers": [
+        "./src/lib/next-shims/headers.ts"
+      ],
+      "next/navigation": [
+        "./src/lib/next-shims/navigation.ts"
+      ],
+      "next/server": [
+        "./src/lib/next-shims/server.ts"
       ]
     },
     "allowImportingTsExtensions": true,
