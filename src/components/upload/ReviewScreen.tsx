@@ -13,9 +13,9 @@ import {
   Hash,
   ChevronLeft,
   ChevronRight,
-  Layers,
-  Sparkles,
-  Info,
+  X,
+  AlertOctagon,
+  Lock,
 } from 'lucide-react';
 
 interface ReviewScreenProps {
@@ -37,7 +37,13 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
 }) => {
   const [currentPage, setCurrentPage] = useState(1);
   const [replaceDecision, setReplaceDecision] = useState<'keep_both' | 'replace' | null>(null);
+  const [showReconWarning, setShowReconWarning] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  // Batch 3b: Modal state for replacing PDF imports
+  const [showReplaceModal, setShowReplaceModal] = useState(false);
+  const [replaceConfirmationText, setReplaceConfirmationText] = useState('');
+
   const pageSize = 50;
 
   // Calculate summary metrics
@@ -59,6 +65,26 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
 
   const totalPages = Math.ceil(transactions.length / pageSize) || 1;
   const paginatedTransactions = transactions.slice((currentPage - 1) * pageSize, currentPage * pageSize);
+
+  const isPDF = upload.file_type === 'pdf';
+
+  const handleInitiateReplace = () => {
+    if (isPDF) {
+      // PDF replacement requires explicit typing confirmation gate
+      setReplaceConfirmationText('');
+      setShowReplaceModal(true);
+    } else {
+      // CSV/XLSX: direct selection
+      setReplaceDecision('replace');
+    }
+  };
+
+  const handleConfirmReplaceModal = () => {
+    if (replaceConfirmationText === 'REPLACE') {
+      setReplaceDecision('replace');
+      setShowReplaceModal(false);
+    }
+  };
 
   const handleConfirm = async () => {
     setIsSubmitting(true);
@@ -109,6 +135,10 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
             <span>•</span>
             <span className="font-mono text-slate-600 dark:text-slate-300">{upload.file_name}</span>
             <span>•</span>
+            <span className="uppercase text-[10px] font-mono font-semibold px-1.5 py-0.2 rounded bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300">
+              {upload.file_type}
+            </span>
+            <span>•</span>
             <span className="inline-flex items-center gap-1">
               <Calendar className="w-3.5 h-3.5 text-slate-400" />
               Period: {upload.statement_period_start || 'N/A'} to {upload.statement_period_end || 'N/A'}
@@ -149,28 +179,63 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
         )}
       </div>
 
-      {/* Deliverable 8: Overlap Detection Banner */}
+      {/* Deliverable 4: Reconciliation Warning Banner (dismissable) */}
+      {upload.reconciliation_warning && showReconWarning && (
+        <div className="p-4 rounded-xl bg-amber-50 dark:bg-amber-950/50 border border-amber-300 dark:border-amber-700 text-amber-900 dark:text-amber-100 flex items-start justify-between gap-3 animate-in fade-in shadow-2xs">
+          <div className="flex items-start gap-3">
+            <AlertTriangle className="w-5 h-5 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+            <div className="text-xs">
+              <span className="font-semibold text-sm block">⚠️ Balance Does Not Reconcile</span>
+              <p className="mt-0.5 leading-relaxed text-amber-800 dark:text-amber-200">
+                Parsed total differs from statement closing balance by{' '}
+                <strong className="font-tabular font-bold">
+                  {formatINR(upload.reconciliation_diff || 0)}
+                </strong>
+                . You may proceed, but verify manually.
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => setShowReconWarning(false)}
+            className="text-amber-600 dark:text-amber-400 hover:text-amber-800 dark:hover:text-amber-200 p-1 cursor-pointer"
+            aria-label="Dismiss reconciliation warning"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+
+      {/* Deliverable 6 & 8: Overlap Detection Banner */}
       {overlapInfo?.has_overlap && !isReadOnly && (
         <div className="p-4 rounded-xl bg-amber-50 dark:bg-amber-950/50 border border-amber-300 dark:border-amber-800 text-amber-900 dark:text-amber-100 flex flex-col md:flex-row md:items-center justify-between gap-4 animate-in fade-in">
           <div className="flex items-start gap-3">
             <AlertTriangle className="w-5 h-5 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
             <div className="text-xs">
-              <span className="font-semibold text-sm block">Statement Period Overlap Detected ({overlapInfo.overlap_percentage}% Overlap)</span>
+              <span className="font-semibold text-sm block">
+                Statement Period Overlap Detected ({overlapInfo.overlap_percentage}% Overlap)
+              </span>
               <p className="mt-0.5 text-amber-800 dark:text-amber-200">
-                This file overlaps with an existing import from <strong>{overlapInfo.overlapping_date}</strong> (
+                This file overlaps with an import from <strong>{overlapInfo.overlapping_date}</strong> (
                 <code className="text-[11px] font-mono px-1 py-0.5 rounded bg-amber-100 dark:bg-amber-900/60 text-amber-900 dark:text-amber-100">
                   {overlapInfo.overlapping_file_name}
                 </code>
                 ). You can replace the previous import or keep both.
               </p>
+              {replaceDecision === 'replace' && (
+                <div className="mt-1 text-emerald-700 dark:text-emerald-400 font-semibold flex items-center gap-1">
+                  <CheckCircle2 className="w-3.5 h-3.5" />
+                  <span>Configured to replace previous import on confirm.</span>
+                </div>
+              )}
             </div>
           </div>
 
           <div className="flex items-center gap-2.5 shrink-0">
             <button
               type="button"
-              onClick={() => setReplaceDecision('replace')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+              onClick={handleInitiateReplace}
+              className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
                 replaceDecision === 'replace'
                   ? 'bg-amber-600 text-white shadow-xs ring-2 ring-amber-500/50'
                   : 'bg-white dark:bg-slate-900 border border-amber-300 dark:border-amber-700 text-amber-900 dark:text-amber-200 hover:bg-amber-100/50'
@@ -181,7 +246,7 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
             <button
               type="button"
               onClick={() => setReplaceDecision('keep_both')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+              className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
                 replaceDecision === 'keep_both'
                   ? 'bg-indigo-600 text-white shadow-xs ring-2 ring-indigo-500/50'
                   : 'bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-300 hover:bg-slate-100'
@@ -189,6 +254,71 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
             >
               Keep Both
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* Deliverable 6: PDF Replace Confirmation Modal */}
+      {showReplaceModal && overlapInfo && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-xs animate-in fade-in">
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-4">
+            <div className="flex items-start gap-3">
+              <div className="w-10 h-10 rounded-xl bg-red-100 dark:bg-red-950/80 text-red-600 dark:text-red-400 flex items-center justify-center shrink-0">
+                <AlertOctagon className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="font-heading font-bold text-base text-slate-900 dark:text-white">
+                  Confirm PDF Statement Replacement
+                </h3>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Action requires explicit confirmation gate
+                </p>
+              </div>
+            </div>
+
+            <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+              Replacing this import will remove{' '}
+              <strong className="font-semibold text-slate-900 dark:text-white">
+                {overlapInfo.overlapping_row_count || 'all'}
+              </strong>{' '}
+              previously imported transactions from{' '}
+              <strong className="font-semibold text-slate-900 dark:text-white">
+                {upload.statement_period_start || 'earlier'} to {upload.statement_period_end || 'current'}
+              </strong>
+              . This cannot be undone without re-uploading.
+            </p>
+
+            <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 space-y-2">
+              <label className="text-xs font-semibold text-slate-700 dark:text-slate-300 block">
+                Type <span className="font-mono text-red-600 dark:text-red-400 font-bold">REPLACE</span> to confirm:
+              </label>
+              <input
+                type="text"
+                value={replaceConfirmationText}
+                onChange={(e) => setReplaceConfirmationText(e.target.value)}
+                placeholder="REPLACE"
+                className="w-full text-xs font-mono py-2 px-3 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-white focus:outline-hidden focus:ring-2 focus:ring-red-500"
+                autoFocus
+              />
+            </div>
+
+            <div className="flex items-center justify-end gap-3 pt-2">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setShowReplaceModal(false)}
+              >
+                Cancel
+              </Button>
+              <Button
+                variant="destructive"
+                size="sm"
+                onClick={handleConfirmReplaceModal}
+                disabled={replaceConfirmationText !== 'REPLACE'}
+              >
+                Confirm Replacement
+              </Button>
+            </div>
           </div>
         </div>
       )}

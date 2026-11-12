@@ -2,7 +2,10 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '../../../lib/supabase/server';
 import { parseCSV } from '../../../lib/parsers/csv';
 import { parseXLSX } from '../../../lib/parsers/xlsx';
-import { computeSHA256 } from '../../../lib/actions/upload';
+import { extractPDFRawData } from '../../../lib/parsers/pdf';
+import { parsePDFHDFC, isHDFCStatement } from '../../../lib/parsers/pdf-hdfc';
+import { parsePDFGeneric } from '../../../lib/parsers/pdf-generic';
+import { computeSHA256, checkReconciliation } from '../../../lib/actions/upload';
 import type { ColumnMapping, ParseResult } from '../../../types/uploads';
 
 export const dynamic = 'force-dynamic';
@@ -32,21 +35,23 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Target account_id is required.' }, { status: 400 });
     }
 
-    // STEP 2 — Validate file (.csv, .xlsx, max 20 MB)
+    // STEP 2 — Validate file (.csv, .xlsx, .pdf, max 20 MB)
     const maxBytes = 20 * 1024 * 1024; // 20 MB
     if (file.size > maxBytes) {
       return NextResponse.json({ error: 'File size exceeds 20 MB limit.' }, { status: 400 });
     }
 
     const fileNameLower = file.name.toLowerCase();
-    let fileType: 'csv' | 'xlsx' | null = null;
+    let fileType: 'csv' | 'xlsx' | 'pdf' | null = null;
     if (fileNameLower.endsWith('.csv')) {
       fileType = 'csv';
     } else if (fileNameLower.endsWith('.xlsx')) {
       fileType = 'xlsx';
+    } else if (fileNameLower.endsWith('.pdf')) {
+      fileType = 'pdf';
     } else {
       return NextResponse.json(
-        { error: 'Invalid file type. Only .csv and .xlsx files are supported in Batch 3a.' },
+        { error: 'Invalid file type. Supported formats: .csv, .xlsx, .pdf.' },
         { status: 400 }
       );
     }
@@ -93,12 +98,33 @@ export async function POST(req: NextRequest) {
     if (fileType === 'csv') {
       const text = new TextDecoder('utf-8').decode(arrayBuffer);
       parseResult = parseCSV(text);
-    } else {
+    } else if (fileType === 'xlsx') {
       parseResult = parseXLSX(arrayBuffer);
+    } else {
+      // PDF branch
+      const pdfData = await extractPDFRawData(arrayBuffer);
+      const firstPageText = pdfData.pages[0]?.fullText || pdfData.fullDocumentText;
+      if (isHDFCStatement(firstPageText)) {
+        parseResult = await parsePDFHDFC(arrayBuffer, pdfData);
+      } else {
+        parseResult = await parsePDFGeneric(arrayBuffer, pdfData);
+      }
     }
 
     if (parseResult.rows.length === 0) {
       return NextResponse.json({ error: 'Parsed file contains no transaction rows.' }, { status: 422 });
+    }
+
+    // STEP 6 — Reconciliation check
+    const recon = checkReconciliation(
+      parseResult.rows,
+      parseResult.suggested_mapping,
+      parseResult.opening_balance,
+      parseResult.closing_balance
+    );
+    if (recon.warning) {
+      parseResult.reconciliation_warning = true;
+      parseResult.reconciliation_diff = recon.diff;
     }
 
     // STEP 6 — Header extraction + auto-mapping result
@@ -148,6 +174,9 @@ export async function POST(req: NextRequest) {
       column_mapping: columnMapping,
       needs_mapping: needsMapping,
       headers: parseResult.headers,
+      file_type: fileType,
+      reconciliation_warning: parseResult.reconciliation_warning,
+      reconciliation_diff: parseResult.reconciliation_diff,
     });
   } catch (err: any) {
     console.error('Upload API route error:', err);

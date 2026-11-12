@@ -9,10 +9,93 @@ import type {
 } from '../../types/uploads';
 import { parseCSV } from '../parsers/csv';
 import { parseXLSX } from '../parsers/xlsx';
+import { extractPDFRawData } from '../parsers/pdf';
+import { parsePDFHDFC, isHDFCStatement } from '../parsers/pdf-hdfc';
+import { parsePDFGeneric } from '../parsers/pdf-generic';
 import { getAccounts } from './accounts';
+
+/**
+ * Runs reconciliation check:
+ * opening_balance + sum(credits) - sum(debits) ≈ closing_balance
+ * tolerance: ±1 INR (rounding)
+ */
+export function checkReconciliation(
+  rows: Array<Record<string, string>>,
+  mapping: ColumnMapping | null | undefined,
+  openingBalance?: number | null,
+  closingBalance?: number | null
+): { warning: boolean; diff: number } {
+  if (
+    openingBalance === undefined ||
+    openingBalance === null ||
+    closingBalance === undefined ||
+    closingBalance === null
+  ) {
+    return { warning: false, diff: 0 };
+  }
+
+  let totalDebits = 0;
+  let totalCredits = 0;
+
+  for (const r of rows) {
+    if (mapping?.is_single_amount_col && mapping.amount_col) {
+      const amt = parseAmount(r[mapping.amount_col]);
+      if (amt !== null) {
+        if (amt < 0) totalDebits += Math.abs(amt);
+        else totalCredits += amt;
+      }
+    } else {
+      if (mapping?.debit_col) {
+        const d = parseAmount(r[mapping.debit_col]);
+        if (d !== null) totalDebits += d;
+      }
+      if (mapping?.credit_col) {
+        const c = parseAmount(r[mapping.credit_col]);
+        if (c !== null) totalCredits += c;
+      }
+    }
+  }
+
+  const calculatedClosing = openingBalance + totalCredits - totalDebits;
+  const diff = Math.abs(calculatedClosing - closingBalance);
+
+  // ±1 INR tolerance
+  if (diff > 1.0) {
+    return { warning: true, diff: Math.round(diff * 100) / 100 };
+  }
+
+  return { warning: false, diff: 0 };
+}
 
 // In-memory store for statement uploads and staged transactions for preview / local mode
 let localUploadsStore: StatementUpload[] = [
+  {
+    id: 'up_hdfc_nov26_pdf',
+    user_id: 'default_owner',
+    account_id: 'acc_hdfc_01',
+    file_name: 'HDFC_Salary_Nov2026.pdf',
+    file_hash: 'c3d4e5f67890123456789abcdef0123456789abcdef0123456789abcdef01234b',
+    file_type: 'pdf',
+    file_size_bytes: 142500,
+    storage_path: 'default_owner/2026-11/1731000000-HDFC_Salary_Nov2026.pdf',
+    parser_version: 'hdfc-pdf-v1',
+    status: 'imported',
+    row_count: 42,
+    imported_count: 42,
+    duplicate_count: 0,
+    error_message: null,
+    statement_period_start: '2026-11-01',
+    statement_period_end: '2026-11-15',
+    imported_at: '2026-11-16T09:00:00.000Z',
+    created_at: '2026-11-16T08:55:00.000Z',
+    updated_at: '2026-11-16T09:00:00.000Z',
+    account: {
+      id: 'acc_hdfc_01',
+      name: 'HDFC Main Savings',
+      bank_name: 'HDFC Bank',
+      account_number_last4: '4819',
+    },
+  },
   {
     id: 'up_hdfc_oct26',
     user_id: 'default_owner',
@@ -263,15 +346,15 @@ export async function processStatementUpload(
   }
 
   const fileNameLower = file.name.toLowerCase();
-  let fileType: 'csv' | 'xlsx' | null = null;
+  let fileType: 'csv' | 'xlsx' | 'pdf' | null = null;
   if (fileNameLower.endsWith('.csv')) {
     fileType = 'csv';
   } else if (fileNameLower.endsWith('.xlsx')) {
     fileType = 'xlsx';
   } else if (fileNameLower.endsWith('.pdf')) {
-    throw new Error('PDF statements are scheduled for Batch 3b. Please upload a CSV or XLSX statement.');
+    fileType = 'pdf';
   } else {
-    throw new Error('Invalid file format. Only .csv and .xlsx files are supported.');
+    throw new Error('Invalid file format. Supported statement exports: .csv, .xlsx, .pdf.');
   }
 
   // STEP 3 — Compute SHA-256 hash BEFORE any parsing
@@ -291,6 +374,7 @@ export async function processStatementUpload(
       headers: [],
       error: 'DUPLICATE_FILE',
       existing_upload_id: duplicate.id,
+      file_type: duplicate.file_type,
     };
   }
 
@@ -312,12 +396,34 @@ export async function processStatementUpload(
   if (fileType === 'csv') {
     const text = new TextDecoder('utf-8').decode(arrayBuffer);
     parseResult = parseCSV(text);
-  } else {
+  } else if (fileType === 'xlsx') {
     parseResult = parseXLSX(arrayBuffer);
+  } else {
+    // Batch 3b: PDF Parser Router (HDFC vs Generic)
+    const pdfData = await extractPDFRawData(arrayBuffer);
+    const firstPageText = pdfData.pages[0]?.fullText || pdfData.fullDocumentText;
+
+    if (isHDFCStatement(firstPageText)) {
+      parseResult = await parsePDFHDFC(arrayBuffer, pdfData);
+    } else {
+      parseResult = await parsePDFGeneric(arrayBuffer, pdfData);
+    }
   }
 
   if (parseResult.rows.length === 0) {
     throw new Error('No transaction rows could be parsed from this file.');
+  }
+
+  // STEP 6 — Reconciliation check (tolerance: ±1 INR)
+  const recon = checkReconciliation(
+    parseResult.rows,
+    parseResult.suggested_mapping,
+    parseResult.opening_balance,
+    parseResult.closing_balance
+  );
+  if (recon.warning) {
+    parseResult.reconciliation_warning = true;
+    parseResult.reconciliation_diff = recon.diff;
   }
 
   // Fetch account info
@@ -346,6 +452,8 @@ export async function processStatementUpload(
     imported_at: null,
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
+    reconciliation_warning: parseResult.reconciliation_warning,
+    reconciliation_diff: parseResult.reconciliation_diff,
     account: matchedAccount
       ? {
           id: matchedAccount.id,
@@ -371,6 +479,9 @@ export async function processStatementUpload(
     headers: parseResult.headers,
     detected_bank: parseResult.detected_bank,
     sample_rows: parseResult.rows.slice(0, 5),
+    file_type: fileType,
+    reconciliation_warning: parseResult.reconciliation_warning,
+    reconciliation_diff: parseResult.reconciliation_diff,
   };
 }
 
@@ -510,6 +621,8 @@ export function checkDateOverlap(
             ? new Date(existing.imported_at).toLocaleDateString('en-IN')
             : new Date(existing.created_at).toLocaleDateString('en-IN'),
           overlap_percentage: percentage,
+          overlapping_row_count: existing.row_count || 0,
+          overlapping_file_type: existing.file_type,
         };
       }
     }

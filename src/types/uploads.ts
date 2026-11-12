@@ -1,6 +1,6 @@
 /**
- * Batch 3a: Statement Upload & Parsing Types
- * Defined per PRD Section 4.3 & Batch 3a Deliverables
+ * Batch 3a & 3b: Statement Upload & Parsing Types
+ * Defined per PRD Section 4.3 & Batch 3b Deliverables
  */
 
 export type UploadStatus =
@@ -33,6 +33,8 @@ export interface StatementUpload {
   imported_at: string | null;
   created_at: string;
   updated_at: string;
+  reconciliation_warning?: boolean;
+  reconciliation_diff?: number;
   // Joined account details for UI rendering
   account?: {
     id: string;
@@ -80,6 +82,11 @@ export interface ParseResult {
   detected_bank?: string;
   confidence?: MappingConfidence;
   suggested_mapping?: ColumnMapping;
+  opening_balance?: number | null;
+  closing_balance?: number | null;
+  reconciliation_warning?: boolean;
+  reconciliation_diff?: number;
+  raw_text?: string;
 }
 
 export interface UploadApiResponse {
@@ -92,6 +99,9 @@ export interface UploadApiResponse {
   sample_rows?: Array<Record<string, string>>;
   error?: string;
   existing_upload_id?: string;
+  file_type?: FileType;
+  reconciliation_warning?: boolean;
+  reconciliation_diff?: number;
 }
 
 export interface OverlapCheckResult {
@@ -100,4 +110,6 @@ export interface OverlapCheckResult {
   overlapping_file_name?: string;
   overlapping_date?: string;
   overlap_percentage: number;
+  overlapping_row_count?: number;
+  overlapping_file_type?: FileType;
 }
