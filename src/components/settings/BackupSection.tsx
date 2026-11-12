@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '../ui/Card';
 import { Button } from '../ui/Button';
 import { Input } from '../ui/Input';
+import { apiGet } from '../../lib/api-client';
 import {
   ShieldCheck,
   Lock,
@@ -59,13 +60,7 @@ export const BackupSection: React.FC = () => {
 
     try {
       // 1. Fetch raw JSON backup envelope from server
-      const res = await fetch('/api/backup', {
-        headers: { Accept: 'application/json' },
-      });
-      if (!res.ok) {
-        throw new Error('Failed to retrieve backup data from server.');
-      }
-      const envelope = await res.json();
+      const envelope = await apiGet('/api/backup');
 
       // 2. Derive AES-256-GCM key using Web Crypto API PBKDF2 (100,000 iterations, SHA-256)
       const enc = new TextEncoder();

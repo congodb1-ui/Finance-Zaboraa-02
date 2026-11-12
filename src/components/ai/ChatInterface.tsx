@@ -4,6 +4,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Card } from '../ui/Card';
 import { Button } from '../ui/Button';
 import type { AllowedQueryParams } from '../../lib/ai/chat';
+import { apiPost } from '../../lib/api-client';
 import {
   Sparkles,
   Send,
@@ -97,15 +98,9 @@ export const ChatInterface: React.FC = () => {
     setIsLoading(true);
 
     try {
-      const res = await fetch('/api/ai/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ question }),
-      });
+      const data = await apiPost('/api/ai/chat', { question });
 
-      const data = await res.json();
-
-      if (res.ok && data.success) {
+      if (data.success) {
         const assistantMsg: ChatMessage = {
           id: `msg_a_${Date.now()}`,
           sender: 'assistant',
@@ -125,11 +120,11 @@ export const ChatInterface: React.FC = () => {
         };
         setMessages((prev) => [...prev, errorMsg]);
       }
-    } catch {
+    } catch (err: any) {
       const errorMsg: ChatMessage = {
         id: `msg_err_${Date.now()}`,
         sender: 'assistant',
-        text: 'AI is currently unavailable. Try again later.',
+        text: err?.message || 'AI is currently unavailable. Try again later.',
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         error: true,
       };

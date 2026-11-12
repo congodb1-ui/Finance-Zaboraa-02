@@ -13,6 +13,7 @@ export async function getInvoices(): Promise<Invoice[]> {
   const { data, error } = await supabase
     .from('invoices')
     .select('*')
+    .eq('user_id', user.id)
     .order('issue_date', { ascending: false });
 
   if (error) {
@@ -78,6 +79,7 @@ export async function updateInvoice(
       updated_at: new Date().toISOString(),
     })
     .eq('id', id)
+    .eq('user_id', user.id)
     .select()
     .single();
 
@@ -98,7 +100,11 @@ export async function deleteInvoice(id: string): Promise<{ success: boolean; err
     throw new Error('Unauthorized');
   }
 
-  const { error } = await supabase.from('invoices').delete().eq('id', id);
+  const { error } = await supabase
+    .from('invoices')
+    .delete()
+    .eq('id', id)
+    .eq('user_id', user.id);
 
   if (error) {
     return { success: false, error: error.message };

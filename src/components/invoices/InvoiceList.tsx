@@ -26,7 +26,8 @@ export const InvoiceList: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
-  const [banner, setBanner] = useState<string | null>(null);
+  const [banner, setBanner] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
   const fetchInvoices = async () => {
     try {
@@ -35,6 +36,7 @@ export const InvoiceList: React.FC = () => {
       setInvoices(list);
     } catch (err: any) {
       console.error('Failed to load invoices:', err);
+      setBanner({ type: 'error', text: err?.message || 'Failed to load invoices.' });
     } finally {
       setLoading(false);
     }
@@ -50,10 +52,11 @@ export const InvoiceList: React.FC = () => {
       const created = await createInvoice(formData);
       setInvoices([created, ...invoices]);
       setIsFormOpen(false);
-      setBanner(`Invoice ${created.invoice_number} created successfully.`);
+      setBanner({ type: 'success', text: `Invoice ${created.invoice_number} created successfully.` });
       setTimeout(() => setBanner(null), 4000);
     } catch (err: any) {
-      alert(`Failed to save invoice: ${err.message}`);
+      setBanner({ type: 'error', text: `Failed to save invoice: ${err.message}` });
+      throw err;
     } finally {
       setActionLoading(false);
     }
@@ -63,22 +66,24 @@ export const InvoiceList: React.FC = () => {
     try {
       const updated = await markInvoicePaid(id);
       setInvoices(invoices.map((inv) => (inv.id === id ? updated : inv)));
+      setBanner({ type: 'success', text: `Invoice ${updated.invoice_number} marked as paid.` });
+      setTimeout(() => setBanner(null), 4000);
     } catch (err: any) {
-      alert(`Failed to mark invoice as paid: ${err.message}`);
+      setBanner({ type: 'error', text: `Failed to mark invoice as paid: ${err.message}` });
     }
   };
 
-  const handleDelete = async (id: string, num: string) => {
-    if (!confirm(`Are you sure you want to delete invoice ${num}?`)) return;
+  const handleDelete = async (id: string) => {
     try {
       const res = await deleteInvoice(id);
       if (res.success) {
         setInvoices(invoices.filter((inv) => inv.id !== id));
+        setConfirmDeleteId(null);
       } else {
-        alert(res.error || 'Failed to delete');
+        setBanner({ type: 'error', text: res.error || 'Failed to delete invoice.' });
       }
     } catch (err: any) {
-      alert(err.message);
+      setBanner({ type: 'error', text: err?.message || 'Failed to delete invoice.' });
     }
   };
 
@@ -149,9 +154,19 @@ export const InvoiceList: React.FC = () => {
       </div>
 
       {banner && (
-        <div className="p-3 rounded-lg bg-green-50 dark:bg-green-950/40 border border-green-200 dark:border-green-800 text-xs text-green-700 dark:text-green-300 flex items-center gap-2">
-          <CheckCircle2 className="w-4 h-4" />
-          <span>{banner}</span>
+        <div
+          className={`p-3 rounded-lg border text-xs flex items-center gap-2 ${
+            banner.type === 'error'
+              ? 'bg-red-50 dark:bg-red-950/40 border-red-200 dark:border-red-800 text-red-700 dark:text-red-300'
+              : 'bg-green-50 dark:bg-green-950/40 border-green-200 dark:border-green-800 text-green-700 dark:text-green-300'
+          }`}
+        >
+          {banner.type === 'error' ? (
+            <AlertCircle className="w-4 h-4 shrink-0" />
+          ) : (
+            <CheckCircle2 className="w-4 h-4 shrink-0" />
+          )}
+          <span>{banner.text}</span>
         </div>
       )}
 
@@ -258,14 +273,33 @@ export const InvoiceList: React.FC = () => {
                             Mark Paid
                           </button>
                         )}
-                        <button
-                          type="button"
-                          onClick={() => handleDelete(inv.id, inv.invoice_number)}
-                          className="p-1 text-slate-400 hover:text-red-500 rounded cursor-pointer"
-                          title="Delete invoice"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
+                        {confirmDeleteId === inv.id ? (
+                          <div className="flex items-center gap-1">
+                            <button
+                              type="button"
+                              onClick={() => handleDelete(inv.id)}
+                              className="px-2 py-1 text-[11px] font-medium rounded bg-red-600 text-white hover:bg-red-700 cursor-pointer"
+                            >
+                              Delete
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setConfirmDeleteId(null)}
+                              className="px-2 py-1 text-[11px] font-medium rounded border border-slate-200 dark:border-slate-700 text-slate-500 hover:text-slate-700 dark:hover:text-slate-200 cursor-pointer"
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => setConfirmDeleteId(inv.id)}
+                            className="p-1 text-slate-400 hover:text-red-500 rounded cursor-pointer"
+                            title="Delete invoice"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        )}
                       </div>
                     </td>
                   </tr>

@@ -38,6 +38,7 @@ import {
   FileSpreadsheet,
   Settings,
   Sparkles,
+  FileText,
 } from 'lucide-react';
 
 export default function App() {
@@ -122,6 +123,7 @@ export default function App() {
       targetRoute === '/account-detail' ||
       targetRoute === '/upload' ||
       targetRoute === '/transactions' ||
+      targetRoute === '/invoices' ||
       targetRoute === '/recurring' ||
       targetRoute === '/budgets' ||
       targetRoute === '/rules' ||
@@ -257,6 +259,18 @@ export default function App() {
             >
               <Receipt className="w-3 h-3" />
               <span>/transactions</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => navigateTo('/invoices')}
+              className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium transition-colors cursor-pointer ${
+                currentRoute === '/invoices'
+                  ? 'bg-indigo-600 text-white shadow-xs'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              <FileText className="w-3 h-3" />
+              <span>/invoices</span>
             </button>
             <button
               type="button"
@@ -439,6 +453,14 @@ export default function App() {
         {currentRoute === '/transactions' && (
           <AuthNavShell activePathOverride="/transactions" onNavigateOverride={(p) => navigateTo(p as any)}>
             <TransactionsPage />
+          </AuthNavShell>
+        )}
+
+        {currentRoute === '/invoices' && (
+          <AuthNavShell activePathOverride="/invoices" onNavigateOverride={(p) => navigateTo(p as any)}>
+            <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 w-full">
+              <InvoiceList />
+            </div>
           </AuthNavShell>
         )}
 

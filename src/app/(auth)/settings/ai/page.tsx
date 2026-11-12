@@ -3,6 +3,7 @@
 import React, { useState, useEffect } from 'react';
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '../../../../components/ui/Card';
 import { Button } from '../../../../components/ui/Button';
+import { apiPost } from '../../../../lib/api-client';
 import {
   Sparkles,
   ShieldCheck,
@@ -38,13 +39,9 @@ export default function AISettingsPage() {
     setStatusMessage('Checking server environment key & Gemini API response...');
 
     try {
-      const res = await fetch('/api/ai/test', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-      });
-      const data = await res.json();
+      const data = await apiPost('/api/ai/test');
 
-      if (res.ok && data.success) {
+      if (data.success) {
         setApiStatus('connected');
         setStatusMessage('Connected (GEMINI_API_KEY verified active on server)');
         if (data.raw) setTestResponse(data.raw);
@@ -54,7 +51,7 @@ export default function AISettingsPage() {
       }
     } catch (err: any) {
       setApiStatus('error');
-      setStatusMessage('API key error — check your server GEMINI_API_KEY environment variable.');
+      setStatusMessage(err?.message || 'API key error — check your server GEMINI_API_KEY environment variable.');
     }
   };
 
@@ -74,11 +71,7 @@ export default function AISettingsPage() {
     setIsTesting(true);
     setTestResponse(null);
     try {
-      const res = await fetch('/api/ai/test', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-      });
-      const data = await res.json();
+      const data = await apiPost('/api/ai/test');
       if (data.success) {
         setTestResponse(`Status: 200 OK\nModel: ${data.model || 'gemini-2.5-flash'}\nResponse:\n${data.raw || 'CONNECTED'}`);
         setApiStatus('connected');

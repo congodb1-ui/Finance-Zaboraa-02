@@ -24,6 +24,9 @@ async function handleResponse<T = any>(res: Response): Promise<T> {
   if (res.status === 401) {
     console.warn('Received 401 Unauthorized from API. Signing out...');
     await signOut('/');
+    if (typeof window !== 'undefined' && (window.location.pathname !== '/' || window.location.hash)) {
+      window.location.href = '/';
+    }
     throw new Error('Unauthorized');
   }
 
