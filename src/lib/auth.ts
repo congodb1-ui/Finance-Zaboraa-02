@@ -17,10 +17,11 @@ const PREVIEW_SESSION_KEY = 'zaboraa_preview_session';
  * Falls back to demo session when Supabase credentials are placeholder/offline.
  */
 export async function signInWithGoogle(redirectTo?: string) {
-  const isPlaceholder =
-    !process.env.NEXT_PUBLIC_SUPABASE_URL ||
-    process.env.NEXT_PUBLIC_SUPABASE_URL.includes('placeholder') ||
-    !(import.meta as any).env?.VITE_SUPABASE_URL;
+  const configuredUrl =
+    (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_SUPABASE_URL) ||
+    (typeof process !== 'undefined' ? process.env?.NEXT_PUBLIC_SUPABASE_URL : undefined);
+
+  const isPlaceholder = !configuredUrl || configuredUrl.includes('placeholder');
 
   if (isPlaceholder) {
     if (typeof window !== 'undefined') {
@@ -34,9 +35,11 @@ export async function signInWithGoogle(redirectTo?: string) {
     const origin =
       typeof window !== 'undefined'
         ? window.location.origin
-        : process.env.NEXT_PUBLIC_APP_URL || 'https://zaboraa.com';
+        : (typeof process !== 'undefined' ? process.env?.NEXT_PUBLIC_APP_URL : undefined) ||
+          'https://zaboraa.com';
 
-    const targetRedirect = redirectTo || `${origin}/api/auth/callback`;
+    // Express SPA mode handles Supabase PKCE OAuth callbacks client-side via Supabase JS
+    const targetRedirect = redirectTo || `${origin}/#dashboard`;
 
     const { data, error } = await supabase.auth.signInWithOAuth({
       provider: 'google',

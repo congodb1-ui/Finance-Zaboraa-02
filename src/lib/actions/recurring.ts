@@ -1,102 +1,20 @@
 import { createClient } from '../supabase/client';
-import type { RecurringTransaction, RecurringFormData, RecurringFrequency } from '../../types/recurring';
+import type {
+  RecurringTransaction,
+  RecurringFormData,
+  RecurringFrequency,
+} from '../../types/recurring';
 import { getAccounts } from './accounts';
 import { getCategories } from './categories';
 import { getWorkspaces } from './workspaces';
 
-// Seed initial authentic recurring items
-let localRecurringStore: RecurringTransaction[] = [
-  {
-    id: 'rec_01',
-    user_id: 'default_owner',
-    account_id: 'acc_hdfc_01',
-    description: 'WeWork Coworking Office Rent',
-    amount: 32000.0,
-    txn_type: 'expense',
-    category_id: 'cat_7',
-    workspace_id: 'ws_business',
-    frequency: 'monthly',
-    next_due_date: '2026-11-18',
-    last_seen_date: '2026-10-18',
-    is_active: true,
-    notes: 'Monthly dedicated office desk lease',
-    created_at: '2026-10-01T00:00:00.000Z',
-    updated_at: '2026-10-18T00:00:00.000Z',
-  },
-  {
-    id: 'rec_02',
-    user_id: 'default_owner',
-    account_id: 'acc_hdfc_01',
-    description: 'Netflix 4K Ultra Subscription',
-    amount: 649.0,
-    txn_type: 'expense',
-    category_id: 'cat_1',
-    workspace_id: 'ws_personal',
-    frequency: 'monthly',
-    next_due_date: '2026-11-14',
-    last_seen_date: '2026-10-14',
-    is_active: true,
-    notes: 'Auto-debit on HDFC card',
-    created_at: '2026-10-01T00:00:00.000Z',
-    updated_at: '2026-10-14T00:00:00.000Z',
-  },
-  {
-    id: 'rec_03',
-    user_id: 'default_owner',
-    account_id: 'acc_sbi_02',
-    description: 'JioFiber Business Broadband',
-    amount: 1179.0,
-    txn_type: 'expense',
-    category_id: 'cat_7',
-    workspace_id: 'ws_business',
-    frequency: 'monthly',
-    next_due_date: '2026-11-08', // Overdue test item
-    last_seen_date: '2026-10-08',
-    is_active: true,
-    notes: 'Gigabit fiber internet connection',
-    created_at: '2026-09-01T00:00:00.000Z',
-    updated_at: '2026-10-08T00:00:00.000Z',
-  },
-  {
-    id: 'rec_04',
-    user_id: 'default_owner',
-    account_id: 'acc_hdfc_01',
-    description: 'Client Consulting Retainer',
-    amount: 125000.0,
-    txn_type: 'income',
-    category_id: 'cat_6',
-    workspace_id: 'ws_business',
-    frequency: 'monthly',
-    next_due_date: '2026-11-24',
-    last_seen_date: '2026-10-24',
-    is_active: true,
-    notes: 'Apex Industries monthly retainer billing',
-    created_at: '2026-08-01T00:00:00.000Z',
-    updated_at: '2026-10-24T00:00:00.000Z',
-  },
-  {
-    id: 'rec_05',
-    user_id: 'default_owner',
-    account_id: 'acc_hdfc_01',
-    description: 'HDFC ERGO Health Insurance Premium',
-    amount: 28500.0,
-    txn_type: 'expense',
-    category_id: 'cat_2',
-    workspace_id: 'ws_personal',
-    frequency: 'yearly',
-    next_due_date: '2026-12-15',
-    last_seen_date: '2025-12-15',
-    is_active: true,
-    notes: 'Section 80D medical coverage annual premium',
-    created_at: '2025-12-15T00:00:00.000Z',
-    updated_at: '2025-12-15T00:00:00.000Z',
-  },
-];
-
 /**
  * Advances a due date by frequency interval
  */
-export function advanceDueDate(currentDateStr: string, frequency: RecurringFrequency): string {
+export function advanceDueDate(
+  currentDateStr: string,
+  frequency: RecurringFrequency
+): string {
   const d = new Date(currentDateStr);
   if (isNaN(d.getTime())) return currentDateStr;
 
@@ -147,14 +65,37 @@ function calculateSimilarity(str1: string, str2: string): number {
  * - Date within ±3 days of next_due_date
  */
 export async function matchAndAdvanceRecurring(
-  importedTxn: { description: string; amount: number; txn_date: string; account_id?: string }
+  importedTxn: {
+    description: string;
+    amount: number;
+    txn_date: string;
+    account_id?: string;
+  },
+  client?: any
 ): Promise<RecurringTransaction | null> {
-  const activeItems = localRecurringStore.filter((r) => r.is_active);
+  const supabase = client || createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
 
-  for (const item of activeItems) {
+  if (!user) {
+    throw new Error('Unauthorized');
+  }
+
+  const { data: activeItems, error } = await supabase
+    .from('recurring_transactions')
+    .select('*')
+    .eq('user_id', user.id)
+    .eq('is_active', true);
+
+  if (error || !activeItems || activeItems.length === 0) {
+    return null;
+  }
+
+  for (const item of activeItems as RecurringTransaction[]) {
     // 1. Amount match ±5%
-    const amtDiff = Math.abs(item.amount - importedTxn.amount);
-    const amtPct = amtDiff / (item.amount || 1);
+    const amtDiff = Math.abs(Number(item.amount) - importedTxn.amount);
+    const amtPct = amtDiff / (Number(item.amount) || 1);
     if (amtPct > 0.05) continue;
 
     // 2. Date within ±3 days of next_due_date
@@ -166,172 +107,217 @@ export async function matchAndAdvanceRecurring(
     // 3. Description fuzzy match >= 80%
     const similarity = calculateSimilarity(item.description, importedTxn.description);
     if (similarity >= 0.8) {
-      // Matched! Advance next_due_date and record last_seen_date
-      item.last_seen_date = importedTxn.txn_date;
-      item.next_due_date = advanceDueDate(item.next_due_date, item.frequency);
-      item.updated_at = new Date().toISOString();
+      const nextDueDate = advanceDueDate(item.next_due_date, item.frequency);
+      const updatedAt = new Date().toISOString();
 
-      try {
-        const supabase = createClient();
-        await supabase
-          .from('recurring_transactions')
-          .update({
-            last_seen_date: item.last_seen_date,
-            next_due_date: item.next_due_date,
-            updated_at: item.updated_at,
-          })
-          .eq('id', item.id);
-      } catch {
-        // Fallback
-      }
+      const { data: updated } = await supabase
+        .from('recurring_transactions')
+        .update({
+          last_seen_date: importedTxn.txn_date,
+          next_due_date: nextDueDate,
+          updated_at: updatedAt,
+        })
+        .eq('id', item.id)
+        .eq('user_id', user.id)
+        .select()
+        .single();
 
-      return item;
+      return (
+        updated || {
+          ...item,
+          last_seen_date: importedTxn.txn_date,
+          next_due_date: nextDueDate,
+          updated_at: updatedAt,
+        }
+      );
     }
   }
 
   return null;
 }
 
-export async function getRecurringTransactions(): Promise<RecurringTransaction[]> {
-  const [accounts, categories, workspaces] = await Promise.all([
-    getAccounts(),
-    getCategories(),
-    getWorkspaces(),
-  ]);
+export async function getRecurringTransactions(
+  client?: any
+): Promise<RecurringTransaction[]> {
+  const supabase = client || createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
 
-  try {
-    const supabase = createClient();
-    const { data, error } = await supabase
+  if (!user) {
+    return [];
+  }
+
+  const [accounts, categories, workspaces, { data, error }] = await Promise.all([
+    getAccounts(supabase),
+    getCategories(supabase),
+    getWorkspaces(supabase),
+    supabase
       .from('recurring_transactions')
       .select('*')
-      .order('next_due_date', { ascending: true });
-
-    if (!error && data && data.length > 0) {
-      return data.map((d: any) => ({
-        ...d,
-        account: accounts.find((a) => a.id === d.account_id),
-        category: categories.find((c) => c.id === d.category_id),
-        workspace: workspaces.find((w) => w.id === d.workspace_id),
-      }));
-    }
-  } catch {
-    // Fallback to local
-  }
-
-  return localRecurringStore
-    .map((r) => ({
-      ...r,
-      account: accounts.find((a) => a.id === r.account_id),
-      category: categories.find((c) => c.id === r.category_id),
-      workspace: workspaces.find((w) => w.id === r.workspace_id),
-    }))
-    .sort((a, b) => a.next_due_date.localeCompare(b.next_due_date));
-}
-
-export async function createRecurringTransaction(data: RecurringFormData): Promise<RecurringTransaction> {
-  const [accounts, categories, workspaces] = await Promise.all([
-    getAccounts(),
-    getCategories(),
-    getWorkspaces(),
+      .eq('user_id', user.id)
+      .order('next_due_date', { ascending: true }),
   ]);
 
-  const newId = `rec_${Date.now()}`;
-  const now = new Date().toISOString();
-
-  const newRec: RecurringTransaction = {
-    id: newId,
-    user_id: 'default_owner',
-    account_id: data.account_id,
-    description: data.description.trim(),
-    amount: Number(data.amount),
-    txn_type: data.txn_type,
-    category_id: data.category_id || null,
-    workspace_id: data.workspace_id || null,
-    frequency: data.frequency,
-    next_due_date: data.next_due_date,
-    last_seen_date: null,
-    is_active: true,
-    notes: data.notes?.trim() || null,
-    created_at: now,
-    updated_at: now,
-    account: accounts.find((a) => a.id === data.account_id),
-    category: categories.find((c) => c.id === data.category_id),
-    workspace: workspaces.find((w) => w.id === data.workspace_id),
-  };
-
-  try {
-    const supabase = createClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-
-    if (user) {
-      newRec.user_id = user.id;
-      await supabase.from('recurring_transactions').insert({
-        user_id: user.id,
-        account_id: newRec.account_id,
-        description: newRec.description,
-        amount: newRec.amount,
-        txn_type: newRec.txn_type,
-        category_id: newRec.category_id,
-        workspace_id: newRec.workspace_id,
-        frequency: newRec.frequency,
-        next_due_date: newRec.next_due_date,
-        is_active: true,
-        notes: newRec.notes,
-      });
-    }
-  } catch {
-    // Local fallback
+  if (error || !data) {
+    console.error('Error fetching recurring transactions:', error?.message);
+    return [];
   }
 
-  localRecurringStore.push(newRec);
-  return newRec;
+  return data.map((d: any) => ({
+    ...d,
+    amount: Number(d.amount),
+    account: accounts.find((a) => a.id === d.account_id),
+    category: categories.find((c) => c.id === d.category_id),
+    workspace: workspaces.find((w) => w.id === d.workspace_id),
+  }));
+}
+
+export async function createRecurringTransaction(
+  data: RecurringFormData,
+  client?: any
+): Promise<RecurringTransaction> {
+  const supabase = client || createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) {
+    throw new Error('Unauthorized');
+  }
+
+  const [accounts, categories, workspaces] = await Promise.all([
+    getAccounts(supabase),
+    getCategories(supabase),
+    getWorkspaces(supabase),
+  ]);
+
+  const { data: inserted, error } = await supabase
+    .from('recurring_transactions')
+    .insert({
+      user_id: user.id,
+      account_id: data.account_id,
+      description: data.description.trim(),
+      amount: Number(data.amount),
+      txn_type: data.txn_type,
+      category_id: data.category_id || null,
+      workspace_id: data.workspace_id || null,
+      frequency: data.frequency,
+      next_due_date: data.next_due_date,
+      is_active: true,
+      notes: data.notes?.trim() || null,
+    })
+    .select()
+    .single();
+
+  if (error || !inserted) {
+    throw new Error(error?.message || 'Failed to create recurring transaction.');
+  }
+
+  return {
+    ...inserted,
+    amount: Number(inserted.amount),
+    account: accounts.find((a) => a.id === inserted.account_id),
+    category: categories.find((c) => c.id === inserted.category_id),
+    workspace: workspaces.find((w) => w.id === inserted.workspace_id),
+  };
 }
 
 export async function updateRecurringTransaction(
   id: string,
-  updates: Partial<RecurringTransaction>
+  updates: Partial<RecurringTransaction>,
+  client?: any
 ): Promise<RecurringTransaction> {
-  const index = localRecurringStore.findIndex((r) => r.id === id);
-  if (index === -1) throw new Error('Recurring item not found');
+  const supabase = client || createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
 
-  const now = new Date().toISOString();
-  const updated: RecurringTransaction = {
-    ...localRecurringStore[index],
-    ...updates,
-    updated_at: now,
-  };
-  localRecurringStore[index] = updated;
-
-  try {
-    const supabase = createClient();
-    await supabase.from('recurring_transactions').update(updates).eq('id', id);
-  } catch {
-    // Local fallback
+  if (!user) {
+    throw new Error('Unauthorized');
   }
 
-  return updated;
+  const updatePayload: Record<string, any> = {
+    updated_at: new Date().toISOString(),
+  };
+
+  if (updates.account_id !== undefined) updatePayload.account_id = updates.account_id;
+  if (updates.description !== undefined) updatePayload.description = updates.description.trim();
+  if (updates.amount !== undefined) updatePayload.amount = Number(updates.amount);
+  if (updates.txn_type !== undefined) updatePayload.txn_type = updates.txn_type;
+  if (updates.category_id !== undefined) updatePayload.category_id = updates.category_id || null;
+  if (updates.workspace_id !== undefined) updatePayload.workspace_id = updates.workspace_id || null;
+  if (updates.frequency !== undefined) updatePayload.frequency = updates.frequency;
+  if (updates.next_due_date !== undefined) updatePayload.next_due_date = updates.next_due_date;
+  if (updates.last_seen_date !== undefined) updatePayload.last_seen_date = updates.last_seen_date;
+  if (updates.is_active !== undefined) updatePayload.is_active = updates.is_active;
+  if (updates.notes !== undefined) updatePayload.notes = updates.notes?.trim() || null;
+
+  const { data: updated, error } = await supabase
+    .from('recurring_transactions')
+    .update(updatePayload)
+    .eq('id', id)
+    .eq('user_id', user.id)
+    .select()
+    .single();
+
+  if (error || !updated) {
+    throw new Error(error?.message || 'Recurring item not found');
+  }
+
+  const [accounts, categories, workspaces] = await Promise.all([
+    getAccounts(supabase),
+    getCategories(supabase),
+    getWorkspaces(supabase),
+  ]);
+
+  return {
+    ...updated,
+    amount: Number(updated.amount),
+    account: accounts.find((a) => a.id === updated.account_id),
+    category: categories.find((c) => c.id === updated.category_id),
+    workspace: workspaces.find((w) => w.id === updated.workspace_id),
+  };
 }
 
-export async function toggleRecurringActive(id: string, is_active: boolean): Promise<RecurringTransaction> {
-  return updateRecurringTransaction(id, { is_active });
+export async function toggleRecurringActive(
+  id: string,
+  is_active: boolean,
+  client?: any
+): Promise<RecurringTransaction> {
+  return updateRecurringTransaction(id, { is_active }, client);
 }
 
-export async function deleteRecurringTransaction(id: string): Promise<boolean> {
-  localRecurringStore = localRecurringStore.filter((r) => r.id !== id);
+export async function deleteRecurringTransaction(
+  id: string,
+  client?: any
+): Promise<boolean> {
+  const supabase = client || createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
 
-  try {
-    const supabase = createClient();
-    await supabase.from('recurring_transactions').delete().eq('id', id);
-  } catch {
-    // Local fallback
+  if (!user) {
+    throw new Error('Unauthorized');
+  }
+
+  const { error } = await supabase
+    .from('recurring_transactions')
+    .delete()
+    .eq('id', id)
+    .eq('user_id', user.id);
+
+  if (error) {
+    throw new Error(error.message);
   }
 
   return true;
 }
 
-export async function getUpcomingRecurring(limit: number = 5): Promise<RecurringTransaction[]> {
-  const all = await getRecurringTransactions();
+export async function getUpcomingRecurring(
+  limit: number = 5,
+  client?: any
+): Promise<RecurringTransaction[]> {
+  const all = await getRecurringTransactions(client);
   return all.filter((r) => r.is_active).slice(0, limit);
 }

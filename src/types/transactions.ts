@@ -140,6 +140,9 @@ export interface ManualTransactionFormData {
 }
 
 export interface FinalizeImportResult {
+  imported?: number;
+  duplicates_skipped?: number;
+  replaced?: boolean;
   imported_count: number;
   duplicate_count: number;
   transfer_pairs_found: number;

@@ -31,25 +31,29 @@ export interface GeneratedMonthlyReport {
  */
 export async function generateMonthlyReportWithAI(
   targetMonth?: string,
-  profileName?: string
+  profileName?: string,
+  client?: any
 ): Promise<GeneratedMonthlyReport> {
   // Determine month (default to current month YYYY-MM or last active month)
   const month = targetMonth || new Date().toISOString().slice(0, 7);
 
   // Fetch ledger transactions
-  const ledger = await getTransactions({
-    page: 1,
-    pageSize: 300,
-    filters: {
-      startDate: `${month}-01`,
-      endDate: `${month}-31`,
-      accountIds: [],
-      categoryIds: [],
-      workspaceId: 'all',
-      txnType: 'all',
-      search: '',
+  const ledger = await getTransactions(
+    {
+      page: 1,
+      pageSize: 300,
+      filters: {
+        startDate: `${month}-01`,
+        endDate: `${month}-31`,
+        accountIds: [],
+        categoryIds: [],
+        workspaceId: 'all',
+        txnType: 'all',
+        search: '',
+      },
     },
-  });
+    client
+  );
 
   const txns = ledger.transactions;
 

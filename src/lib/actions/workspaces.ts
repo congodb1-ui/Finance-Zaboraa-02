@@ -1,135 +1,122 @@
-'use server';
-
-import { createClient } from '../supabase/server';
+import { createClient } from '../supabase/client';
 import type { Workspace, WorkspaceFormData } from '../../types/workspaces';
 
-let localWorkspacesStore: Workspace[] = [
-  {
-    id: 'ws_personal',
-    user_id: 'default',
-    name: 'Personal',
-    description: 'Personal lifestyle, household bills, groceries and investments',
-    color_index: 0,
-    created_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
-  },
-  {
-    id: 'ws_business',
-    user_id: 'default',
-    name: 'Business',
-    description: 'Freelance consulting, professional retainers, office rent and vendors',
-    color_index: 1,
-    created_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
-  },
-];
+export async function getWorkspaces(client?: any): Promise<Workspace[]> {
+  const supabase = client || createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
 
-export async function getWorkspaces(): Promise<Workspace[]> {
-  try {
-    const supabase = createClient();
-    const { data: { user } } = await supabase.auth.getUser();
-
-    if (user) {
-      const { data, error } = await supabase
-        .from('workspaces')
-        .select('*')
-        .order('name', { ascending: true });
-
-      if (!error && data && data.length > 0) return data;
-    }
-  } catch {
-    // Continue
+  if (!user) {
+    return [];
   }
-  return [...localWorkspacesStore];
+
+  const { data, error } = await supabase
+    .from('workspaces')
+    .select('*')
+    .eq('user_id', user.id)
+    .order('name', { ascending: true });
+
+  if (error || !data) {
+    console.error('Error fetching workspaces:', error?.message);
+    return [];
+  }
+
+  return data;
 }
 
-export async function createWorkspace(data: WorkspaceFormData): Promise<Workspace> {
-  if (!data.name?.trim()) throw new Error('Workspace name is required.');
+export async function createWorkspace(
+  data: WorkspaceFormData,
+  client?: any
+): Promise<Workspace> {
+  const supabase = client || createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
 
-  try {
-    const supabase = createClient();
-    const { data: { user } } = await supabase.auth.getUser();
-
-    if (user) {
-      const { data: inserted, error } = await supabase
-        .from('workspaces')
-        .insert({
-          user_id: user.id,
-          name: data.name.trim(),
-          description: data.description?.trim() || null,
-          color_index: data.color_index ?? 0,
-        })
-        .select()
-        .single();
-
-      if (!error && inserted) return inserted;
-    }
-  } catch {
-    // Continue
+  if (!user) {
+    throw new Error('Unauthorized');
   }
 
-  const newWs: Workspace = {
-    id: `ws_${Date.now()}`,
-    user_id: 'default',
-    name: data.name.trim(),
-    description: data.description?.trim() || null,
-    color_index: data.color_index ?? 0,
-    created_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
-  };
-  localWorkspacesStore.push(newWs);
-  return newWs;
+  if (!data.name?.trim()) throw new Error('Workspace name is required.');
+
+  const { data: inserted, error } = await supabase
+    .from('workspaces')
+    .insert({
+      user_id: user.id,
+      name: data.name.trim(),
+      description: data.description?.trim() || null,
+      color_index: data.color_index ?? 0,
+    })
+    .select()
+    .single();
+
+  if (error || !inserted) {
+    throw new Error(error?.message || 'Failed to create workspace.');
+  }
+
+  return inserted;
 }
 
 export async function updateWorkspace(
   id: string,
-  data: Partial<WorkspaceFormData>
+  data: Partial<WorkspaceFormData>,
+  client?: any
 ): Promise<Workspace> {
-  try {
-    const supabase = createClient();
-    const { data: { user } } = await supabase.auth.getUser();
+  const supabase = client || createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
 
-    if (user) {
-      const { data: updated, error } = await supabase
-        .from('workspaces')
-        .update({
-          ...data,
-          updated_at: new Date().toISOString(),
-        })
-        .eq('id', id)
-        .select()
-        .single();
-
-      if (!error && updated) return updated;
-    }
-  } catch {
-    // Continue
+  if (!user) {
+    throw new Error('Unauthorized');
   }
 
-  const idx = localWorkspacesStore.findIndex((w) => w.id === id);
-  if (idx === -1) throw new Error('Workspace not found.');
-
-  localWorkspacesStore[idx] = {
-    ...localWorkspacesStore[idx],
-    ...data,
+  const updatePayload: Record<string, any> = {
     updated_at: new Date().toISOString(),
   };
-  return localWorkspacesStore[idx];
-}
 
-export async function deleteWorkspace(id: string): Promise<{ success: boolean; error?: string }> {
-  try {
-    const supabase = createClient();
-    const { data: { user } } = await supabase.auth.getUser();
+  if (data.name !== undefined) updatePayload.name = data.name.trim();
+  if (data.description !== undefined) updatePayload.description = data.description?.trim() || null;
+  if (data.color_index !== undefined) updatePayload.color_index = data.color_index;
 
-    if (user) {
-      const { error } = await supabase.from('workspaces').delete().eq('id', id);
-      if (error) return { success: false, error: error.message };
-    }
-  } catch {
-    // Continue
+  const { data: updated, error } = await supabase
+    .from('workspaces')
+    .update(updatePayload)
+    .eq('id', id)
+    .eq('user_id', user.id)
+    .select()
+    .single();
+
+  if (error || !updated) {
+    throw new Error(error?.message || 'Workspace not found.');
   }
 
-  localWorkspacesStore = localWorkspacesStore.filter((w) => w.id !== id);
+  return updated;
+}
+
+export async function deleteWorkspace(
+  id: string,
+  client?: any
+): Promise<{ success: boolean; error?: string }> {
+  const supabase = client || createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) {
+    throw new Error('Unauthorized');
+  }
+
+  const { error } = await supabase
+    .from('workspaces')
+    .delete()
+    .eq('id', id)
+    .eq('user_id', user.id);
+
+  if (error) {
+    return { success: false, error: error.message };
+  }
+
   return { success: true };
 }

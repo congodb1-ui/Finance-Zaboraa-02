@@ -11,476 +11,285 @@ import { findFirstMatchingRule } from '../rules-engine';
 import { getAccounts } from './accounts';
 import { getCategories } from './categories';
 import { getWorkspaces } from './workspaces';
-import { getUploadDetails, getUploads } from './upload';
+import { getUploadDetails } from './upload';
 
-// Seed initial audit log entries
-let localAuditLogStore: AuditLogEntry[] = [
-  {
-    id: 'aud_seed_1',
-    user_id: 'default_owner',
-    table_name: 'transactions',
-    record_id: 'tx_hdfc_01',
-    action: 'insert',
-    old_data: null,
-    new_data: { id: 'tx_hdfc_01', description: 'Swiggy Bangalore Delivery', debit: 840.0 },
-    created_at: '2026-11-01T10:30:00.000Z',
-  },
-  {
-    id: 'aud_seed_2',
-    user_id: 'default_owner',
-    table_name: 'transactions',
-    record_id: 'tx_hdfc_02',
-    action: 'insert',
-    old_data: null,
-    new_data: { id: 'tx_hdfc_02', description: 'Client Consulting Retainer', credit: 125000.0 },
-    created_at: '2026-11-01T10:30:00.000Z',
-  },
-];
+const TRANSACTION_SELECT =
+  '*, accounts(id, name, bank_name, account_number_last4), categories(id, name, color_index, icon), workspaces(id, name, color_index), statement_uploads(id, file_name)';
 
-// Seed initial transactions representing an authentic Indian FY ledger
-let localTransactionsStore: Transaction[] = [
-  {
-    id: 'tx_hdfc_01',
-    user_id: 'default_owner',
-    account_id: 'acc_hdfc_01',
-    upload_id: 'up_hdfc_oct26',
-    txn_date: '2026-10-28',
-    description: 'Swiggy Bangalore Delivery',
-    raw_description: 'UPI/48291048/SWIGGY/BLR/FOOD',
-    debit: 840.0,
-    credit: null,
-    balance: 485200.0,
-    reference_number: 'UPI48291048',
-    category_id: 'cat_1', // Food & Dining
-    workspace_id: 'ws_personal',
-    txn_type: 'expense',
-    is_transfer: false,
-    transfer_pair_id: null,
-    notes: 'Dinner order with team',
-    tags: ['food', 'swiggy'],
-    is_manual: false,
-    source_staged_id: 'stg_1',
-    created_at: '2026-11-01T10:30:00.000Z',
-    updated_at: '2026-11-01T10:30:00.000Z',
-    account: {
-      id: 'acc_hdfc_01',
-      name: 'HDFC Main Savings',
-      bank_name: 'HDFC Bank',
-      account_number_last4: '4819',
-    },
-    category: {
-      id: 'cat_1',
-      name: 'Food & Dining',
-      color_index: 5,
-      icon: 'Utensils',
-    },
-    workspace: {
-      id: 'ws_personal',
-      name: 'Personal',
-      color_index: 0,
-    },
-  },
-  {
-    id: 'tx_hdfc_02',
-    user_id: 'default_owner',
-    account_id: 'acc_hdfc_01',
-    upload_id: 'up_hdfc_oct26',
-    txn_date: '2026-10-24',
-    description: 'Client Consulting Retainer',
-    raw_description: 'NEFT/N102934/APEXIND/CONSULT',
-    debit: null,
-    credit: 125000.0,
-    balance: 486040.0,
-    reference_number: 'NEFT102934',
-    category_id: 'cat_6', // Freelance / Consulting
-    workspace_id: 'ws_business',
-    txn_type: 'income',
-    is_transfer: false,
-    transfer_pair_id: null,
-    notes: 'Monthly strategic advisory retainer Q3',
-    tags: ['consulting', 'retainer'],
-    is_manual: false,
-    source_staged_id: 'stg_2',
-    created_at: '2026-11-01T10:30:00.000Z',
-    updated_at: '2026-11-01T10:30:00.000Z',
-    account: {
-      id: 'acc_hdfc_01',
-      name: 'HDFC Main Savings',
-      bank_name: 'HDFC Bank',
-      account_number_last4: '4819',
-    },
-    category: {
-      id: 'cat_6',
-      name: 'Freelance / Consulting',
-      color_index: 0,
-      icon: 'Laptop',
-    },
-    workspace: {
-      id: 'ws_business',
-      name: 'Business',
-      color_index: 1,
-    },
-  },
-  {
-    id: 'tx_hdfc_03',
-    user_id: 'default_owner',
-    account_id: 'acc_hdfc_01',
-    upload_id: 'up_hdfc_oct26',
-    txn_date: '2026-10-18',
-    description: 'WeWork Coworking Office Rent',
-    raw_description: 'UPI/48910293/WEWORK/RENT',
-    debit: 32000.0,
-    credit: null,
-    balance: 361040.0,
-    reference_number: 'UPI48910293',
-    category_id: 'cat_7',
-    workspace_id: 'ws_business',
-    txn_type: 'expense',
-    is_transfer: false,
-    transfer_pair_id: null,
-    notes: 'Dedicated desk private suite monthly fee',
-    tags: ['office', 'rent'],
-    is_manual: false,
-    source_staged_id: 'stg_3',
-    is_recurring: true,
-    recurring_id: 'rec_01',
-    created_at: '2026-11-01T10:30:00.000Z',
-    updated_at: '2026-11-01T10:30:00.000Z',
-    account: {
-      id: 'acc_hdfc_01',
-      name: 'HDFC Main Savings',
-      bank_name: 'HDFC Bank',
-      account_number_last4: '4819',
-    },
-    category: {
-      id: 'cat_7',
-      name: 'Client Payment',
-      color_index: 0,
-      icon: 'Building2',
-    },
-    workspace: {
-      id: 'ws_business',
-      name: 'Business',
-      color_index: 1,
-    },
-  },
-  {
-    id: 'tx_transfer_leg_1',
-    user_id: 'default_owner',
-    account_id: 'acc_hdfc_01',
-    upload_id: 'up_hdfc_oct26',
-    txn_date: '2026-10-10',
-    description: 'Transfer to Kotak Card Bill',
-    raw_description: 'IMPS/KOTAKCC/BILLPAY/7021',
-    debit: 45000.0,
-    credit: null,
-    balance: 393040.0,
-    reference_number: 'IMPS702100',
-    category_id: null,
-    workspace_id: null,
-    txn_type: 'transfer',
-    is_transfer: true,
-    transfer_pair_id: 'pair_oct_transfer_01',
-    notes: 'Self account transfer for credit card settlement',
-    tags: ['transfer', 'credit-card'],
-    is_manual: false,
-    source_staged_id: 'stg_4',
-    created_at: '2026-11-01T10:30:00.000Z',
-    updated_at: '2026-11-01T10:30:00.000Z',
-    account: {
-      id: 'acc_hdfc_01',
-      name: 'HDFC Main Savings',
-      bank_name: 'HDFC Bank',
-      account_number_last4: '4819',
-    },
-  },
-  {
-    id: 'tx_transfer_leg_2',
-    user_id: 'default_owner',
-    account_id: 'acc_kotak_04',
-    upload_id: null,
-    txn_date: '2026-10-10',
-    description: 'Payment Received from HDFC Bank',
-    raw_description: 'IMPS/INW/HDFC/BILLPAY/7021',
-    debit: null,
-    credit: 45000.0,
-    balance: -12400.0, // Negative credit card balance or negative balance test case
-    reference_number: 'IMPS702100',
-    category_id: null,
-    workspace_id: null,
-    txn_type: 'transfer',
-    is_transfer: true,
-    transfer_pair_id: 'pair_oct_transfer_01',
-    notes: 'Credit card bill receipt',
-    tags: ['transfer', 'credit-card'],
-    is_manual: false,
-    source_staged_id: null,
-    created_at: '2026-11-01T10:30:00.000Z',
-    updated_at: '2026-11-01T10:30:00.000Z',
-    account: {
-      id: 'acc_kotak_04',
-      name: 'Kotak White Credit Card',
-      bank_name: 'Kotak Mahindra Bank',
-      account_number_last4: '7021',
-    },
-  },
-  {
-    id: 'tx_sbi_salary_01',
-    user_id: 'default_owner',
-    account_id: 'acc_sbi_02',
-    upload_id: 'up_sbi_sep26',
-    txn_date: '2026-09-30',
-    description: 'Monthly Corporate Payroll Salary',
-    raw_description: 'ACH/PAYROLL/CORP/SEP2026',
-    debit: null,
-    credit: 185000.0,
-    balance: 215400.0,
-    reference_number: 'ACH920194',
-    category_id: 'cat_5', // Salary
-    workspace_id: 'ws_personal',
-    txn_type: 'income',
-    is_transfer: false,
-    transfer_pair_id: null,
-    notes: 'September month salary credited',
-    tags: ['salary', 'corporate'],
-    is_manual: false,
-    source_staged_id: null,
-    created_at: '2026-10-02T14:15:00.000Z',
-    updated_at: '2026-10-02T14:15:00.000Z',
-    account: {
-      id: 'acc_sbi_02',
-      name: 'SBI Salary Account',
-      bank_name: 'State Bank of India',
-      account_number_last4: '9102',
-    },
-    category: {
-      id: 'cat_5',
-      name: 'Salary',
-      color_index: 1,
-      icon: 'Briefcase',
-    },
-    workspace: {
-      id: 'ws_personal',
-      name: 'Personal',
-      color_index: 0,
-    },
-  },
-  {
-    id: 'tx_manual_sample',
-    user_id: 'default_owner',
-    account_id: 'acc_hdfc_01',
-    upload_id: null,
-    txn_date: '2026-11-05',
-    description: 'Cash Petty Office Supplies',
-    raw_description: 'Manual cash disbursement at stationery store',
-    debit: 1250.0,
-    credit: null,
-    balance: 483950.0,
-    reference_number: 'CASH-REC-102',
-    category_id: 'cat_7',
-    workspace_id: 'ws_business',
-    txn_type: 'expense',
-    is_transfer: false,
-    transfer_pair_id: null,
-    notes: 'Printed client decks and spiral bindings',
-    tags: ['manual', 'stationery'],
-    is_manual: true,
-    source_staged_id: null,
-    created_at: '2026-11-05T12:00:00.000Z',
-    updated_at: '2026-11-05T12:00:00.000Z',
-    account: {
-      id: 'acc_hdfc_01',
-      name: 'HDFC Main Savings',
-      bank_name: 'HDFC Bank',
-      account_number_last4: '4819',
-    },
-    category: {
-      id: 'cat_7',
-      name: 'Client Payment',
-      color_index: 0,
-      icon: 'Building2',
-    },
-    workspace: {
-      id: 'ws_business',
-      name: 'Business',
-      color_index: 1,
-    },
-  },
-];
+function mapDbTransaction(row: any): Transaction {
+  return {
+    ...row,
+    debit: row.debit !== null && row.debit !== undefined ? Number(row.debit) : null,
+    credit: row.credit !== null && row.credit !== undefined ? Number(row.credit) : null,
+    balance: row.balance !== null && row.balance !== undefined ? Number(row.balance) : null,
+    account: row.accounts || undefined,
+    category: row.categories || undefined,
+    workspace: row.workspaces || undefined,
+    upload: row.statement_uploads || undefined,
+  };
+}
 
 /**
  * Normalizes description for multiset deduplication comparison:
- * lowercase and collapse all contiguous whitespace
+ * lowercase and strip spaces & special characters.
  */
 export function normalizeDescription(desc: string): string {
-  return (desc || '').toLowerCase().replace(/\s+/g, ' ').trim();
+  return (desc || '').toLowerCase().replace(/[^a-z0-9]/g, '');
 }
 
 /**
- * Computes deduplication key for a transaction row
+ * Computes deduplication key for a transaction row (PRD §4.3 Layer 3):
+ * - When UTR/reference_number present: account_id + txn_date + amount + utr
+ * - Otherwise: account_id + txn_date + amount + normalizedDescription
  */
-export function getDedupKey(date: string, desc: string, debit: number | null, credit: number | null): string {
+export function getDedupKey(
+  date: string,
+  desc: string,
+  debit: number | null,
+  credit: number | null,
+  accountId: string = '',
+  utr: string | null = null
+): string {
+  const amtVal =
+    debit !== null && debit !== undefined
+      ? `D:${Number(debit).toFixed(2)}`
+      : credit !== null && credit !== undefined
+      ? `C:${Number(credit).toFixed(2)}`
+      : '0.00';
+
+  const cleanUtr = (utr || '').trim().toLowerCase().replace(/\s+/g, '');
+  if (cleanUtr) {
+    return `${accountId}|${date}|${amtVal}|utr:${cleanUtr}`;
+  }
   const normDesc = normalizeDescription(desc);
-  const dVal = debit !== null && debit !== undefined ? Number(debit).toFixed(2) : '';
-  const cVal = credit !== null && credit !== undefined ? Number(credit).toFixed(2) : '';
-  return `${date}|${normDesc}|${dVal}|${cVal}`;
+  return `${accountId}|${date}|${amtVal}|desc:${normDesc}`;
 }
 
 /**
- * Append audit log entry (Append-only guarantee)
+ * Append audit log entry (Append-only guarantee).
+ * Uses service-role admin client when running server-side if configured,
+ * and falls back cleanly if audit_log is SELECT-only for regular clients.
  */
-export async function writeAuditLog(entry: {
-  table_name: string;
-  record_id: string;
-  action: 'insert' | 'update' | 'delete';
-  old_data?: any;
-  new_data?: any;
-}): Promise<AuditLogEntry> {
-  const auditRow: AuditLogEntry = {
-    id: `aud_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
-    user_id: 'default_owner',
-    table_name: entry.table_name,
-    record_id: entry.record_id,
-    action: entry.action,
-    old_data: entry.old_data || null,
-    new_data: entry.new_data || null,
-    created_at: new Date().toISOString(),
-  };
+export async function writeAuditLog(
+  entry: {
+    table_name: string;
+    record_id: string;
+    action: 'insert' | 'update' | 'delete';
+    old_data?: any;
+    new_data?: any;
+  },
+  client?: any
+): Promise<AuditLogEntry | null> {
+  const supabase = client || createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
 
-  try {
-    const supabase = createClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-
-    if (user) {
-      auditRow.user_id = user.id;
-      await supabase.from('audit_log').insert({
-        user_id: user.id,
-        table_name: entry.table_name,
-        record_id: entry.record_id,
-        action: entry.action,
-        old_data: entry.old_data || null,
-        new_data: entry.new_data || null,
-      });
-    }
-  } catch {
-    // In-memory fallback
+  if (!user) {
+    throw new Error('Unauthorized');
   }
 
-  localAuditLogStore.push(auditRow);
-  return auditRow;
+  let writerClient = supabase;
+  if (typeof window === 'undefined' && process.env.SUPABASE_SERVICE_ROLE_KEY) {
+    try {
+      const { createAdminClient } = await import('../supabase/server');
+      writerClient = createAdminClient();
+    } catch {
+      writerClient = supabase;
+    }
+  }
+
+  const { data, error } = await writerClient
+    .from('audit_log')
+    .insert({
+      user_id: user.id,
+      table_name: entry.table_name,
+      record_id: entry.record_id,
+      action: entry.action,
+      old_data: entry.old_data || null,
+      new_data: entry.new_data || null,
+    })
+    .select()
+    .maybeSingle();
+
+  if (error) {
+    // Do not fail parent ledger operations if audit_log enforces server-only inserts
+    console.warn('Audit log insert notice:', error.message);
+    return null;
+  }
+
+  return data as AuditLogEntry | null;
 }
 
 /**
- * Retrieve Audit Log for auditing
+ * Retrieve Audit Log for current user
  */
-export async function getAuditLogs(): Promise<AuditLogEntry[]> {
-  return [...localAuditLogStore].reverse();
+export async function getAuditLogs(client?: any): Promise<AuditLogEntry[]> {
+  const supabase = client || createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) {
+    return [];
+  }
+
+  const { data, error } = await supabase
+    .from('audit_log')
+    .select('*')
+    .eq('user_id', user.id)
+    .order('created_at', { ascending: false })
+    .limit(500);
+
+  if (error || !data) {
+    console.error('Error fetching audit logs:', error?.message);
+    return [];
+  }
+
+  return data as AuditLogEntry[];
 }
 
 /**
- * STEP 1-9: Finalize / Commit Statement Upload Pipeline
- * Implements multiset deduplication, transaction rules engine, batch insert,
- * transfer pair discovery, audit log entries, and upload status commitment.
+ * STEP 1-10: Finalize / Commit Statement Upload Pipeline
+ * Implements DB-backed PRD §4.3 Layer 3 multiset deduplication,
+ * transaction rules engine, batch insert, transfer pair discovery,
+ * audit log entries, and upload status commitment.
  */
 export async function commitUploadTransactions(
   uploadId: string,
-  replacePreviousId?: string
+  replacePreviousId?: string,
+  client?: any
 ): Promise<FinalizeImportResult> {
   // STEP 1 — Authenticate
-  const supabase = createClient();
-  let userId = 'default_owner';
-  try {
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-    if (user) userId = user.id;
-  } catch {
-    // Local preview mode
+  const supabase = client || createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) {
+    throw new Error('Unauthorized');
   }
 
   // STEP 2 — Load staged rows for the given upload_id
-  const details = await getUploadDetails(uploadId);
+  const details = await getUploadDetails(uploadId, supabase);
   const upload = details.upload;
-  if (!upload) throw new Error(`Upload not found for ID: ${uploadId}`);
+  if (!upload) {
+    throw new Error(`Upload not found for ID: ${uploadId}`);
+  }
   const stagedRows = details.transactions;
 
   if (stagedRows.length === 0) {
     throw new Error('No staged transactions available to commit.');
   }
 
-  // If replacing a previous upload: mark old as replaced and delete its transactions
+  // If replacing a previous upload: delete all transactions for that upload_id first,
+  // then import all new rows without deduplicating against the deleted set.
   if (replacePreviousId) {
-    const existingUploads = await getUploads();
-    const prev = existingUploads.find((u) => u.id === replacePreviousId);
-    if (prev) {
-      prev.status = 'replaced';
-      prev.updated_at = new Date().toISOString();
-      // Remove old transactions from replaced upload
-      localTransactionsStore = localTransactionsStore.filter((t) => t.upload_id !== replacePreviousId);
+    const { error: delPrevErr } = await supabase
+      .from('transactions')
+      .delete()
+      .eq('upload_id', replacePreviousId)
+      .eq('user_id', user.id);
+
+    if (delPrevErr) {
+      throw new Error(`Failed to clear replaced upload transactions: ${delPrevErr.message}`);
     }
+
+    await supabase
+      .from('statement_uploads')
+      .update({
+        status: 'replaced',
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', replacePreviousId)
+      .eq('user_id', user.id);
   }
 
-  // STEP 3 — Multiset duplicate detection
-  // For each staged row, check against existing transactions for the same account_id:
-  // Match criteria: same txn_date + same normalized description + same debit/credit amount
-  // Multiset rule: If appears N times in statement and M times in transactions, mark (N - M) new and remainder duplicate!
-  const accountExistingTxns = localTransactionsStore.filter(
-    (t) => t.account_id === upload.account_id && t.upload_id !== uploadId
-  );
+  // Compute date range of staged batch
+  let minDate = stagedRows[0].txn_date;
+  let maxDate = stagedRows[0].txn_date;
+  for (const row of stagedRows) {
+    if (row.txn_date < minDate) minDate = row.txn_date;
+    if (row.txn_date > maxDate) maxDate = row.txn_date;
+  }
 
-  // Map of dedupKey -> array of matching existing transactions
-  const existingPool = new Map<string, Transaction[]>();
-  for (const t of accountExistingTxns) {
-    const key = getDedupKey(t.txn_date, t.description, t.debit, t.credit);
+  // STEP 3 — DB-backed Multiset duplicate detection (PRD §4.3 Layer 3)
+  // Query existing transactions for same account_id and date range of new batch
+  const { data: existingTxns, error: existingErr } = await supabase
+    .from('transactions')
+    .select('id, account_id, txn_date, description, debit, credit, reference_number')
+    .eq('user_id', user.id)
+    .eq('account_id', upload.account_id)
+    .neq('upload_id', uploadId)
+    .gte('txn_date', minDate)
+    .lte('txn_date', maxDate);
+
+  if (existingErr) {
+    throw new Error(`Failed to query existing transactions for deduplication: ${existingErr.message}`);
+  }
+
+  // Count occurrences per dedup key in DB
+  const existingPool = new Map<string, string[]>();
+  for (const t of existingTxns || []) {
+    const key = getDedupKey(
+      t.txn_date,
+      t.description,
+      t.debit !== null ? Number(t.debit) : null,
+      t.credit !== null ? Number(t.credit) : null,
+      t.account_id,
+      t.reference_number
+    );
     const list = existingPool.get(key) || [];
-    list.push(t);
+    list.push(t.id);
     existingPool.set(key, list);
   }
 
   let duplicateCount = 0;
   const nonDuplicateStaged: typeof stagedRows = [];
+  const duplicateUpdates: Array<{ id: string; duplicate_of_id: string }> = [];
 
   for (const staged of stagedRows) {
-    const key = getDedupKey(staged.txn_date, staged.description, staged.debit, staged.credit);
+    const key = getDedupKey(
+      staged.txn_date,
+      staged.description,
+      staged.debit,
+      staged.credit,
+      upload.account_id,
+      staged.reference_number
+    );
     const existingList = existingPool.get(key);
 
     if (existingList && existingList.length > 0) {
-      // Consume one of the M existing matches (Multiset Dedup)
-      const matchedTx = existingList.shift()!;
-      staged.is_duplicate = true;
-      staged.duplicate_of_id = matchedTx.id;
+      // Consume one DB occurrence; only excess rows beyond DB count are imported
+      const matchedTxId = existingList.shift()!;
       duplicateCount++;
+      duplicateUpdates.push({ id: staged.id, duplicate_of_id: matchedTxId });
     } else {
-      staged.is_duplicate = false;
-      staged.duplicate_of_id = null;
       nonDuplicateStaged.push(staged);
     }
   }
 
-  // STEP 4 — Apply transaction rules
-  // For each non-duplicate staged row, run transaction_rules in priority order (lowest number = highest priority).
-  // Apply first matching rule only. Set category_id, workspace_id, txn_type, tags from matched rule.
-  const activeRules = await getRules();
-  const accounts = await getAccounts();
-  const categories = await getCategories();
-  const workspaces = await getWorkspaces();
+  // Mark duplicate staged rows in DB
+  for (const dup of duplicateUpdates) {
+    await supabase
+      .from('staged_transactions')
+      .update({ is_duplicate: true, duplicate_of_id: dup.duplicate_of_id })
+      .eq('id', dup.id)
+      .eq('user_id', user.id);
+  }
 
-  const accountInfo = accounts.find((a) => a.id === upload.account_id);
+  // STEP 4 — Apply transaction rules in priority order
+  const [activeRules, categories] = await Promise.all([
+    getRules(supabase),
+    getCategories(supabase),
+  ]);
 
-  // STEP 5 — Insert into transactions
-  // Batch insert all non-duplicate staged rows. Set source_staged_id to the staged row's id for audit trail.
-  const newlyInsertedTransactions: Transaction[] = [];
-
-  for (const row of nonDuplicateStaged) {
-    // Determine default txn_type based on debit vs credit
+  const insertPayloads = nonDuplicateStaged.map((row) => {
     let determinedType: Transaction['txn_type'] = row.debit ? 'expense' : 'income';
     let assignedCategoryId: string | null = null;
     let assignedWorkspaceId: string | null = null;
     let assignedTags: string[] | null = null;
 
-    // Check rules
     const matchedRule = findFirstMatchingRule(activeRules, {
       description: row.description,
       reference_number: row.reference_number,
@@ -498,12 +307,8 @@ export async function commitUploadTransactions(
       }
     }
 
-    const matchedCat = categories.find((c) => c.id === assignedCategoryId);
-    const matchedWs = workspaces.find((w) => w.id === assignedWorkspaceId);
-
-    const newTx: Transaction = {
-      id: `tx_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
-      user_id: userId,
+    return {
+      user_id: user.id,
       account_id: upload.account_id,
       upload_id: upload.id,
       txn_date: row.txn_date,
@@ -522,51 +327,44 @@ export async function commitUploadTransactions(
       tags: assignedTags,
       is_manual: false,
       source_staged_id: row.id,
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-      account: accountInfo
-        ? {
-            id: accountInfo.id,
-            name: accountInfo.name,
-            bank_name: accountInfo.bank_name,
-            account_number_last4: accountInfo.account_number_last4,
-          }
-        : undefined,
-      category: matchedCat
-        ? {
-            id: matchedCat.id,
-            name: matchedCat.name,
-            color_index: matchedCat.color_index,
-            icon: matchedCat.icon,
-          }
-        : undefined,
-      workspace: matchedWs
-        ? {
-            id: matchedWs.id,
-            name: matchedWs.name,
-            color_index: matchedWs.color_index,
-          }
-        : undefined,
-      upload: {
-        id: upload.id,
-        file_name: upload.file_name,
-      },
     };
+  });
 
-    newlyInsertedTransactions.push(newTx);
+  // STEP 5 — Batch insert into transactions
+  const newlyInsertedTransactions: Transaction[] = [];
+  const CHUNK_SIZE = 500;
+
+  for (let i = 0; i < insertPayloads.length; i += CHUNK_SIZE) {
+    const chunk = insertPayloads.slice(i, i + CHUNK_SIZE);
+    const { data: insertedRows, error: insertErr } = await supabase
+      .from('transactions')
+      .insert(chunk)
+      .select(TRANSACTION_SELECT);
+
+    if (insertErr) {
+      throw new Error(`Failed to commit transactions: ${insertErr.message}`);
+    }
+    if (insertedRows) {
+      for (const r of insertedRows) {
+        newlyInsertedTransactions.push(mapDbTransaction(r));
+      }
+    }
   }
 
-  // STEP 5b — Passive Recurring Transaction Matching (Batch 7)
+  // STEP 5b — Passive Recurring Transaction Matching
   try {
-    const { matchAndAdvanceRecurring } = await import('./recurring.ts');
+    const { matchAndAdvanceRecurring } = await import('./recurring');
     for (const newTx of newlyInsertedTransactions) {
       const amt = newTx.debit ?? newTx.credit ?? 0;
-      const matchedRec = await matchAndAdvanceRecurring({
-        description: newTx.description,
-        amount: amt,
-        txn_date: newTx.txn_date,
-        account_id: newTx.account_id,
-      });
+      const matchedRec = await matchAndAdvanceRecurring(
+        {
+          description: newTx.description,
+          amount: amt,
+          txn_date: newTx.txn_date,
+          account_id: newTx.account_id,
+        },
+        supabase
+      );
       if (matchedRec) {
         newTx.is_recurring = true;
         newTx.recurring_id = matchedRec.id;
@@ -576,123 +374,175 @@ export async function commitUploadTransactions(
     console.warn('Recurring match notice:', recErr);
   }
 
-  // Prepend newly inserted to local ledger
-  localTransactionsStore.unshift(...newlyInsertedTransactions);
-
-  // STEP 6 — Detect transfers
-  // Match: two transactions within ±1 day, same absolute amount, one debit one credit, in different accounts
+  // STEP 6 — Detect transfers across other accounts within ±1.5 days
   let transferPairsFound = 0;
-  const allCurrent = localTransactionsStore;
+  if (newlyInsertedTransactions.length > 0) {
+    const minWindow = new Date(minDate);
+    minWindow.setDate(minWindow.getDate() - 2);
+    const maxWindow = new Date(maxDate);
+    maxWindow.setDate(maxWindow.getDate() + 2);
 
-  for (const newTx of newlyInsertedTransactions) {
-    if (newTx.is_transfer) continue;
+    const { data: candidateTxns } = await supabase
+      .from('transactions')
+      .select('*')
+      .eq('user_id', user.id)
+      .neq('account_id', upload.account_id)
+      .eq('is_transfer', false)
+      .gte('txn_date', minWindow.toISOString().split('T')[0])
+      .lte('txn_date', maxWindow.toISOString().split('T')[0]);
 
-    const newAmt = newTx.debit ?? newTx.credit;
-    if (!newAmt) continue;
-    const isNewDebit = newTx.debit !== null && newTx.debit !== undefined;
-    const newDateMs = new Date(newTx.txn_date).getTime();
+    const otherCandidates = (candidateTxns || []).map((r: any) => mapDbTransaction(r));
+    const pairedOtherIds = new Set<string>();
 
-    // Look for complement in all transactions
-    for (const otherTx of allCurrent) {
-      if (otherTx.id === newTx.id) continue;
-      if (otherTx.is_transfer && otherTx.transfer_pair_id) continue;
-      if (otherTx.account_id === newTx.account_id) continue; // Must be in different accounts!
+    for (const newTx of newlyInsertedTransactions) {
+      if (newTx.is_transfer) continue;
 
-      const otherAmt = otherTx.debit ?? otherTx.credit;
-      if (!otherAmt) continue;
-      if (Math.abs(newAmt - otherAmt) > 0.01) continue; // Same absolute amount
+      const newAmt = newTx.debit ?? newTx.credit;
+      if (!newAmt) continue;
+      const isNewDebit = newTx.debit !== null && newTx.debit !== undefined;
+      const newDateMs = new Date(newTx.txn_date).getTime();
 
-      const isOtherDebit = otherTx.debit !== null && otherTx.debit !== undefined;
-      // One debit, one credit
-      if (isNewDebit === isOtherDebit) continue;
+      for (const otherTx of otherCandidates) {
+        if (otherTx.id === newTx.id || pairedOtherIds.has(otherTx.id)) continue;
+        if (otherTx.is_transfer && otherTx.transfer_pair_id) continue;
+        if (otherTx.account_id === newTx.account_id) continue;
 
-      // Within ±1 day (86,400,000 ms)
-      const otherDateMs = new Date(otherTx.txn_date).getTime();
-      const diffMs = Math.abs(newDateMs - otherDateMs);
-      if (diffMs <= 86400000 * 1.5) {
-        // Linked transfer pair found!
-        const pairId = `pair_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
-        newTx.is_transfer = true;
-        newTx.transfer_pair_id = pairId;
-        newTx.txn_type = 'transfer';
-        newTx.category_id = null; // Do not auto-categorize transfers
-        newTx.category = undefined;
+        const otherAmt = otherTx.debit ?? otherTx.credit;
+        if (!otherAmt || Math.abs(newAmt - otherAmt) > 0.01) continue;
 
-        otherTx.is_transfer = true;
-        otherTx.transfer_pair_id = pairId;
-        otherTx.txn_type = 'transfer';
-        otherTx.category_id = null;
-        otherTx.category = undefined;
+        const isOtherDebit = otherTx.debit !== null && otherTx.debit !== undefined;
+        if (isNewDebit === isOtherDebit) continue;
 
-        transferPairsFound++;
-        break;
+        const otherDateMs = new Date(otherTx.txn_date).getTime();
+        const diffMs = Math.abs(newDateMs - otherDateMs);
+        if (diffMs <= 86400000 * 1.5) {
+          const pairId = crypto.randomUUID();
+          pairedOtherIds.add(otherTx.id);
+
+          await Promise.all([
+            supabase
+              .from('transactions')
+              .update({
+                is_transfer: true,
+                transfer_pair_id: pairId,
+                txn_type: 'transfer',
+                category_id: null,
+              })
+              .eq('id', newTx.id)
+              .eq('user_id', user.id),
+            supabase
+              .from('transactions')
+              .update({
+                is_transfer: true,
+                transfer_pair_id: pairId,
+                txn_type: 'transfer',
+                category_id: null,
+              })
+              .eq('id', otherTx.id)
+              .eq('user_id', user.id),
+          ]);
+
+          newTx.is_transfer = true;
+          newTx.transfer_pair_id = pairId;
+          newTx.txn_type = 'transfer';
+          newTx.category_id = null;
+          newTx.category = undefined;
+          transferPairsFound++;
+          break;
+        }
       }
     }
   }
 
-  // STEP 7 — Update upload record
-  upload.status = 'imported';
-  upload.imported_count = newlyInsertedTransactions.length;
-  upload.duplicate_count = duplicateCount;
-  upload.imported_at = new Date().toISOString();
-  upload.updated_at = new Date().toISOString();
+  // STEP 7 — Update statement_uploads record
+  const nowIso = new Date().toISOString();
+  const { error: uploadUpdateErr } = await supabase
+    .from('statement_uploads')
+    .update({
+      status: 'imported',
+      imported_count: newlyInsertedTransactions.length,
+      duplicate_count: duplicateCount,
+      imported_at: nowIso,
+      updated_at: nowIso,
+    })
+    .eq('id', upload.id)
+    .eq('user_id', user.id);
 
-  // STEP 8 — Write audit log
-  // Insert one audit_log row per inserted transaction
-  for (const insertedTx of newlyInsertedTransactions) {
-    await writeAuditLog({
-      table_name: 'transactions',
-      record_id: insertedTx.id,
-      action: 'insert',
-      new_data: {
-        id: insertedTx.id,
-        account_id: insertedTx.account_id,
-        upload_id: insertedTx.upload_id,
-        txn_date: insertedTx.txn_date,
-        description: insertedTx.description,
-        debit: insertedTx.debit,
-        credit: insertedTx.credit,
-        balance: insertedTx.balance,
-        reference_number: insertedTx.reference_number,
-        txn_type: insertedTx.txn_type,
-        is_transfer: insertedTx.is_transfer,
-        source_staged_id: insertedTx.source_staged_id,
-      },
-    });
+  if (uploadUpdateErr) {
+    throw new Error(`Failed to finalize upload record: ${uploadUpdateErr.message}`);
   }
 
-  // STEP 9 — If AI features are enabled and key is present, run description cleaning, auto-categorization & anomaly detection
+  // STEP 8 — Write audit log (one row per inserted transaction)
+  for (const insertedTx of newlyInsertedTransactions) {
+    await writeAuditLog(
+      {
+        table_name: 'transactions',
+        record_id: insertedTx.id,
+        action: 'insert',
+        new_data: {
+          id: insertedTx.id,
+          account_id: insertedTx.account_id,
+          upload_id: insertedTx.upload_id,
+          txn_date: insertedTx.txn_date,
+          description: insertedTx.description,
+          debit: insertedTx.debit,
+          credit: insertedTx.credit,
+          balance: insertedTx.balance,
+          reference_number: insertedTx.reference_number,
+          txn_type: insertedTx.txn_type,
+          is_transfer: insertedTx.is_transfer,
+          source_staged_id: insertedTx.source_staged_id,
+        },
+      },
+      supabase
+    );
+  }
+
+  // STEP 9 — Optional post-import AI pipeline
   try {
-    const isAiEnabled = typeof window !== 'undefined' ? localStorage.getItem('zaboraa_ai_enabled') === 'true' : true;
+    const isAiEnabled =
+      typeof window !== 'undefined'
+        ? localStorage.getItem('zaboraa_ai_enabled') === 'true'
+        : Boolean(process.env.GEMINI_API_KEY);
+
     if (isAiEnabled && newlyInsertedTransactions.length > 0) {
-      // 1. Clean machine-generated narrations
       const { batchCleanDescriptionsWithAI } = await import('../ai/clean-description');
       const cleanedResults = await batchCleanDescriptionsWithAI(newlyInsertedTransactions);
       for (const c of cleanedResults) {
         const tx = newlyInsertedTransactions.find((t) => t.id === c.transaction_id);
-        if (tx) tx.description = c.cleaned_description;
+        if (tx && c.cleaned_description) {
+          tx.description = c.cleaned_description;
+          await supabase
+            .from('transactions')
+            .update({ description: c.cleaned_description })
+            .eq('id', tx.id)
+            .eq('user_id', user.id);
+        }
       }
 
-      // 2. Auto-categorize uncategorized transactions
-      const uncategorized = newlyInsertedTransactions.filter((t) => !t.category_id && !t.is_transfer);
+      const uncategorized = newlyInsertedTransactions.filter(
+        (t) => !t.category_id && !t.is_transfer
+      );
       if (uncategorized.length > 0) {
         const { categorizeTransactionsWithAI } = await import('../ai/categorize');
         const catRes = await categorizeTransactionsWithAI(uncategorized, categories);
         if (catRes.results.length > 0) {
-          await applyAICategorizations(catRes.results);
+          await applyAICategorizations(catRes.results, supabase);
         }
       }
 
-      // 3. Scan for anomalies
       const { detectAnomaliesWithAI } = await import('../ai/anomalies');
-      await detectAnomaliesWithAI(localTransactionsStore);
+      await detectAnomaliesWithAI(newlyInsertedTransactions, undefined, user.id);
     }
   } catch (aiErr) {
     console.warn('Post-import AI pipeline notice (continuing without breaking import):', aiErr);
   }
 
-  // STEP 10 — Return
+  // STEP 10 — Return Section F + UI-compatible result
   return {
+    imported: newlyInsertedTransactions.length,
+    duplicates_skipped: duplicateCount,
+    replaced: Boolean(replacePreviousId),
     imported_count: newlyInsertedTransactions.length,
     duplicate_count: duplicateCount,
     transfer_pairs_found: transferPairsFound,
@@ -700,120 +550,126 @@ export async function commitUploadTransactions(
   };
 }
 
+function applyTransactionFiltersToQuery(
+  query: any,
+  filters: Partial<TransactionFiltersState>
+) {
+  let q = query;
+
+  if (filters.startDate) {
+    q = q.gte('txn_date', filters.startDate);
+  }
+  if (filters.endDate) {
+    q = q.lte('txn_date', filters.endDate);
+  }
+  if (filters.accountIds && filters.accountIds.length > 0) {
+    q = q.in('account_id', filters.accountIds);
+  }
+  if (filters.categoryIds && filters.categoryIds.length > 0) {
+    q = q.in('category_id', filters.categoryIds);
+  }
+  if (filters.workspaceId && filters.workspaceId !== 'all') {
+    q = q.eq('workspace_id', filters.workspaceId);
+  }
+  if (filters.txnType && filters.txnType !== 'all') {
+    q = q.eq('txn_type', filters.txnType);
+  }
+  if (filters.search && filters.search.trim()) {
+    const safeTerm = filters.search.trim().replace(/[(),%]/g, '');
+    if (safeTerm) {
+      q = q.or(
+        `description.ilike.%${safeTerm}%,reference_number.ilike.%${safeTerm}%,raw_description.ilike.%${safeTerm}%`
+      );
+    }
+  }
+
+  return q;
+}
+
 /**
- * Query ledger with server-side / in-memory filtering and pagination (50 per page default)
+ * Query ledger with server-side Supabase filtering and pagination (50 per page default)
  */
-export async function getTransactions(params?: {
-  page?: number;
-  pageSize?: number;
-  filters?: Partial<TransactionFiltersState>;
-}): Promise<{
+export async function getTransactions(
+  params?: {
+    page?: number;
+    pageSize?: number;
+    filters?: Partial<TransactionFiltersState>;
+  },
+  client?: any
+): Promise<{
   transactions: Transaction[];
   totalCount: number;
   totalPages: number;
   totalDebits: number;
   totalCredits: number;
 }> {
-  const page = params?.page || 1;
-  const pageSize = params?.pageSize || 50;
+  const supabase = client || createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) {
+    return {
+      transactions: [],
+      totalCount: 0,
+      totalPages: 1,
+      totalDebits: 0,
+      totalCredits: 0,
+    };
+  }
+
+  const page = Math.max(1, params?.page || 1);
+  const pageSize = Math.max(1, params?.pageSize || 50);
   const filters = params?.filters || {};
 
-  // Enrich any missing account/category/workspace relations
-  const [accounts, categories, workspaces] = await Promise.all([
-    getAccounts(),
-    getCategories(),
-    getWorkspaces(),
+  const from = (page - 1) * pageSize;
+  const to = from + pageSize - 1;
+
+  let dataQuery = supabase
+    .from('transactions')
+    .select(TRANSACTION_SELECT, { count: 'exact' })
+    .eq('user_id', user.id);
+
+  dataQuery = applyTransactionFiltersToQuery(dataQuery, filters);
+  dataQuery = dataQuery
+    .order('txn_date', { ascending: false })
+    .order('created_at', { ascending: false })
+    .range(from, to);
+
+  let totalsQuery = supabase
+    .from('transactions')
+    .select('debit, credit')
+    .eq('user_id', user.id);
+  totalsQuery = applyTransactionFiltersToQuery(totalsQuery, filters);
+
+  const [{ data, count, error }, { data: totalsData }] = await Promise.all([
+    dataQuery,
+    totalsQuery,
   ]);
 
-  let filtered = localTransactionsStore.map((t) => {
-    const acc = t.account || accounts.find((a) => a.id === t.account_id);
-    const cat = t.category || categories.find((c) => c.id === t.category_id);
-    const ws = t.workspace || workspaces.find((w) => w.id === t.workspace_id);
+  if (error) {
+    console.error('Error querying transactions:', error.message);
     return {
-      ...t,
-      account: acc
-        ? {
-            id: acc.id,
-            name: acc.name,
-            bank_name: acc.bank_name,
-            account_number_last4: acc.account_number_last4,
-          }
-        : undefined,
-      category: cat
-        ? {
-            id: cat.id,
-            name: cat.name,
-            color_index: cat.color_index,
-            icon: cat.icon,
-          }
-        : undefined,
-      workspace: ws
-        ? {
-            id: ws.id,
-            name: ws.name,
-            color_index: ws.color_index,
-          }
-        : undefined,
+      transactions: [],
+      totalCount: 0,
+      totalPages: 1,
+      totalDebits: 0,
+      totalCredits: 0,
     };
-  });
-
-  // 1. Date Range Filter
-  if (filters.startDate) {
-    filtered = filtered.filter((t) => t.txn_date >= filters.startDate!);
-  }
-  if (filters.endDate) {
-    filtered = filtered.filter((t) => t.txn_date <= filters.endDate!);
   }
 
-  // 2. Account IDs Multi-Select Filter
-  if (filters.accountIds && filters.accountIds.length > 0) {
-    filtered = filtered.filter((t) => filters.accountIds!.includes(t.account_id));
-  }
-
-  // 3. Category IDs Multi-Select Filter
-  if (filters.categoryIds && filters.categoryIds.length > 0) {
-    filtered = filtered.filter((t) => t.category_id && filters.categoryIds!.includes(t.category_id));
-  }
-
-  // 4. Workspace Filter
-  if (filters.workspaceId && filters.workspaceId !== 'all') {
-    filtered = filtered.filter((t) => t.workspace_id === filters.workspaceId);
-  }
-
-  // 5. Txn Type Filter
-  if (filters.txnType && filters.txnType !== 'all') {
-    filtered = filtered.filter((t) => t.txn_type === filters.txnType);
-  }
-
-  // 6. Search Filter: searches description + reference_number
-  if (filters.search && filters.search.trim()) {
-    const query = filters.search.trim().toLowerCase();
-    filtered = filtered.filter((t) => {
-      const descMatch = (t.description || '').toLowerCase().includes(query);
-      const refMatch = (t.reference_number || '').toLowerCase().includes(query);
-      const rawMatch = (t.raw_description || '').toLowerCase().includes(query);
-      return descMatch || refMatch || rawMatch;
-    });
-  }
-
-  // Sort descending by txn_date
-  filtered.sort((a, b) => (b.txn_date > a.txn_date ? 1 : b.txn_date < a.txn_date ? -1 : 0));
-
-  // Compute ledger sum totals
   let totalDebits = 0;
   let totalCredits = 0;
-  for (const t of filtered) {
-    if (t.debit) totalDebits += t.debit;
-    if (t.credit) totalCredits += t.credit;
+  for (const row of totalsData || []) {
+    if (row.debit) totalDebits += Number(row.debit);
+    if (row.credit) totalCredits += Number(row.credit);
   }
 
-  const totalCount = filtered.length;
+  const totalCount = count ?? (data ? data.length : 0);
   const totalPages = Math.ceil(totalCount / pageSize) || 1;
-  const startIndex = (page - 1) * pageSize;
-  const paginated = filtered.slice(startIndex, startIndex + pageSize);
 
   return {
-    transactions: paginated,
+    transactions: (data || []).map(mapDbTransaction),
     totalCount,
     totalPages,
     totalDebits: Math.round(totalDebits * 100) / 100,
@@ -822,11 +678,23 @@ export async function getTransactions(params?: {
 }
 
 /**
- * Manual Transaction Entry (Deliverable 4)
+ * Manual Transaction Entry
  * Validates: date not in future, amount > 0, account must exist
  * Sets is_manual = true and writes audit log on insert
  */
-export async function createManualTransaction(data: ManualTransactionFormData): Promise<Transaction> {
+export async function createManualTransaction(
+  data: ManualTransactionFormData,
+  client?: any
+): Promise<Transaction> {
+  const supabase = client || createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) {
+    throw new Error('Unauthorized');
+  }
+
   const today = new Date().toISOString().split('T')[0];
   if (data.txn_date > today) {
     throw new Error('Transaction date cannot be in the future.');
@@ -836,91 +704,78 @@ export async function createManualTransaction(data: ManualTransactionFormData): 
     throw new Error('Transaction amount must be greater than zero.');
   }
 
-  const accounts = await getAccounts();
-  const matchedAccount = accounts.find((a) => a.id === data.account_id);
-  if (!matchedAccount) {
+  const { data: matchedAccount, error: accErr } = await supabase
+    .from('accounts')
+    .select('id, name, bank_name, account_number_last4')
+    .eq('id', data.account_id)
+    .eq('user_id', user.id)
+    .single();
+
+  if (accErr || !matchedAccount) {
     throw new Error('Target bank account does not exist.');
   }
 
-  const debit = data.type === 'debit' ? data.amount : null;
-  const credit = data.type === 'credit' ? data.amount : null;
+  const debit = data.type === 'debit' ? Number(data.amount) : null;
+  const credit = data.type === 'credit' ? Number(data.amount) : null;
   const txnType: Transaction['txn_type'] = data.type === 'debit' ? 'expense' : 'income';
 
-  const [categories, workspaces] = await Promise.all([getCategories(), getWorkspaces()]);
-  const matchedCat = categories.find((c) => c.id === data.category_id);
-  const matchedWs = workspaces.find((w) => w.id === data.workspace_id);
-
-  const newTx: Transaction = {
-    id: `tx_man_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-    user_id: 'default_owner',
-    account_id: data.account_id,
-    upload_id: null,
-    txn_date: data.txn_date,
-    description: data.description.trim(),
-    raw_description: `Manual entry: ${data.description.trim()}`,
-    debit,
-    credit,
-    balance: null,
-    reference_number: data.reference_number?.trim() || null,
-    category_id: data.category_id || null,
-    workspace_id: data.workspace_id || null,
-    txn_type: txnType,
-    is_transfer: false,
-    transfer_pair_id: null,
-    notes: data.notes?.trim() || null,
-    tags: data.tags && data.tags.length > 0 ? data.tags : null,
-    is_manual: true,
-    source_staged_id: null,
-    created_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
-    account: {
-      id: matchedAccount.id,
-      name: matchedAccount.name,
-      bank_name: matchedAccount.bank_name,
-      account_number_last4: matchedAccount.account_number_last4,
-    },
-    category: matchedCat
-      ? {
-          id: matchedCat.id,
-          name: matchedCat.name,
-          color_index: matchedCat.color_index,
-          icon: matchedCat.icon,
-        }
-      : undefined,
-    workspace: matchedWs
-      ? {
-          id: matchedWs.id,
-          name: matchedWs.name,
-          color_index: matchedWs.color_index,
-        }
-      : undefined,
-  };
-
-  localTransactionsStore.unshift(newTx);
-
-  // Write Audit Log on insert
-  await writeAuditLog({
-    table_name: 'transactions',
-    record_id: newTx.id,
-    action: 'insert',
-    new_data: {
-      id: newTx.id,
+  const { data: inserted, error } = await supabase
+    .from('transactions')
+    .insert({
+      user_id: user.id,
+      account_id: data.account_id,
+      upload_id: null,
+      txn_date: data.txn_date,
+      description: data.description.trim(),
+      raw_description: `Manual entry: ${data.description.trim()}`,
+      debit,
+      credit,
+      balance: null,
+      reference_number: data.reference_number?.trim() || null,
+      category_id: data.category_id || null,
+      workspace_id: data.workspace_id || null,
+      txn_type: txnType,
+      is_transfer: false,
+      transfer_pair_id: null,
+      notes: data.notes?.trim() || null,
+      tags: data.tags && data.tags.length > 0 ? data.tags : null,
       is_manual: true,
-      txn_date: newTx.txn_date,
-      description: newTx.description,
-      amount: data.amount,
-      type: data.type,
-      account_id: newTx.account_id,
-      category_id: newTx.category_id,
-      workspace_id: newTx.workspace_id,
-    },
-  });
+      source_staged_id: null,
+    })
+    .select(TRANSACTION_SELECT)
+    .single();
 
-  return newTx;
+  if (error || !inserted) {
+    throw new Error(error?.message || 'Failed to create manual transaction.');
+  }
+
+  const createdTx = mapDbTransaction(inserted);
+
+  await writeAuditLog(
+    {
+      table_name: 'transactions',
+      record_id: createdTx.id,
+      action: 'insert',
+      new_data: {
+        id: createdTx.id,
+        is_manual: true,
+        txn_date: createdTx.txn_date,
+        description: createdTx.description,
+        amount: data.amount,
+        type: data.type,
+        account_id: createdTx.account_id,
+        category_id: createdTx.category_id,
+        workspace_id: createdTx.workspace_id,
+      },
+    },
+    supabase
+  );
+
+  return createdTx;
 }
 
 /**
- * Updates editable transaction fields (Deliverable 3)
+ * Updates editable transaction fields
  * Non-editable: amounts, date, description (Amounts are sacred — never editable after import)
  * Writes audit log on change!
  */
@@ -934,12 +789,29 @@ export async function updateTransaction(
     txn_type?: Transaction['txn_type'];
     is_transfer?: boolean;
     transfer_pair_id?: string | null;
-  }
+  },
+  client?: any
 ): Promise<Transaction> {
-  const index = localTransactionsStore.findIndex((t) => t.id === id);
-  if (index === -1) throw new Error('Transaction not found');
+  const supabase = client || createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
 
-  const oldTx = localTransactionsStore[index];
+  if (!user) {
+    throw new Error('Unauthorized');
+  }
+
+  const { data: oldTx, error: fetchErr } = await supabase
+    .from('transactions')
+    .select('*')
+    .eq('id', id)
+    .eq('user_id', user.id)
+    .single();
+
+  if (fetchErr || !oldTx) {
+    throw new Error('Transaction not found');
+  }
+
   const oldDataSnapshot = {
     category_id: oldTx.category_id,
     workspace_id: oldTx.workspace_id,
@@ -950,65 +822,58 @@ export async function updateTransaction(
     transfer_pair_id: oldTx.transfer_pair_id,
   };
 
-  const [categories, workspaces] = await Promise.all([getCategories(), getWorkspaces()]);
-
-  const newCatId = updates.category_id !== undefined ? updates.category_id : oldTx.category_id;
-  const newWsId = updates.workspace_id !== undefined ? updates.workspace_id : oldTx.workspace_id;
-  const matchedCat = categories.find((c) => c.id === newCatId);
-  const matchedWs = workspaces.find((w) => w.id === newWsId);
-
-  const updatedTx: Transaction = {
-    ...oldTx,
-    category_id: newCatId,
-    workspace_id: newWsId,
-    tags: updates.tags !== undefined ? updates.tags : oldTx.tags,
-    notes: updates.notes !== undefined ? updates.notes : oldTx.notes,
-    txn_type: updates.txn_type !== undefined ? updates.txn_type : oldTx.txn_type,
-    is_transfer: updates.is_transfer !== undefined ? updates.is_transfer : oldTx.is_transfer,
-    transfer_pair_id: updates.transfer_pair_id !== undefined ? updates.transfer_pair_id : oldTx.transfer_pair_id,
-    category: matchedCat
-      ? {
-          id: matchedCat.id,
-          name: matchedCat.name,
-          color_index: matchedCat.color_index,
-          icon: matchedCat.icon,
-        }
-      : undefined,
-    workspace: matchedWs
-      ? {
-          id: matchedWs.id,
-          name: matchedWs.name,
-          color_index: matchedWs.color_index,
-        }
-      : undefined,
+  const updatePayload: Record<string, any> = {
     updated_at: new Date().toISOString(),
   };
 
-  localTransactionsStore[index] = updatedTx;
+  if (updates.category_id !== undefined) updatePayload.category_id = updates.category_id;
+  if (updates.workspace_id !== undefined) updatePayload.workspace_id = updates.workspace_id;
+  if (updates.tags !== undefined) updatePayload.tags = updates.tags;
+  if (updates.notes !== undefined) updatePayload.notes = updates.notes;
+  if (updates.txn_type !== undefined) updatePayload.txn_type = updates.txn_type;
+  if (updates.is_transfer !== undefined) updatePayload.is_transfer = updates.is_transfer;
+  if (updates.transfer_pair_id !== undefined) {
+    updatePayload.transfer_pair_id = updates.transfer_pair_id;
+  }
 
-  // STEP: Write Audit Log on change
-  await writeAuditLog({
-    table_name: 'transactions',
-    record_id: id,
-    action: 'update',
-    old_data: oldDataSnapshot,
-    new_data: {
-      category_id: updatedTx.category_id,
-      workspace_id: updatedTx.workspace_id,
-      tags: updatedTx.tags,
-      notes: updatedTx.notes,
-      txn_type: updatedTx.txn_type,
-      is_transfer: updatedTx.is_transfer,
-      transfer_pair_id: updatedTx.transfer_pair_id,
+  const { data: updated, error: updateErr } = await supabase
+    .from('transactions')
+    .update(updatePayload)
+    .eq('id', id)
+    .eq('user_id', user.id)
+    .select(TRANSACTION_SELECT)
+    .single();
+
+  if (updateErr || !updated) {
+    throw new Error(updateErr?.message || 'Failed to update transaction.');
+  }
+
+  const updatedTx = mapDbTransaction(updated);
+
+  await writeAuditLog(
+    {
+      table_name: 'transactions',
+      record_id: id,
+      action: 'update',
+      old_data: oldDataSnapshot,
+      new_data: {
+        category_id: updatedTx.category_id,
+        workspace_id: updatedTx.workspace_id,
+        tags: updatedTx.tags,
+        notes: updatedTx.notes,
+        txn_type: updatedTx.txn_type,
+        is_transfer: updatedTx.is_transfer,
+        transfer_pair_id: updatedTx.transfer_pair_id,
+      },
     },
-  });
+    supabase
+  );
 
   return updatedTx;
 }
 
 /**
- * Bulk Edit Transactions (Deliverable 6)
- * When >=1 row selected, updates category, workspace, or appends tags.
+ * Bulk Edit Transactions
  * Writes one audit_log row per changed transaction!
  */
 export async function bulkUpdateTransactions(
@@ -1017,15 +882,32 @@ export async function bulkUpdateTransactions(
     category_id?: string | null;
     workspace_id?: string | null;
     append_tags?: string[];
-  }
+  },
+  client?: any
 ): Promise<{ updatedCount: number }> {
+  const supabase = client || createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) {
+    throw new Error('Unauthorized');
+  }
+
+  if (!ids || ids.length === 0) {
+    return { updatedCount: 0 };
+  }
+
+  const { data: existingRows } = await supabase
+    .from('transactions')
+    .select('id, tags')
+    .eq('user_id', user.id)
+    .in('id', ids);
+
   let updatedCount = 0;
 
-  for (const id of ids) {
-    const tx = localTransactionsStore.find((t) => t.id === id);
-    if (!tx) continue;
-
-    let newTags = tx.tags ? [...tx.tags] : [];
+  for (const tx of existingRows || []) {
+    const newTags = tx.tags ? [...tx.tags] : [];
     if (updates.append_tags && updates.append_tags.length > 0) {
       for (const t of updates.append_tags) {
         const clean = t.trim();
@@ -1035,11 +917,15 @@ export async function bulkUpdateTransactions(
       }
     }
 
-    await updateTransaction(id, {
-      category_id: updates.category_id !== undefined ? updates.category_id : undefined,
-      workspace_id: updates.workspace_id !== undefined ? updates.workspace_id : undefined,
-      tags: updates.append_tags ? newTags : undefined,
-    });
+    await updateTransaction(
+      tx.id,
+      {
+        category_id: updates.category_id !== undefined ? updates.category_id : undefined,
+        workspace_id: updates.workspace_id !== undefined ? updates.workspace_id : undefined,
+        tags: updates.append_tags ? newTags : undefined,
+      },
+      supabase
+    );
 
     updatedCount++;
   }
@@ -1048,11 +934,51 @@ export async function bulkUpdateTransactions(
 }
 
 /**
- * Helper to fetch all transactions without pagination
+ * Helper to fetch all transactions for the current user without pagination truncation
  */
-export async function getAllTransactions(): Promise<Transaction[]> {
-  const { transactions } = await getTransactions({ page: 1, pageSize: 10000 });
-  return transactions;
+export async function getAllTransactions(client?: any): Promise<Transaction[]> {
+  const supabase = client || createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) {
+    return [];
+  }
+
+  const PAGE_SIZE = 1000;
+  const allRows: Transaction[] = [];
+  let from = 0;
+
+  while (true) {
+    const { data, error } = await supabase
+      .from('transactions')
+      .select(TRANSACTION_SELECT)
+      .eq('user_id', user.id)
+      .order('txn_date', { ascending: false })
+      .order('created_at', { ascending: false })
+      .range(from, from + PAGE_SIZE - 1);
+
+    if (error) {
+      console.error('Error fetching all transactions:', error.message);
+      break;
+    }
+
+    if (!data || data.length === 0) {
+      break;
+    }
+
+    for (const row of data) {
+      allRows.push(mapDbTransaction(row));
+    }
+
+    if (data.length < PAGE_SIZE) {
+      break;
+    }
+    from += PAGE_SIZE;
+  }
+
+  return allRows;
 }
 
 /**
@@ -1067,45 +993,63 @@ export async function getAccountLedgerWithRunningBalance(
     categoryId?: string;
     txnType?: string;
     search?: string;
-  }
+  },
+  client?: any
 ): Promise<{
   account: any;
   transactions: (Transaction & { calculated_running_balance: number })[];
   dailyBalancePoints: { date: string; balance: number }[];
 }> {
-  const accounts = await getAccounts();
+  const supabase = client || createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) {
+    throw new Error('Unauthorized');
+  }
+
+  const accounts = await getAccounts(supabase);
   const account = accounts.find((a) => a.id === accountId);
   if (!account) throw new Error('Account not found');
 
-  const openingBalance = account.opening_balance ?? 0;
+  const openingBalance = Number(account.opening_balance ?? 0);
 
-  // Fetch all transactions for this account ordered chronologically ASC
-  const allAccountTxns = localTransactionsStore
-    .filter((t) => t.account_id === accountId)
-    .sort((a, b) => {
-      if (a.txn_date !== b.txn_date) return a.txn_date.localeCompare(b.txn_date);
-      return a.created_at.localeCompare(b.created_at);
-    });
+  const { data: rawTxns, error } = await supabase
+    .from('transactions')
+    .select(TRANSACTION_SELECT)
+    .eq('user_id', user.id)
+    .eq('account_id', accountId)
+    .order('txn_date', { ascending: true })
+    .order('created_at', { ascending: true });
+
+  if (error) {
+    throw new Error(`Failed to fetch account ledger: ${error.message}`);
+  }
+
+  const allAccountTxns = (rawTxns || []).map(mapDbTransaction);
 
   let running = openingBalance;
-  const chronologicalWithBalance: (Transaction & { calculated_running_balance: number })[] = [];
+  const chronologicalWithBalance: (Transaction & {
+    calculated_running_balance: number;
+  })[] = [];
   const balanceByDate = new Map<string, number>();
 
   for (const tx of allAccountTxns) {
     const debit = tx.debit ?? 0;
     const credit = tx.credit ?? 0;
     running = running + credit - debit;
+    const rounded = Math.round(running * 100) / 100;
     chronologicalWithBalance.push({
       ...tx,
-      calculated_running_balance: Math.round(running * 100) / 100,
+      calculated_running_balance: rounded,
     });
-    balanceByDate.set(tx.txn_date, Math.round(running * 100) / 100);
+    balanceByDate.set(tx.txn_date, rounded);
   }
 
-  // Daily balance points for BalanceChart
   const dailyBalancePoints: { date: string; balance: number }[] = [];
   if (options?.startDate && options?.endDate) {
-    let cur = new Date(options.startDate);
+    const cur = new Date(options.startDate);
     const end = new Date(options.endDate);
     let lastKnownBalance = openingBalance;
 
@@ -1121,13 +1065,11 @@ export async function getAccountLedgerWithRunningBalance(
       cur.setDate(cur.getDate() + 1);
     }
   } else {
-    // Collect from chronological points
     for (const [date, bal] of balanceByDate.entries()) {
       dailyBalancePoints.push({ date, balance: bal });
     }
   }
 
-  // Now apply filters for display, then order DESC (newest first for ledger UI)
   let displayList = [...chronologicalWithBalance];
 
   if (options?.startDate) {
@@ -1164,79 +1106,18 @@ export async function getAccountLedgerWithRunningBalance(
 }
 
 /**
- * Compute high-performance Dashboard metrics
+ * Compute high-performance Dashboard metrics from real Supabase data
  */
 export async function getDashboardMetrics(
   fyRange: { startDate: string; endDate: string },
-  workspaceFilter: string = 'all'
+  workspaceFilter: string = 'all',
+  client?: any
 ) {
-  const [accounts, categories, workspaces] = await Promise.all([
-    getAccounts(),
-    getCategories(),
-    getWorkspaces(),
-  ]);
+  const supabase = client || createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
 
-  // Net Worth Calculation: sum of current balances across all active accounts
-  // Credit card balances are liabilities (negative)
-  let netWorth = 0;
-  const accountBreakdown: { type: string; total: number; count: number }[] = [];
-  const typeMap = new Map<string, number>();
-  const typeCount = new Map<string, number>();
-
-  for (const acc of accounts) {
-    if (!acc.is_active) continue;
-    // Calculate current balance from opening balance + credits - debits
-    const accTxns = localTransactionsStore.filter((t) => t.account_id === acc.id);
-    let bal = acc.opening_balance ?? 0;
-    for (const tx of accTxns) {
-      bal += (tx.credit ?? 0) - (tx.debit ?? 0);
-    }
-
-    // For credit card, if balance is positive, it's either an overpayment or liability
-    // Outstanding credit card balance represents a liability
-    if (acc.account_type === 'credit_card') {
-      const liability = bal < 0 ? bal : -bal;
-      netWorth += liability;
-      const cur = typeMap.get('credit_card') || 0;
-      typeMap.set('credit_card', cur + liability);
-      typeCount.set('credit_card', (typeCount.get('credit_card') || 0) + 1);
-    } else {
-      netWorth += bal;
-      const cur = typeMap.get(acc.account_type) || 0;
-      typeMap.set(acc.account_type, cur + bal);
-      typeCount.set(acc.account_type, (typeCount.get(acc.account_type) || 0) + 1);
-    }
-  }
-
-  for (const [t, total] of typeMap.entries()) {
-    accountBreakdown.push({
-      type: t,
-      total: Math.round(total * 100) / 100,
-      count: typeCount.get(t) || 0,
-    });
-  }
-
-  // Filter transactions by FY date range and Workspace filter
-  let periodTxns = localTransactionsStore.filter(
-    (t) => t.txn_date >= fyRange.startDate && t.txn_date <= fyRange.endDate
-  );
-
-  if (workspaceFilter && workspaceFilter !== 'all') {
-    periodTxns = periodTxns.filter((t) => {
-      if (workspaceFilter === 'Personal') return t.workspace_id === 'ws_personal';
-      if (workspaceFilter === 'Business') return t.workspace_id === 'ws_business';
-      if (workspaceFilter === 'Mixed') return t.workspace_id === 'ws_mixed';
-      return t.workspace_id === workspaceFilter;
-    });
-  }
-
-  // Cashflow: Exclude internal transfers!
-  // Income: sum of credits where not transfer and (txn_type = 'income' or credit > 0)
-  // Expenses: sum of debits where not transfer and txn_type = 'expense'
-  let totalIncome = 0;
-  let totalExpenses = 0;
-
-  // Month-by-month breakdown (12 months of Indian FY: Apr, May, Jun, Jul, Aug, Sep, Oct, Nov, Dec, Jan, Feb, Mar)
   const fyMonths = [
     { label: 'Apr', monthNum: '04' },
     { label: 'May', monthNum: '05' },
@@ -1252,30 +1133,127 @@ export async function getDashboardMetrics(
     { label: 'Mar', monthNum: '03' },
   ];
 
+  if (!user) {
+    return {
+      netWorth: 0,
+      accountBreakdown: [],
+      totalIncome: 0,
+      totalExpenses: 0,
+      netCashflow: 0,
+      monthlyCashflow: fyMonths.map((m) => ({
+        month: m.label,
+        income: 0,
+        expense: 0,
+        net: 0,
+      })),
+      spendingByCategory: [],
+      taxProvision: {
+        businessIncome: 0,
+        businessExpense: 0,
+        taxableProfit: 0,
+        taxProvision: 0,
+      },
+      recentTransactions: [],
+    };
+  }
+
+  const [accounts, categories, workspaces, periodRes, recentRes] = await Promise.all([
+    getAccounts(supabase),
+    getCategories(supabase),
+    getWorkspaces(supabase),
+    supabase
+      .from('transactions')
+      .select(TRANSACTION_SELECT)
+      .eq('user_id', user.id)
+      .gte('txn_date', fyRange.startDate)
+      .lte('txn_date', fyRange.endDate)
+      .order('txn_date', { ascending: false }),
+    supabase
+      .from('transactions')
+      .select(TRANSACTION_SELECT)
+      .eq('user_id', user.id)
+      .order('txn_date', { ascending: false })
+      .order('created_at', { ascending: false })
+      .limit(10),
+  ]);
+
+  // Net Worth Calculation using computed current_balance on active accounts
+  let netWorth = 0;
+  const accountBreakdown: { type: string; total: number; count: number }[] = [];
+  const typeMap = new Map<string, number>();
+  const typeCount = new Map<string, number>();
+
+  for (const acc of accounts) {
+    if (!acc.is_active) continue;
+    const bal = acc.current_balance ?? 0;
+
+    if (acc.account_type === 'credit_card') {
+      const liability = bal < 0 ? bal : -bal;
+      netWorth += liability;
+      typeMap.set('credit_card', (typeMap.get('credit_card') || 0) + liability);
+      typeCount.set('credit_card', (typeCount.get('credit_card') || 0) + 1);
+    } else {
+      netWorth += bal;
+      typeMap.set(acc.account_type, (typeMap.get(acc.account_type) || 0) + bal);
+      typeCount.set(acc.account_type, (typeCount.get(acc.account_type) || 0) + 1);
+    }
+  }
+
+  for (const [t, total] of typeMap.entries()) {
+    accountBreakdown.push({
+      type: t,
+      total: Math.round(total * 100) / 100,
+      count: typeCount.get(t) || 0,
+    });
+  }
+
+  let periodTxns: Transaction[] = (periodRes.data || []).map(mapDbTransaction);
+
+  if (workspaceFilter && workspaceFilter !== 'all') {
+    const matchedWs = workspaces.find(
+      (w) =>
+        w.id === workspaceFilter ||
+        w.name.toLowerCase() === workspaceFilter.toLowerCase()
+    );
+    const filterLower = workspaceFilter.toLowerCase();
+    periodTxns = periodTxns.filter((t) => {
+      if (matchedWs && t.workspace_id === matchedWs.id) return true;
+      if (t.workspace_id === workspaceFilter) return true;
+      const wsName = t.workspace?.name?.toLowerCase() || '';
+      return wsName === filterLower;
+    });
+  }
+
+  let totalIncome = 0;
+  let totalExpenses = 0;
+
   const monthMap = new Map<string, { income: number; expense: number }>();
   for (const m of fyMonths) {
     monthMap.set(m.label, { income: 0, expense: 0 });
   }
 
-  // Category breakdown map for spending donut
   const categorySpendMap = new Map<string, number>();
-
-  // Business income and expense running totals for Tax Provision
   let businessIncome = 0;
   let businessExpense = 0;
 
+  const businessWsIds = new Set(
+    workspaces
+      .filter((w) => w.name.toLowerCase().includes('business'))
+      .map((w) => w.id)
+  );
+
   for (const tx of periodTxns) {
-    // Exclude transfers from income, expenses, and tax calculations
     if (tx.is_transfer || tx.txn_type === 'transfer') continue;
 
-    // Track Business Workspace specifically for Tax Provision
-    const isBusiness = tx.workspace_id === 'ws_business' || tx.workspace?.name?.toLowerCase() === 'business';
+    const isBusiness =
+      (tx.workspace_id ? businessWsIds.has(tx.workspace_id) : false) ||
+      tx.workspace?.name?.toLowerCase().includes('business') ||
+      false;
 
     if (tx.credit && tx.credit > 0 && tx.txn_type !== 'refund') {
       totalIncome += tx.credit;
       if (isBusiness) businessIncome += tx.credit;
 
-      // Assign to month
       const mStr = tx.txn_date.slice(5, 7);
       const matchMonth = fyMonths.find((m) => m.monthNum === mStr);
       if (matchMonth) {
@@ -1288,7 +1266,6 @@ export async function getDashboardMetrics(
       totalExpenses += tx.debit;
       if (isBusiness) businessExpense += tx.debit;
 
-      // Assign to month
       const mStr = tx.txn_date.slice(5, 7);
       const matchMonth = fyMonths.find((m) => m.monthNum === mStr);
       if (matchMonth) {
@@ -1296,10 +1273,8 @@ export async function getDashboardMetrics(
         cur.expense += tx.debit;
       }
 
-      // Track Category Spend
       const catId = tx.category_id || 'uncategorized';
-      const curSpend = categorySpendMap.get(catId) || 0;
-      categorySpendMap.set(catId, curSpend + tx.debit);
+      categorySpendMap.set(catId, (categorySpendMap.get(catId) || 0) + tx.debit);
     }
   }
 
@@ -1313,19 +1288,27 @@ export async function getDashboardMetrics(
     };
   });
 
-  // Fixed 10-color categorical palette from PRD §6.3
   const PRD_PALETTE = [
-    '#6366F1', '#0EA5E9', '#14B8A6', '#22C55E', '#84CC16',
-    '#EAB308', '#F97316', '#EF4444', '#EC4899', '#A855F7',
+    '#6366F1',
+    '#0EA5E9',
+    '#14B8A6',
+    '#22C55E',
+    '#84CC16',
+    '#EAB308',
+    '#F97316',
+    '#EF4444',
+    '#EC4899',
+    '#A855F7',
   ];
 
-  // Spending by Category (Top 8 categories, rest as "Other")
   const sortedCategories = Array.from(categorySpendMap.entries())
     .map(([catId, amount]) => {
       const cat = categories.find((c) => c.id === catId);
       return {
         id: catId,
-        name: cat?.name || (catId === 'uncategorized' ? 'Uncategorized' : 'General Expense'),
+        name:
+          cat?.name ||
+          (catId === 'uncategorized' ? 'Uncategorized' : 'General Expense'),
         amount: Math.round(amount * 100) / 100,
         colorIndex: cat?.color_index ?? 0,
       };
@@ -1334,7 +1317,6 @@ export async function getDashboardMetrics(
 
   const top8 = sortedCategories.slice(0, 8);
   const remaining = sortedCategories.slice(8);
-
   const finalCategoryList: {
     id: string;
     name: string;
@@ -1345,7 +1327,7 @@ export async function getDashboardMetrics(
 
   const totalCatSpend = sortedCategories.reduce((sum, c) => sum + c.amount, 0) || 1;
 
-  top8.forEach((item, idx) => {
+  top8.forEach((item) => {
     finalCategoryList.push({
       id: item.id,
       name: item.name,
@@ -1366,27 +1348,9 @@ export async function getDashboardMetrics(
     });
   }
 
-  // Tax Provision calculation
   const taxableProfit = Math.max(0, businessIncome - businessExpense);
   const taxProvision30 = Math.round(taxableProfit * 0.3 * 100) / 100;
-
-  // Recent 10 transactions
-  const recentTransactions = localTransactionsStore
-    .slice(0, 10)
-    .map((t) => {
-      const acc = t.account || accounts.find((a) => a.id === t.account_id);
-      return {
-        ...t,
-        account: acc
-          ? {
-              id: acc.id,
-              name: acc.name,
-              bank_name: acc.bank_name,
-              account_number_last4: acc.account_number_last4,
-            }
-          : undefined,
-      };
-    });
+  const recentTransactions = (recentRes.data || []).map(mapDbTransaction);
 
   return {
     netWorth: Math.round(netWorth * 100) / 100,
@@ -1407,23 +1371,91 @@ export async function getDashboardMetrics(
 }
 
 /**
- * Generates ITR Summary data matching Indian ITR Schedule
+ * Generates ITR Summary data matching Indian ITR Schedule from Supabase
  */
-export async function getITRSummaryData(fyRange: { startDate: string; endDate: string }) {
-  const [categories, workspaces] = await Promise.all([getCategories(), getWorkspaces()]);
+export async function getITRSummaryData(
+  fyRange: { startDate: string; endDate: string },
+  client?: any
+) {
+  const supabase = client || createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
 
-  const txns = localTransactionsStore.filter(
-    (t) =>
-      t.txn_date >= fyRange.startDate &&
-      t.txn_date <= fyRange.endDate &&
-      !t.is_transfer &&
-      t.txn_type !== 'transfer'
+  const emptyResult = {
+    lineItems: [
+      { section: 'Income', lineItem: 'Business Income (Gross Receipts)', amount: 0 },
+      { section: 'Income', lineItem: 'Other Income (Personal & Investments)', amount: 0 },
+      { section: 'Income', lineItem: 'Total Gross Income', amount: 0, isSubtotal: true },
+      { section: 'Deductions', lineItem: 'Business Expenses (Allowable deductions)', amount: 0 },
+      { section: 'Deductions', lineItem: 'Total Deductions', amount: 0, isSubtotal: true },
+      { section: 'Taxable Income', lineItem: 'Net Taxable Income (Estimated)', amount: 0, isTotal: true },
+      { section: 'Tax', lineItem: 'Tax @ 30% (Estimated, reference only)', amount: 0, isTax: true },
+    ],
+    workspaces: [
+      {
+        name: 'Personal',
+        income: 0,
+        expenses: 0,
+        net: 0,
+        topCategories: [],
+        sparkline: Array.from({ length: 12 }, (_, idx) => ({ month: idx + 1, val: 0 })),
+      },
+      {
+        name: 'Business',
+        income: 0,
+        expenses: 0,
+        net: 0,
+        topCategories: [],
+        sparkline: Array.from({ length: 12 }, (_, idx) => ({ month: idx + 1, val: 0 })),
+      },
+      {
+        name: 'Mixed / Both',
+        income: 0,
+        expenses: 0,
+        net: 0,
+        topCategories: [],
+        sparkline: Array.from({ length: 12 }, (_, idx) => ({ month: idx + 1, val: 0 })),
+      },
+    ],
+  };
+
+  if (!user) {
+    return emptyResult;
+  }
+
+  const [categories, workspaces, { data: rawTxns }] = await Promise.all([
+    getCategories(supabase),
+    getWorkspaces(supabase),
+    supabase
+      .from('transactions')
+      .select(TRANSACTION_SELECT)
+      .eq('user_id', user.id)
+      .gte('txn_date', fyRange.startDate)
+      .lte('txn_date', fyRange.endDate)
+      .eq('is_transfer', false)
+      .neq('txn_type', 'transfer'),
+  ]);
+
+  const txns = (rawTxns || []).map(mapDbTransaction);
+
+  const businessWsIds = new Set(
+    workspaces
+      .filter((w) => w.name.toLowerCase().includes('business'))
+      .map((w) => w.id)
+  );
+  const mixedWsIds = new Set(
+    workspaces
+      .filter((w) => w.name.toLowerCase().includes('mixed'))
+      .map((w) => w.id)
   );
 
   let businessIncome = 0;
   let otherPersonalIncome = 0;
+  let mixedIncome = 0;
   let businessExpenses = 0;
   let personalExpenses = 0;
+  let mixedExpenses = 0;
 
   const workspaceMonthMap = {
     Personal: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
@@ -1438,14 +1470,27 @@ export async function getITRSummaryData(fyRange: { startDate: string; endDate: s
   };
 
   for (const t of txns) {
-    const isBusiness = t.workspace_id === 'ws_business';
-    const isPersonal = t.workspace_id === 'ws_personal' || (!t.workspace_id && !isBusiness);
-    const mIdx = Math.max(0, parseInt(t.txn_date.slice(5, 7), 10) - 1);
+    if (t.is_transfer || t.txn_type === 'transfer') continue;
+
+    const isBusiness =
+      (t.workspace_id ? businessWsIds.has(t.workspace_id) : false) ||
+      t.workspace?.name?.toLowerCase().includes('business') ||
+      false;
+    const isMixed =
+      !isBusiness &&
+      ((t.workspace_id ? mixedWsIds.has(t.workspace_id) : false) ||
+        t.workspace?.name?.toLowerCase().includes('mixed') ||
+        false);
+
+    const mIdx = Math.max(0, Math.min(11, parseInt(t.txn_date.slice(5, 7), 10) - 1));
 
     if (t.credit && t.credit > 0) {
       if (isBusiness) {
         businessIncome += t.credit;
         workspaceMonthMap.Business[mIdx] += t.credit;
+      } else if (isMixed) {
+        mixedIncome += t.credit;
+        workspaceMonthMap.Mixed[mIdx] += t.credit;
       } else {
         otherPersonalIncome += t.credit;
         workspaceMonthMap.Personal[mIdx] += t.credit;
@@ -1453,27 +1498,41 @@ export async function getITRSummaryData(fyRange: { startDate: string; endDate: s
     }
 
     if (t.debit && t.debit > 0) {
-      const catName = categories.find((c) => c.id === t.category_id)?.name || 'General';
+      const catName =
+        t.category?.name ||
+        categories.find((c) => c.id === t.category_id)?.name ||
+        'General';
+
       if (isBusiness) {
         businessExpenses += t.debit;
         workspaceMonthMap.Business[mIdx] -= t.debit;
-        const cur = wsSpendCategories.Business.get(catName) || 0;
-        wsSpendCategories.Business.set(catName, cur + t.debit);
+        wsSpendCategories.Business.set(
+          catName,
+          (wsSpendCategories.Business.get(catName) || 0) + t.debit
+        );
+      } else if (isMixed) {
+        mixedExpenses += t.debit;
+        workspaceMonthMap.Mixed[mIdx] -= t.debit;
+        wsSpendCategories.Mixed.set(
+          catName,
+          (wsSpendCategories.Mixed.get(catName) || 0) + t.debit
+        );
       } else {
         personalExpenses += t.debit;
         workspaceMonthMap.Personal[mIdx] -= t.debit;
-        const cur = wsSpendCategories.Personal.get(catName) || 0;
-        wsSpendCategories.Personal.set(catName, cur + t.debit);
+        wsSpendCategories.Personal.set(
+          catName,
+          (wsSpendCategories.Personal.get(catName) || 0) + t.debit
+        );
       }
     }
   }
 
-  const totalGrossIncome = businessIncome + otherPersonalIncome;
-  const totalDeductions = businessExpenses; // Standard business expense deductions
+  const totalGrossIncome = businessIncome + otherPersonalIncome + mixedIncome;
+  const totalDeductions = businessExpenses;
   const netTaxableIncome = Math.max(0, totalGrossIncome - totalDeductions);
   const estimatedTax30 = Math.round(netTaxableIncome * 0.3 * 100) / 100;
 
-  // Format top 5 spend categories for workspace cards
   const formatTop5 = (map: Map<string, number>) =>
     Array.from(map.entries())
       .map(([name, amount]) => ({ name, amount }))
@@ -1483,12 +1542,30 @@ export async function getITRSummaryData(fyRange: { startDate: string; endDate: s
   return {
     lineItems: [
       { section: 'Income', lineItem: 'Business Income (Gross Receipts)', amount: businessIncome },
-      { section: 'Income', lineItem: 'Other Income (Personal & Investments)', amount: otherPersonalIncome },
+      {
+        section: 'Income',
+        lineItem: 'Other Income (Personal & Investments)',
+        amount: otherPersonalIncome + mixedIncome,
+      },
       { section: 'Income', lineItem: 'Total Gross Income', amount: totalGrossIncome, isSubtotal: true },
-      { section: 'Deductions', lineItem: 'Business Expenses (Allowable deductions)', amount: businessExpenses },
+      {
+        section: 'Deductions',
+        lineItem: 'Business Expenses (Allowable deductions)',
+        amount: businessExpenses,
+      },
       { section: 'Deductions', lineItem: 'Total Deductions', amount: totalDeductions, isSubtotal: true },
-      { section: 'Taxable Income', lineItem: 'Net Taxable Income (Estimated)', amount: netTaxableIncome, isTotal: true },
-      { section: 'Tax', lineItem: 'Tax @ 30% (Estimated, reference only)', amount: estimatedTax30, isTax: true },
+      {
+        section: 'Taxable Income',
+        lineItem: 'Net Taxable Income (Estimated)',
+        amount: netTaxableIncome,
+        isTotal: true,
+      },
+      {
+        section: 'Tax',
+        lineItem: 'Tax @ 30% (Estimated, reference only)',
+        amount: estimatedTax30,
+        isTax: true,
+      },
     ],
     workspaces: [
       {
@@ -1509,9 +1586,9 @@ export async function getITRSummaryData(fyRange: { startDate: string; endDate: s
       },
       {
         name: 'Mixed / Both',
-        income: 0,
-        expenses: 0,
-        net: 0,
+        income: mixedIncome,
+        expenses: mixedExpenses,
+        net: mixedIncome - mixedExpenses,
         topCategories: formatTop5(wsSpendCategories.Mixed),
         sparkline: workspaceMonthMap.Mixed.map((val, idx) => ({ month: idx + 1, val })),
       },
@@ -1531,95 +1608,87 @@ export async function applyAICategorizations(
     confidence: 'high' | 'medium' | 'low';
     score?: number;
     reasoning?: string;
-  }>
+  }>,
+  client?: any
 ): Promise<{ updatedCount: number }> {
+  const supabase = client || createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) {
+    throw new Error('Unauthorized');
+  }
+
+  if (!results || results.length === 0) {
+    return { updatedCount: 0 };
+  }
+
+  const targetIds = results.map((r) => r.transaction_id);
+  const [{ data: txRows }, { data: auditRows }] = await Promise.all([
+    supabase
+      .from('transactions')
+      .select('id, category_id, is_manual')
+      .eq('user_id', user.id)
+      .in('id', targetIds),
+    supabase
+      .from('audit_log')
+      .select('record_id, new_data')
+      .eq('user_id', user.id)
+      .eq('table_name', 'transactions')
+      .eq('action', 'update')
+      .in('record_id', targetIds),
+  ]);
+
+  const txMap = new Map<string, any>();
+  for (const row of txRows || []) {
+    txMap.set(row.id, row);
+  }
+
+  const userEditedIds = new Set<string>();
+  for (const aud of auditRows || []) {
+    if ((aud.new_data as any)?.category_id) {
+      userEditedIds.add(aud.record_id);
+    }
+  }
+
   let updatedCount = 0;
-  const categories = await getCategories();
 
   for (const res of results) {
-    const tx = localTransactionsStore.find((t) => t.id === res.transaction_id);
+    const tx = txMap.get(res.transaction_id);
     if (!tx) continue;
+    if (tx.is_manual || userEditedIds.has(tx.id)) continue;
 
-    // NEVER re-categorize if already set by user or rule
-    if (tx.is_manual) continue;
-    const hasUserEdit = localAuditLogStore.some(
-      (a) => a.record_id === tx.id && a.action === 'update' && (a.new_data as any)?.category_id
-    );
-    if (hasUserEdit) continue;
-
-    const matchedCat = categories.find((c) => c.id === res.category_id);
-
-    if (res.confidence === 'high' && res.category_id) {
+    if ((res.confidence === 'high' || res.confidence === 'medium') && res.category_id) {
       const oldCat = tx.category_id;
-      tx.category_id = res.category_id;
-      tx.category = matchedCat
-        ? {
-            id: matchedCat.id,
-            name: matchedCat.name,
-            color_index: matchedCat.color_index,
-            icon: matchedCat.icon,
-          }
-        : undefined;
-      tx.ai_suggestion = {
-        category_id: res.category_id,
-        confidence: 'high',
-        score: res.score || 0.9,
-        is_ai_applied: true,
-      };
-      tx.updated_at = new Date().toISOString();
+      const { error: updateErr } = await supabase
+        .from('transactions')
+        .update({
+          category_id: res.category_id,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', tx.id)
+        .eq('user_id', user.id);
 
-      localAuditLogStore.push({
-        id: `aud_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-        user_id: tx.user_id,
-        table_name: 'transactions',
-        record_id: tx.id,
-        action: 'update',
-        old_data: { category_id: oldCat },
-        new_data: { category_id: res.category_id, confidence: res.confidence, score: res.score },
-        created_at: new Date().toISOString(),
-      });
-      updatedCount++;
-    } else if (res.confidence === 'medium' && res.category_id) {
-      const oldCat = tx.category_id;
-      tx.category_id = res.category_id;
-      tx.category = matchedCat
-        ? {
-            id: matchedCat.id,
-            name: matchedCat.name,
-            color_index: matchedCat.color_index,
-            icon: matchedCat.icon,
-          }
-        : undefined;
-      tx.ai_suggestion = {
-        category_id: res.category_id,
-        confidence: 'medium',
-        score: res.score || 0.7,
-        is_ai_applied: true,
-      };
-      tx.updated_at = new Date().toISOString();
-
-      localAuditLogStore.push({
-        id: `aud_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-        user_id: tx.user_id,
-        table_name: 'transactions',
-        record_id: tx.id,
-        action: 'update',
-        old_data: { category_id: oldCat },
-        new_data: { category_id: res.category_id, confidence: res.confidence, score: res.score },
-        created_at: new Date().toISOString(),
-      });
-      updatedCount++;
-    } else {
-      // Low confidence (< 0.5): Do NOT apply — leave category_id null, show in Needs Review queue
-      tx.ai_suggestion = {
-        category_id: res.category_id,
-        confidence: 'low',
-        score: res.score || 0.3,
-        is_ai_applied: false,
-      };
+      if (!updateErr) {
+        await writeAuditLog(
+          {
+            table_name: 'transactions',
+            record_id: tx.id,
+            action: 'update',
+            old_data: { category_id: oldCat },
+            new_data: {
+              category_id: res.category_id,
+              confidence: res.confidence,
+              score: res.score,
+            },
+          },
+          supabase
+        );
+        updatedCount++;
+      }
     }
   }
 
   return { updatedCount };
 }
-

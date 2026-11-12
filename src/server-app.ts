@@ -1,8 +1,13 @@
 import 'dotenv/config';
-import express, { Request, Response } from 'express';
+import crypto from 'node:crypto';
+import express, { NextFunction, Request, Response } from 'express';
+import helmet from 'helmet';
+import rateLimit from 'express-rate-limit';
+import multer from 'multer';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { createServer as createViteServer } from 'vite';
+import { createClient as createSupabaseClient, type User } from '@supabase/supabase-js';
 import * as XLSX from 'xlsx';
 
 import { testGeminiConnection } from './lib/ai/gemini-client';
@@ -20,189 +25,377 @@ import {
 } from './lib/actions/transactions';
 import { getCategories } from './lib/actions/categories';
 import { getAccounts } from './lib/actions/accounts';
+import { getWorkspaces } from './lib/actions/workspaces';
+import { getRules } from './lib/actions/rules';
+import { getRecurringTransactions } from './lib/actions/recurring';
+import { getBudgets } from './lib/actions/budgets';
+import { getUploads, checkReconciliation, normalizeDate, parseAmount } from './lib/actions/upload';
+import { parseCSV } from './lib/parsers/csv';
+import { parseXLSX } from './lib/parsers/xlsx';
+import { extractPDFRawData } from './lib/parsers/pdf';
+import { parsePDFHDFC, isHDFCStatement } from './lib/parsers/pdf-hdfc';
+import { parsePDFGeneric } from './lib/parsers/pdf-generic';
+import { getCurrentFY, getFYBounds } from './lib/fy-utils';
 import type { Transaction } from './types/transactions';
+import type { ColumnMapping, ParseResult } from './types/uploads';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const ROOT_DIR = path.resolve(__dirname, '..');
 
+interface AuthenticatedRequest extends Request {
+  user?: User;
+  supabase?: any;
+}
+
+const SUPABASE_URL =
+  process.env.VITE_SUPABASE_URL ||
+  process.env.NEXT_PUBLIC_SUPABASE_URL ||
+  'https://placeholder-project.supabase.co';
+
+const SUPABASE_ANON_KEY =
+  process.env.VITE_SUPABASE_ANON_KEY ||
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
+  'placeholder-anon-key';
+
+async function requireAuth(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction
+) {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    const token = authHeader.slice(7).trim();
+    if (!token) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    const reqSupabase = createSupabaseClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+      global: {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      },
+      auth: {
+        persistSession: false,
+        autoRefreshToken: false,
+      },
+    });
+
+    const {
+      data: { user },
+      error,
+    } = await reqSupabase.auth.getUser(token);
+
+    if (error || !user) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    const allowedRaw = process.env.ALLOWED_EMAILS || '';
+    const allowedEmails = allowedRaw
+      .split(',')
+      .map((e) => e.trim().toLowerCase())
+      .filter(Boolean);
+
+    if (
+      allowedEmails.length > 0 &&
+      (!user.email || !allowedEmails.includes(user.email.toLowerCase()))
+    ) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+
+    // Allow action helpers calling supabase.auth.getUser() with no args to resolve this verified user
+    const originalGetUser = reqSupabase.auth.getUser.bind(reqSupabase.auth);
+    reqSupabase.auth.getUser = (async (jwt?: string) => {
+      if (jwt) {
+        return originalGetUser(jwt);
+      }
+      return { data: { user }, error: null };
+    }) as any;
+
+    req.user = user;
+    req.supabase = reqSupabase;
+    return next();
+  } catch (err) {
+    console.error('Auth middleware error:', err);
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+}
+
+const uploadMiddleware = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 20 * 1024 * 1024, // 20 MB max
+  },
+});
+
+const ALLOWED_UPLOAD_MIMETYPES: Record<'csv' | 'xlsx' | 'pdf', string[]> = {
+  csv: [
+    'text/csv',
+    'application/csv',
+    'text/plain',
+    'application/vnd.ms-excel',
+    'application/octet-stream',
+  ],
+  xlsx: [
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'application/vnd.ms-excel',
+    'application/octet-stream',
+  ],
+  pdf: ['application/pdf', 'application/x-pdf', 'application/octet-stream'],
+};
+
 export async function runServer() {
+  if (!process.env.GEMINI_API_KEY) {
+    console.warn(
+      '[Zaboraa Finance] Startup warning: GEMINI_API_KEY is not set. AI features will run in fallback mode.'
+    );
+  }
+
   const app = express();
   const PORT = 3000;
   const HOST = '0.0.0.0';
 
+  // Security headers (CSP/frameguard relaxed for Vite SPA dev & iframe preview)
+  app.use(
+    helmet({
+      contentSecurityPolicy: false,
+      frameguard: false,
+      crossOriginEmbedderPolicy: false,
+      crossOriginOpenerPolicy: false,
+    })
+  );
+
   app.use(express.json({ limit: '25mb' }));
   app.use(express.urlencoded({ extended: true, limit: '25mb' }));
 
-  // --- API Routes ---
+  // Rate limiting: 100 req / 15 min per IP for API routes; 10 req / 15 min on /api/ai/*
+  const apiLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 100,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Too many requests. Please try again later.' },
+  });
+
+  const aiLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 10,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'AI rate limit exceeded. Please try again in 15 minutes.' },
+  });
+
+  app.use('/api', apiLimiter);
+  app.use('/api/ai', aiLimiter);
+
+  // Note on GET /api/auth/callback:
+  // In Express SPA mode, Supabase OAuth (PKCE) callbacks are handled client-side by
+  // @supabase/ssr / supabase-js when redirected to `${window.location.origin}/#dashboard`.
+  // No server-side Next.js callback handler is needed here.
+
+  // --- Protected API Routes ---
 
   // 1. Gemini Test Connection
-  app.post('/api/ai/test', async (_req: Request, res: Response) => {
+  app.post('/api/ai/test', requireAuth, async (_req: AuthenticatedRequest, res: Response) => {
     try {
       const result = await testGeminiConnection();
       res.json(result);
-    } catch (err: any) {
+    } catch (err) {
+      console.error('Gemini test connection error:', err);
       res.status(500).json({
         success: false,
-        message: err.message || 'Error occurred while testing Gemini connection.',
+        message: 'Failed to test AI connection.',
       });
     }
   });
 
   // 2. Anomaly Detection
-  app.post('/api/ai/anomalies', async (req: Request, res: Response) => {
-    try {
-      const forceRefresh = req.body?.forceRefresh === true;
+  app.post(
+    '/api/ai/anomalies',
+    requireAuth,
+    async (req: AuthenticatedRequest, res: Response) => {
+      try {
+        const userId = req.user!.id;
+        const forceRefresh = req.body?.forceRefresh === true;
 
-      if (!forceRefresh) {
-        const cached = getCachedAnomalies();
-        if (cached.length > 0) {
-          return res.json({ success: true, anomalies: cached, fromCache: true });
+        if (!forceRefresh) {
+          const cached = getCachedAnomalies(userId);
+          if (cached.length > 0) {
+            return res.json({ success: true, anomalies: cached, fromCache: true });
+          }
         }
-      }
 
-      const ledger = await getTransactions({
-        page: 1,
-        pageSize: 150,
-        filters: {
-          startDate: '2024-04-01',
-          endDate: '2028-03-31',
-          accountIds: [],
-          categoryIds: [],
-          workspaceId: 'all',
-          txnType: 'all',
-          search: '',
-        },
-      });
-
-      const anomalies = await detectAnomaliesWithAI(ledger.transactions);
-
-      res.json({
-        success: true,
-        anomalies,
-        count: anomalies.length,
-      });
-    } catch (err: any) {
-      console.error('Anomalies API error:', err);
-      res.status(500).json({
-        success: false,
-        error: err.message || 'Error running anomaly detection.',
-      });
-    }
-  });
-
-  // 3. Ask-Your-Data Chat
-  app.post('/api/ai/chat', async (req: Request, res: Response) => {
-    try {
-      const question = (req.body?.question || '').trim();
-
-      if (!question) {
-        return res.status(400).json({ error: 'Question string is required.' });
-      }
-
-      const result = await askYourDataChat(question);
-
-      res.json({
-        success: true,
-        answer: result.answer,
-        queryParams: result.queryParams,
-        dataSummary: result.dataSummary,
-      });
-    } catch (err: any) {
-      console.error('Chat API error:', err);
-      res.status(500).json({
-        success: false,
-        error: 'AI is currently unavailable. Try again later.',
-        details: err.message,
-      });
-    }
-  });
-
-  // 4. Monthly Financial Report
-  app.post('/api/ai/monthly-report', async (req: Request, res: Response) => {
-    try {
-      const month = req.body?.month;
-      const report = await generateMonthlyReportWithAI(month);
-
-      res.json({
-        success: true,
-        report,
-      });
-    } catch (err: any) {
-      console.error('Monthly report API route error:', err);
-      res.status(500).json({
-        success: false,
-        error: err.message || 'Failed to generate monthly AI report.',
-      });
-    }
-  });
-
-  // 5. Automated AI Categorization
-  app.post('/api/ai/categorize', async (req: Request, res: Response) => {
-    try {
-      const { transactionIds, uploadId } = req.body || {};
-
-      const ledger = await getTransactions({
-        page: 1,
-        pageSize: 200,
-        filters: {
-          startDate: '2024-04-01',
-          endDate: '2028-03-31',
-          accountIds: [],
-          categoryIds: [],
-          workspaceId: 'all',
-          txnType: 'all',
-          search: '',
-        },
-      });
-
-      let targetTxns: Transaction[] = ledger.transactions;
-      if (Array.isArray(transactionIds) && transactionIds.length > 0) {
-        targetTxns = targetTxns.filter((t: Transaction) => transactionIds.includes(t.id));
-      } else if (uploadId) {
-        targetTxns = targetTxns.filter((t: Transaction) => t.upload_id === uploadId);
-      } else {
-        targetTxns = targetTxns.filter((t: Transaction) => !t.category_id);
-      }
-
-      if (targetTxns.length === 0) {
-        return res.json({
-          success: true,
-          message: 'No eligible uncategorized transactions found.',
-          summary: {
-            totalProcessed: 0,
-            autoAppliedHigh: 0,
-            autoAppliedMedium: 0,
-            needsReviewLow: 0,
+        const ledger = await getTransactions(
+          {
+            page: 1,
+            pageSize: 150,
+            filters: {
+              startDate: '2024-04-01',
+              endDate: '2028-03-31',
+              accountIds: [],
+              categoryIds: [],
+              workspaceId: 'all',
+              txnType: 'all',
+              search: '',
+            },
           },
+          req.supabase
+        );
+
+        const anomalies = await detectAnomaliesWithAI(
+          ledger.transactions,
+          undefined,
+          userId
+        );
+
+        res.json({
+          success: true,
+          anomalies,
+          count: anomalies.length,
+        });
+      } catch (err) {
+        console.error('Anomalies API error:', err);
+        res.status(500).json({
+          success: false,
+          error: 'Failed to run anomaly detection.',
         });
       }
-
-      const categories = await getCategories();
-      const summary = await categorizeTransactionsWithAI(targetTxns, categories);
-
-      if (summary.results.length > 0) {
-        await applyAICategorizations(summary.results);
-      }
-
-      res.json({
-        success: true,
-        summary,
-      });
-    } catch (err: any) {
-      console.error('Categorize API Route error:', err);
-      res.status(500).json({
-        success: false,
-        error: err.message || 'Internal server error during AI categorization.',
-      });
     }
-  });
+  );
+
+  // 3. Ask-Your-Data Chat
+  app.post(
+    '/api/ai/chat',
+    requireAuth,
+    async (req: AuthenticatedRequest, res: Response) => {
+      try {
+        const question = (req.body?.question || '').trim();
+
+        if (!question) {
+          return res.status(400).json({ error: 'Question string is required.' });
+        }
+
+        const result = await askYourDataChat(question, undefined, req.supabase);
+
+        res.json({
+          success: true,
+          answer: result.answer,
+          queryParams: result.queryParams,
+          dataSummary: result.dataSummary,
+        });
+      } catch (err) {
+        console.error('Chat API error:', err);
+        res.status(500).json({
+          success: false,
+          error: 'AI is currently unavailable. Try again later.',
+        });
+      }
+    }
+  );
+
+  // 4. Monthly Financial Report
+  app.post(
+    '/api/ai/monthly-report',
+    requireAuth,
+    async (req: AuthenticatedRequest, res: Response) => {
+      try {
+        const month = req.body?.month;
+        const report = await generateMonthlyReportWithAI(month, undefined, req.supabase);
+
+        res.json({
+          success: true,
+          report,
+        });
+      } catch (err) {
+        console.error('Monthly report API route error:', err);
+        res.status(500).json({
+          success: false,
+          error: 'Failed to generate monthly AI report.',
+        });
+      }
+    }
+  );
+
+  // 5. Automated AI Categorization
+  app.post(
+    '/api/ai/categorize',
+    requireAuth,
+    async (req: AuthenticatedRequest, res: Response) => {
+      try {
+        const { transactionIds, uploadId } = req.body || {};
+
+        const ledger = await getTransactions(
+          {
+            page: 1,
+            pageSize: 200,
+            filters: {
+              startDate: '2024-04-01',
+              endDate: '2028-03-31',
+              accountIds: [],
+              categoryIds: [],
+              workspaceId: 'all',
+              txnType: 'all',
+              search: '',
+            },
+          },
+          req.supabase
+        );
+
+        let targetTxns: Transaction[] = ledger.transactions;
+        if (Array.isArray(transactionIds) && transactionIds.length > 0) {
+          targetTxns = targetTxns.filter((t: Transaction) =>
+            transactionIds.includes(t.id)
+          );
+        } else if (uploadId) {
+          targetTxns = targetTxns.filter((t: Transaction) => t.upload_id === uploadId);
+        } else {
+          targetTxns = targetTxns.filter((t: Transaction) => !t.category_id);
+        }
+
+        if (targetTxns.length === 0) {
+          return res.json({
+            success: true,
+            message: 'No eligible uncategorized transactions found.',
+            summary: {
+              totalProcessed: 0,
+              autoAppliedHigh: 0,
+              autoAppliedMedium: 0,
+              needsReviewLow: 0,
+            },
+          });
+        }
+
+        const categories = await getCategories(req.supabase);
+        const summary = await categorizeTransactionsWithAI(targetTxns, categories);
+
+        if (summary.results.length > 0) {
+          await applyAICategorizations(summary.results, req.supabase);
+        }
+
+        res.json({
+          success: true,
+          summary,
+        });
+      } catch (err) {
+        console.error('Categorize API Route error:', err);
+        res.status(500).json({
+          success: false,
+          error: 'Internal server error during AI categorization.',
+        });
+      }
+    }
+  );
 
   // 6. Financial Export (Excel & CSV)
-  app.get('/api/export', async (req: Request, res: Response) => {
+  app.get('/api/export', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
     try {
       const format = (req.query.format as string) || 'xlsx';
-      const fy = (req.query.fy as string) || 'FY2026-27';
+      const fy = (req.query.fy as string) || getCurrentFY().shortLabel;
       const workspace = (req.query.workspace as string) || 'all';
 
       if (format === 'tally') {
@@ -212,30 +405,28 @@ export async function runServer() {
         });
       }
 
-      let startDate = '2026-04-01';
-      let endDate = '2027-03-31';
-      if (fy === 'FY2025-26') {
-        startDate = '2025-04-01';
-        endDate = '2026-03-31';
-      } else if (fy === 'FY2024-25') {
-        startDate = '2024-04-01';
-        endDate = '2025-03-31';
-      }
+      const { start: startDate, end: endDate } = getFYBounds(fy);
 
-      const [allTxns, accounts, categories, itrData] = await Promise.all([
-        getAllTransactions(),
-        getAccounts(),
-        getCategories(),
-        getITRSummaryData({ startDate, endDate }),
+      const [allTxns, accounts, workspaces, itrData] = await Promise.all([
+        getAllTransactions(req.supabase),
+        getAccounts(req.supabase),
+        getWorkspaces(req.supabase),
+        getITRSummaryData({ startDate, endDate }, req.supabase),
       ]);
 
-      let filteredTxns = allTxns.filter((t) => t.txn_date >= startDate && t.txn_date <= endDate);
+      let filteredTxns = allTxns.filter(
+        (t) => t.txn_date >= startDate && t.txn_date <= endDate
+      );
       if (workspace && workspace !== 'all') {
+        const matchedWs = workspaces.find(
+          (w) =>
+            w.id === workspace || w.name.toLowerCase() === workspace.toLowerCase()
+        );
+        const wsLower = workspace.toLowerCase();
         filteredTxns = filteredTxns.filter((t) => {
-          if (workspace === 'Personal') return t.workspace_id === 'ws_personal';
-          if (workspace === 'Business') return t.workspace_id === 'ws_business';
-          if (workspace === 'Mixed') return t.workspace_id === 'ws_mixed';
-          return t.workspace_id === workspace;
+          if (matchedWs && t.workspace_id === matchedWs.id) return true;
+          if (t.workspace_id === workspace) return true;
+          return (t.workspace?.name || '').toLowerCase() === wsLower;
         });
       }
 
@@ -251,9 +442,12 @@ export async function runServer() {
           'Bank Name': t.account?.bank_name || '',
           Category: t.category?.name || 'Uncategorized',
           Workspace: t.workspace?.name || 'Personal',
-          'Debit Amount': t.debit !== null && t.debit !== undefined ? Number(t.debit) : '',
-          'Credit Amount': t.credit !== null && t.credit !== undefined ? Number(t.credit) : '',
-          'Account Balance': t.balance !== null && t.balance !== undefined ? Number(t.balance) : '',
+          'Debit Amount':
+            t.debit !== null && t.debit !== undefined ? Number(t.debit) : '',
+          'Credit Amount':
+            t.credit !== null && t.credit !== undefined ? Number(t.credit) : '',
+          'Account Balance':
+            t.balance !== null && t.balance !== undefined ? Number(t.balance) : '',
           'Reference / UTR': t.reference_number || '',
           'Is Transfer': t.is_transfer ? 'YES' : 'NO',
           'Transfer Pair ID': t.transfer_pair_id || '',
@@ -274,7 +468,6 @@ export async function runServer() {
         return res.send(csvContent);
       }
 
-      // Excel workbook
       const workbook = XLSX.utils.book_new();
 
       const txnSheetRows = filteredTxns.map((t) => ({
@@ -286,9 +479,12 @@ export async function runServer() {
         'Bank Name': t.account?.bank_name || '',
         Category: t.category?.name || 'Uncategorized',
         Workspace: t.workspace?.name || 'Personal',
-        'Debit Amount': t.debit !== null && t.debit !== undefined ? Number(t.debit) : null,
-        'Credit Amount': t.credit !== null && t.credit !== undefined ? Number(t.credit) : null,
-        'Account Balance': t.balance !== null && t.balance !== undefined ? Number(t.balance) : null,
+        'Debit Amount':
+          t.debit !== null && t.debit !== undefined ? Number(t.debit) : null,
+        'Credit Amount':
+          t.credit !== null && t.credit !== undefined ? Number(t.credit) : null,
+        'Account Balance':
+          t.balance !== null && t.balance !== undefined ? Number(t.balance) : null,
         'Reference / UTR': t.reference_number || '',
         'Is Transfer': t.is_transfer ? 'YES' : 'NO',
         'Transfer Pair ID': t.transfer_pair_id || '',
@@ -310,7 +506,10 @@ export async function runServer() {
       sheet2['!freeze'] = { xSplit: 0, ySplit: 1 };
       XLSX.utils.book_append_sheet(workbook, sheet2, 'ITR Summary');
 
-      const catMap = new Map<string, { debits: number; credits: number; count: number }>();
+      const catMap = new Map<
+        string,
+        { debits: number; credits: number; count: number }
+      >();
       for (const t of filteredTxns) {
         const cName = t.category?.name || 'Uncategorized';
         const cur = catMap.get(cName) || { debits: 0, credits: 0, count: 0 };
@@ -365,57 +564,357 @@ export async function runServer() {
         `attachment; filename="zaboraa-export-${fy}-${todayStr}.xlsx"`
       );
       res.send(buffer);
-    } catch (err: any) {
+    } catch (err) {
       console.error('Export route error:', err);
-      res.status(500).json({ error: err.message || 'Internal error generating financial export.' });
+      res.status(500).json({ error: 'Internal error generating financial export.' });
     }
   });
 
-  // 7. Finalize Upload Import
-  app.post('/api/upload/finalize', async (req: Request, res: Response) => {
-    try {
-      const { upload_id, replace_previous_id } = req.body || {};
-      if (!upload_id) {
-        return res.status(400).json({ error: 'upload_id is required.' });
-      }
-
-      const result = await commitUploadTransactions(upload_id, replace_previous_id);
-      res.json(result);
-    } catch (err: any) {
-      console.error('Finalize upload error:', err);
-      res.status(500).json({ error: err.message || 'Internal error finalizing statement upload.' });
-    }
-  });
-
-  // 8. Update Transaction
-  app.patch('/api/transactions/:id', async (req: Request, res: Response) => {
-    try {
-      const id = req.params.id;
-      if (!id) {
-        return res.status(400).json({ error: 'Transaction id is required.' });
-      }
-
-      const body = req.body || {};
-      if (body.debit !== undefined || body.credit !== undefined || body.balance !== undefined) {
-        return res.status(400).json({
-          error: 'Transaction amounts are sacred and non-editable after import.',
-        });
-      }
-
-      const updated = await updateTransaction(id, {
-        category_id: body.category_id,
-        workspace_id: body.workspace_id,
-        tags: body.tags,
-        notes: body.notes,
-        txn_type: body.txn_type,
-        is_transfer: body.is_transfer,
-        transfer_pair_id: body.transfer_pair_id,
+  // 7. Statement Upload (Multipart CSV / XLSX / PDF, max 20 MB)
+  app.post(
+    '/api/upload',
+    requireAuth,
+    (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+      uploadMiddleware.single('file')(req, res, (err: any) => {
+        if (err) {
+          if (err instanceof multer.MulterError && err.code === 'LIMIT_FILE_SIZE') {
+            return res.status(400).json({ error: 'File size exceeds 20 MB limit.' });
+          }
+          return res.status(400).json({ error: 'Invalid multipart file upload.' });
+        }
+        return next();
       });
+    },
+    async (req: AuthenticatedRequest, res: Response) => {
+      try {
+        const user = req.user!;
+        const supabase = req.supabase;
+        const file = req.file;
+        const accountId = req.body?.account_id as string | undefined;
 
-      res.json(updated);
-    } catch (err: any) {
-      console.error('Update transaction error:', err);
-      res.status(500).json({ error: err.message || 'Internal error updating transaction.' });
+        if (!file) {
+          return res.status(400).json({ error: 'No file uploaded.' });
+        }
+        if (!accountId) {
+          return res.status(400).json({ error: 'Target account_id is required.' });
+        }
+
+        const fileNameLower = file.originalname.toLowerCase();
+        let fileType: 'csv' | 'xlsx' | 'pdf' | null = null;
+        if (fileNameLower.endsWith('.csv')) fileType = 'csv';
+        else if (fileNameLower.endsWith('.xlsx')) fileType = 'xlsx';
+        else if (fileNameLower.endsWith('.pdf')) fileType = 'pdf';
+
+        if (!fileType) {
+          return res.status(400).json({
+            error: 'Invalid file type. Supported formats: .csv, .xlsx, .pdf.',
+          });
+        }
+
+        const mime = (file.mimetype || '').toLowerCase();
+        if (mime && !ALLOWED_UPLOAD_MIMETYPES[fileType].includes(mime)) {
+          return res.status(400).json({
+            error: 'File MIME type does not match supported statement format.',
+          });
+        }
+
+        // Compute SHA-256 hash
+        const fileHash = crypto.createHash('sha256').update(file.buffer).digest('hex');
+
+        // Check duplicate file hash for this user
+        const { data: existingUpload } = await supabase
+          .from('statement_uploads')
+          .select('id')
+          .eq('user_id', user.id)
+          .eq('file_hash', fileHash)
+          .neq('status', 'failed')
+          .maybeSingle();
+
+        if (existingUpload) {
+          return res.status(409).json({
+            error: 'DUPLICATE_FILE',
+            existing_upload_id: existingUpload.id,
+            message: 'This exact file has already been uploaded previously.',
+          });
+        }
+
+        // Upload raw file to Supabase Storage
+        const dateFolder = new Date().toISOString().slice(0, 7);
+        const sanitizedFilename = file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_');
+        const storagePath = `${user.id}/${dateFolder}/${Date.now()}-${sanitizedFilename}`;
+
+        const { error: storageError } = await supabase.storage
+          .from('statements')
+          .upload(storagePath, file.buffer, {
+            contentType: file.mimetype,
+            upsert: false,
+          });
+
+        if (storageError) {
+          console.warn('Storage upload notice:', storageError.message);
+        }
+
+        // Run parser matching fileType
+        const arrayBuffer = file.buffer.buffer.slice(
+          file.buffer.byteOffset,
+          file.buffer.byteOffset + file.buffer.byteLength
+        ) as ArrayBuffer;
+
+        let parseResult: ParseResult;
+        if (fileType === 'csv') {
+          const text = file.buffer.toString('utf-8');
+          parseResult = parseCSV(text);
+        } else if (fileType === 'xlsx') {
+          parseResult = parseXLSX(arrayBuffer);
+        } else {
+          const pdfData = await extractPDFRawData(arrayBuffer);
+          const firstPageText = pdfData.pages[0]?.fullText || pdfData.fullDocumentText;
+          if (isHDFCStatement(firstPageText)) {
+            parseResult = await parsePDFHDFC(arrayBuffer, pdfData);
+          } else {
+            parseResult = await parsePDFGeneric(arrayBuffer, pdfData);
+          }
+        }
+
+        if (parseResult.rows.length === 0) {
+          return res.status(422).json({
+            error: 'Parsed file contains no transaction rows.',
+          });
+        }
+
+        // Balance reconciliation check
+        const recon = checkReconciliation(
+          parseResult.rows,
+          parseResult.suggested_mapping,
+          parseResult.opening_balance,
+          parseResult.closing_balance
+        );
+        if (recon.warning) {
+          parseResult.reconciliation_warning = true;
+          parseResult.reconciliation_diff = recon.diff;
+        }
+
+        const columnMapping: ColumnMapping | null = parseResult.suggested_mapping || null;
+        const needsMapping = parseResult.confidence !== 'high';
+
+        // Insert statement_uploads record
+        const { data: newUploadRecord, error: dbError } = await supabase
+          .from('statement_uploads')
+          .insert({
+            user_id: user.id,
+            account_id: accountId,
+            file_name: file.originalname,
+            file_hash: fileHash,
+            file_type: fileType,
+            file_size_bytes: file.size,
+            storage_path: storagePath,
+            parser_version: parseResult.parser_version,
+            status: 'pending',
+            row_count: parseResult.rows.length,
+          })
+          .select()
+          .single();
+
+        if (dbError || !newUploadRecord) {
+          console.error('Upload DB insert error:', dbError?.message);
+          return res.status(500).json({ error: 'Failed to save upload record.' });
+        }
+
+        // Stage parsed rows into staged_transactions
+        const stagedRows = parseResult.rows.map((row) => {
+          const rawDate = columnMapping?.date_col ? row[columnMapping.date_col] : null;
+          let debit: number | null = null;
+          let credit: number | null = null;
+
+          if (columnMapping?.is_single_amount_col && columnMapping.amount_col) {
+            const amt = parseAmount(row[columnMapping.amount_col]);
+            if (amt !== null) {
+              if (amt < 0) debit = Math.abs(amt);
+              else credit = amt;
+            }
+          } else {
+            if (columnMapping?.debit_col) debit = parseAmount(row[columnMapping.debit_col]);
+            if (columnMapping?.credit_col) credit = parseAmount(row[columnMapping.credit_col]);
+          }
+
+          return {
+            user_id: user.id,
+            upload_id: newUploadRecord.id,
+            account_id: accountId,
+            raw_date: rawDate,
+            txn_date: normalizeDate(rawDate || ''),
+            description:
+              (columnMapping?.description_col ? row[columnMapping.description_col] : null) ||
+              'Pending Mapping',
+            raw_description: JSON.stringify(row),
+            debit,
+            credit,
+            balance: columnMapping?.balance_col
+              ? parseAmount(row[columnMapping.balance_col])
+              : null,
+            reference_number: columnMapping?.reference_col
+              ? row[columnMapping.reference_col]?.trim() || null
+              : null,
+            is_duplicate: false,
+          };
+        });
+
+        const CHUNK_SIZE = 500;
+        for (let i = 0; i < stagedRows.length; i += CHUNK_SIZE) {
+          const chunk = stagedRows.slice(i, i + CHUNK_SIZE);
+          const { error: stageError } = await supabase
+            .from('staged_transactions')
+            .insert(chunk);
+          if (stageError) {
+            console.error('Staged transactions insert error:', stageError.message);
+            return res.status(500).json({ error: 'Failed to stage parsed rows.' });
+          }
+        }
+
+        res.json({
+          upload_id: newUploadRecord.id,
+          row_count: parseResult.rows.length,
+          column_mapping: columnMapping,
+          needs_mapping: needsMapping,
+          headers: parseResult.headers,
+          detected_bank: parseResult.detected_bank,
+          sample_rows: parseResult.rows.slice(0, 5),
+          file_type: fileType,
+          reconciliation_warning: parseResult.reconciliation_warning,
+          reconciliation_diff: parseResult.reconciliation_diff,
+        });
+      } catch (err) {
+        console.error('Upload API route error:', err);
+        res.status(500).json({ error: 'Internal server error during upload.' });
+      }
+    }
+  );
+
+  // 8. Finalize Upload Import
+  app.post(
+    '/api/upload/finalize',
+    requireAuth,
+    async (req: AuthenticatedRequest, res: Response) => {
+      try {
+        const { upload_id, replace_previous_id } = req.body || {};
+        if (!upload_id) {
+          return res.status(400).json({ error: 'upload_id is required.' });
+        }
+
+        const result = await commitUploadTransactions(
+          upload_id,
+          replace_previous_id,
+          req.supabase
+        );
+        res.json(result);
+      } catch (err) {
+        console.error('Finalize upload error:', err);
+        res.status(500).json({ error: 'Internal error finalizing statement upload.' });
+      }
+    }
+  );
+
+  // 9. Update Transaction
+  app.patch(
+    '/api/transactions/:id',
+    requireAuth,
+    async (req: AuthenticatedRequest, res: Response) => {
+      try {
+        const id = req.params.id;
+        if (!id) {
+          return res.status(400).json({ error: 'Transaction id is required.' });
+        }
+
+        const body = req.body || {};
+        if (
+          body.debit !== undefined ||
+          body.credit !== undefined ||
+          body.balance !== undefined
+        ) {
+          return res.status(400).json({
+            error: 'Transaction amounts are sacred and non-editable after import.',
+          });
+        }
+
+        const updated = await updateTransaction(
+          id,
+          {
+            category_id: body.category_id,
+            workspace_id: body.workspace_id,
+            tags: body.tags,
+            notes: body.notes,
+            txn_type: body.txn_type,
+            is_transfer: body.is_transfer,
+            transfer_pair_id: body.transfer_pair_id,
+          },
+          req.supabase
+        );
+
+        res.json(updated);
+      } catch (err) {
+        console.error('Update transaction error:', err);
+        res.status(500).json({ error: 'Internal error updating transaction.' });
+      }
+    }
+  );
+
+  // 10. Full Data Backup Export (JSON)
+  app.get('/api/backup', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const [
+        accounts,
+        transactions,
+        categories,
+        workspaces,
+        rules,
+        recurring,
+        budgetData,
+        uploads,
+      ] = await Promise.all([
+        getAccounts(req.supabase),
+        getAllTransactions(req.supabase),
+        getCategories(req.supabase),
+        getWorkspaces(req.supabase),
+        getRules(req.supabase),
+        getRecurringTransactions(req.supabase),
+        getBudgets('', undefined, req.supabase),
+        getUploads(req.supabase),
+      ]);
+
+      const sanitizedUploads = uploads.map((u) => ({
+        id: u.id,
+        account_id: u.account_id,
+        file_name: u.file_name,
+        file_hash: u.file_hash,
+        file_type: u.file_type,
+        file_size_bytes: u.file_size_bytes,
+        status: u.status,
+        row_count: u.row_count,
+        statement_period_start: u.statement_period_start,
+        statement_period_end: u.statement_period_end,
+        imported_at: u.imported_at,
+        created_at: u.created_at,
+      }));
+
+      res.json({
+        backup_version: '1',
+        app: 'Zaboraa Finance',
+        exported_at: new Date().toISOString(),
+        user_id: '[REDACTED]',
+        tables: {
+          accounts,
+          transactions,
+          categories,
+          workspaces,
+          transaction_rules: rules,
+          recurring_transactions: recurring,
+          budgets: budgetData.budgets,
+          statement_uploads: sanitizedUploads,
+        },
+      });
+    } catch (err) {
+      console.error('Backup export API route error:', err);
+      res.status(500).json({ error: 'Failed to assemble backup data.' });
     }
   });
 

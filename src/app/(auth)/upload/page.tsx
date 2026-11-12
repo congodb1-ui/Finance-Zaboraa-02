@@ -136,7 +136,7 @@ export default function StatementUploadPage() {
         setStagedTransactions(updatedDetails.transactions);
 
         // Check for date range overlap with existing imports
-        const overlap = checkDateOverlap(
+        const overlap = await checkDateOverlap(
           selectedAccountId,
           stagedRes.date_start,
           stagedRes.date_end,
@@ -177,7 +177,7 @@ export default function StatementUploadPage() {
       setStagedTransactions(details.transactions);
 
       // Check date range overlap
-      const overlap = checkDateOverlap(
+      const overlap = await checkDateOverlap(
         selectedAccountId,
         res.date_start,
         res.date_end,

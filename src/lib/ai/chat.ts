@@ -185,24 +185,28 @@ export async function executePreWrittenQuery(
  */
 export async function askYourDataChat(
   userQuestion: string,
-  profileName?: string
+  profileName?: string,
+  client?: any
 ): Promise<ChatAnswerResponse> {
   const [accounts, categories, ledger] = await Promise.all([
-    getAccounts(),
-    getCategories(),
-    getTransactions({
-      page: 1,
-      pageSize: 500,
-      filters: {
-        startDate: '2024-04-01',
-        endDate: '2028-03-31',
-        accountIds: [],
-        categoryIds: [],
-        workspaceId: 'all',
-        txnType: 'all',
-        search: '',
+    getAccounts(client),
+    getCategories(client),
+    getTransactions(
+      {
+        page: 1,
+        pageSize: 500,
+        filters: {
+          startDate: '2024-04-01',
+          endDate: '2028-03-31',
+          accountIds: [],
+          categoryIds: [],
+          workspaceId: 'all',
+          txnType: 'all',
+          search: '',
+        },
       },
-    }),
+      client
+    ),
   ]);
 
   const accountMetadata = accounts.map((a) => ({ id: a.id, name: a.name }));

@@ -1,136 +1,97 @@
-'use server';
-
-import { createClient } from '../supabase/server';
+import { createClient } from '../supabase/client';
 import type { Account, AccountFormData, AccountWithBalance } from '../../types/accounts';
 
-// In-memory preview store for sandbox/local runs prior to database migrations
-let localAccountsStore: AccountWithBalance[] = [
-  {
-    id: 'acc_hdfc_01',
-    user_id: 'default_owner',
-    name: 'HDFC Main Savings',
-    bank_name: 'HDFC Bank',
-    account_type: 'savings',
-    account_number_last4: '4819',
-    currency: 'INR',
-    is_active: true,
-    color_index: 0,
-    notes: 'Primary personal expense & salary account',
-    opening_balance: 400000.0,
-    purpose: 'Personal',
-    credit_limit: null,
-    billing_cycle_day: null,
-    payment_due_day: null,
-    created_at: new Date(Date.now() - 60 * 86400000).toISOString(),
-    updated_at: new Date().toISOString(),
-    current_balance: 485200.0,
-    last_import_date: new Date(Date.now() - 2 * 86400000).toISOString(),
-  },
-  {
-    id: 'acc_sbi_02',
-    user_id: 'default_owner',
-    name: 'SBI Salary Account',
-    bank_name: 'State Bank of India',
-    account_type: 'salary',
-    account_number_last4: '9102',
-    currency: 'INR',
-    is_active: true,
-    color_index: 1,
-    notes: 'Direct client retainer & salary deposits',
-    opening_balance: 50000.0,
-    purpose: 'Personal',
-    credit_limit: null,
-    billing_cycle_day: null,
-    payment_due_day: null,
-    created_at: new Date(Date.now() - 90 * 86400000).toISOString(),
-    updated_at: new Date().toISOString(),
-    current_balance: 142800.5,
-    last_import_date: new Date(Date.now() - 5 * 86400000).toISOString(),
-  },
-  {
-    id: 'acc_icici_03',
-    user_id: 'default_owner',
-    name: 'ICICI Business Current',
-    bank_name: 'ICICI Bank',
-    account_type: 'current',
-    account_number_last4: '3341',
-    currency: 'INR',
-    is_active: true,
-    color_index: 2,
-    notes: 'Professional consulting and vendor disbursements',
-    opening_balance: 750000.0,
-    purpose: 'Business',
-    credit_limit: null,
-    billing_cycle_day: null,
-    payment_due_day: null,
-    created_at: new Date(Date.now() - 120 * 86400000).toISOString(),
-    updated_at: new Date().toISOString(),
-    current_balance: 854300.0,
-    last_import_date: new Date(Date.now() - 16 * 86400000).toISOString(),
-  },
-  {
-    id: 'acc_kotak_04',
-    user_id: 'default_owner',
-    name: 'Kotak White Credit Card',
-    bank_name: 'Kotak Mahindra Bank',
-    account_type: 'credit_card',
-    account_number_last4: '7021',
-    currency: 'INR',
-    is_active: true,
-    color_index: 7,
-    notes: 'Business travel and SaaS subscriptions',
-    opening_balance: 0.0,
-    purpose: 'Business',
-    credit_limit: 300000.0,
-    billing_cycle_day: 1,
-    payment_due_day: 20,
-    created_at: new Date(Date.now() - 45 * 86400000).toISOString(),
-    updated_at: new Date().toISOString(),
-    current_balance: -34500.0,
-    last_import_date: new Date(Date.now() - 4 * 86400000).toISOString(),
-  },
-];
-
-export async function getAccountById(id: string): Promise<AccountWithBalance | null> {
-  const accounts = await getAccounts();
+export async function getAccountById(
+  id: string,
+  client?: any
+): Promise<AccountWithBalance | null> {
+  const accounts = await getAccounts(client);
   return accounts.find((a) => a.id === id) || null;
 }
 
-export async function getAccounts(): Promise<AccountWithBalance[]> {
-  try {
-    const supabase = createClient();
-    const {
-      data: { user },
-      error: authError,
-    } = await supabase.auth.getUser();
+export async function getAccounts(client?: any): Promise<AccountWithBalance[]> {
+  const supabase = client || createClient();
+  const {
+    data: { user },
+    error: authError,
+  } = await supabase.auth.getUser();
 
-    if (authError || !user) {
-      // In offline preview mode, return local store
-      return [...localAccountsStore];
-    }
-
-    const { data, error } = await supabase
-      .from('accounts')
-      .select('*')
-      .order('name', { ascending: true });
-
-    if (error || !data) {
-      console.warn('Supabase accounts query error, using local fallback:', error?.message);
-      return [...localAccountsStore];
-    }
-
-    // In Batch 2, current_balance and last_import_date are computed
-    return data.map((acc: Account) => ({
-      ...acc,
-      current_balance: 0,
-      last_import_date: null,
-    }));
-  } catch {
-    return [...localAccountsStore];
+  if (authError || !user) {
+    return [];
   }
+
+  const { data, error } = await supabase
+    .from('accounts')
+    .select('*')
+    .eq('user_id', user.id)
+    .order('name', { ascending: true });
+
+  if (error || !data) {
+    console.error('Error fetching accounts:', error?.message);
+    return [];
+  }
+
+  const accountIds = data.map((acc: Account) => acc.id);
+  const balanceMap = new Map<string, number>();
+  const lastImportMap = new Map<string, string>();
+
+  if (accountIds.length > 0) {
+    const [{ data: txnRows }, { data: uploadRows }] = await Promise.all([
+      supabase
+        .from('transactions')
+        .select('account_id, debit, credit')
+        .eq('user_id', user.id)
+        .in('account_id', accountIds),
+      supabase
+        .from('statement_uploads')
+        .select('account_id, imported_at')
+        .eq('user_id', user.id)
+        .eq('status', 'imported')
+        .in('account_id', accountIds)
+        .order('imported_at', { ascending: false }),
+    ]);
+
+    if (txnRows) {
+      for (const tx of txnRows) {
+        const cur = balanceMap.get(tx.account_id) || 0;
+        const delta = Number(tx.credit ?? 0) - Number(tx.debit ?? 0);
+        balanceMap.set(tx.account_id, cur + delta);
+      }
+    }
+
+    if (uploadRows) {
+      for (const up of uploadRows) {
+        if (up.imported_at && !lastImportMap.has(up.account_id)) {
+          lastImportMap.set(up.account_id, up.imported_at);
+        }
+      }
+    }
+  }
+
+  return data.map((acc: Account) => {
+    const openBal = Number(acc.opening_balance ?? 0);
+    const delta = balanceMap.get(acc.id) || 0;
+    return {
+      ...acc,
+      current_balance: Math.round((openBal + delta) * 100) / 100,
+      last_import_date: lastImportMap.get(acc.id) || null,
+    };
+  });
 }
 
-export async function createAccount(data: AccountFormData): Promise<AccountWithBalance> {
+export async function createAccount(
+  data: AccountFormData,
+  client?: any
+): Promise<AccountWithBalance> {
+  const supabase = client || createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) {
+    throw new Error('Unauthorized');
+  }
+
   // Field validation
   if (!data.name?.trim()) throw new Error('Account name is required.');
   if (!data.bank_name?.trim()) throw new Error('Bank name is required.');
@@ -149,15 +110,10 @@ export async function createAccount(data: AccountFormData): Promise<AccountWithB
     }
   }
 
-  try {
-    const supabase = createClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-
-    const newRecord: AccountWithBalance = {
-      id: `acc_${Date.now()}`,
-      user_id: user?.id || 'default_owner',
+  const { data: inserted, error } = await supabase
+    .from('accounts')
+    .insert({
+      user_id: user.id,
       name: data.name.trim(),
       bank_name: data.bank_name.trim(),
       account_type: data.account_type,
@@ -169,117 +125,118 @@ export async function createAccount(data: AccountFormData): Promise<AccountWithB
       credit_limit: data.credit_limit ?? null,
       billing_cycle_day: data.billing_cycle_day ?? null,
       payment_due_day: data.payment_due_day ?? null,
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-      current_balance: 0,
-      last_import_date: null,
-    };
+    })
+    .select()
+    .single();
 
-    if (user) {
-      const { data: inserted, error } = await supabase
-        .from('accounts')
-        .insert({
-          user_id: user.id,
-          name: newRecord.name,
-          bank_name: newRecord.bank_name,
-          account_type: newRecord.account_type,
-          account_number_last4: newRecord.account_number_last4,
-          currency: newRecord.currency,
-          is_active: newRecord.is_active,
-          color_index: newRecord.color_index,
-          notes: newRecord.notes,
-          credit_limit: newRecord.credit_limit,
-          billing_cycle_day: newRecord.billing_cycle_day,
-          payment_due_day: newRecord.payment_due_day,
-        })
-        .select()
-        .single();
-
-      if (!error && inserted) {
-        return { ...inserted, current_balance: 0, last_import_date: null };
-      }
-    }
-
-    localAccountsStore.push(newRecord);
-    return newRecord;
-  } catch {
-    const fallback: AccountWithBalance = {
-      id: `acc_${Date.now()}`,
-      user_id: 'default_owner',
-      ...data,
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-      current_balance: 0,
-      last_import_date: null,
-    };
-    localAccountsStore.push(fallback);
-    return fallback;
+  if (error || !inserted) {
+    throw new Error(error?.message || 'Failed to create account.');
   }
+
+  return {
+    ...inserted,
+    current_balance: Number(data.opening_balance ?? 0),
+    last_import_date: null,
+  };
 }
 
 export async function updateAccount(
   id: string,
-  data: Partial<AccountFormData>
+  data: Partial<AccountFormData>,
+  client?: any
 ): Promise<AccountWithBalance> {
-  try {
-    const supabase = createClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
+  const supabase = client || createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
 
-    if (user) {
-      const { data: updated, error } = await supabase
-        .from('accounts')
-        .update({
-          ...data,
-          updated_at: new Date().toISOString(),
-        })
-        .eq('id', id)
-        .select()
-        .single();
-
-      if (!error && updated) {
-        return { ...updated, current_balance: 0, last_import_date: null };
-      }
-    }
-  } catch {
-    // Continue to local update
+  if (!user) {
+    throw new Error('Unauthorized');
   }
 
-  const idx = localAccountsStore.findIndex((a) => a.id === id);
-  if (idx === -1) throw new Error('Account not found.');
-
-  localAccountsStore[idx] = {
-    ...localAccountsStore[idx],
-    ...data,
+  const updatePayload: Record<string, any> = {
     updated_at: new Date().toISOString(),
   };
 
-  return localAccountsStore[idx];
-}
+  if (data.name !== undefined) updatePayload.name = data.name.trim();
+  if (data.bank_name !== undefined) updatePayload.bank_name = data.bank_name.trim();
+  if (data.account_type !== undefined) updatePayload.account_type = data.account_type;
+  if (data.account_number_last4 !== undefined) {
+    updatePayload.account_number_last4 = data.account_number_last4?.trim() || null;
+  }
+  if (data.currency !== undefined) updatePayload.currency = data.currency;
+  if (data.is_active !== undefined) updatePayload.is_active = data.is_active;
+  if (data.color_index !== undefined) updatePayload.color_index = data.color_index;
+  if (data.notes !== undefined) updatePayload.notes = data.notes?.trim() || null;
+  if (data.credit_limit !== undefined) updatePayload.credit_limit = data.credit_limit;
+  if (data.billing_cycle_day !== undefined) updatePayload.billing_cycle_day = data.billing_cycle_day;
+  if (data.payment_due_day !== undefined) updatePayload.payment_due_day = data.payment_due_day;
 
-export async function deleteAccount(id: string): Promise<{ success: boolean; error?: string }> {
-  try {
-    const supabase = createClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
+  const { data: updated, error } = await supabase
+    .from('accounts')
+    .update(updatePayload)
+    .eq('id', id)
+    .eq('user_id', user.id)
+    .select()
+    .single();
 
-    if (user) {
-      // In future batches, verify if transactions reference this account
-      const { error } = await supabase.from('accounts').delete().eq('id', id);
-      if (error) return { success: false, error: error.message };
-    }
-  } catch {
-    // Continue to local delete
+  if (error || !updated) {
+    throw new Error(error?.message || 'Account not found.');
   }
 
-  localAccountsStore = localAccountsStore.filter((a) => a.id !== id);
+  const refreshed = await getAccountById(id, supabase);
+  return refreshed || { ...updated, current_balance: 0, last_import_date: null };
+}
+
+export async function deleteAccount(
+  id: string,
+  client?: any
+): Promise<{ success: boolean; error?: string }> {
+  const supabase = client || createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) {
+    throw new Error('Unauthorized');
+  }
+
+  const { error } = await supabase
+    .from('accounts')
+    .delete()
+    .eq('id', id)
+    .eq('user_id', user.id);
+
+  if (error) {
+    return { success: false, error: error.message };
+  }
+
   return { success: true };
 }
 
-export async function toggleAccountActive(id: string): Promise<AccountWithBalance> {
-  const acc = localAccountsStore.find((a) => a.id === id);
-  if (!acc) throw new Error('Account not found');
-  return updateAccount(id, { is_active: !acc.is_active });
+export async function toggleAccountActive(
+  id: string,
+  client?: any
+): Promise<AccountWithBalance> {
+  const supabase = client || createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) {
+    throw new Error('Unauthorized');
+  }
+
+  const { data: acc, error } = await supabase
+    .from('accounts')
+    .select('id, is_active')
+    .eq('id', id)
+    .eq('user_id', user.id)
+    .single();
+
+  if (error || !acc) {
+    throw new Error('Account not found');
+  }
+
+  return updateAccount(id, { is_active: !acc.is_active }, supabase);
 }

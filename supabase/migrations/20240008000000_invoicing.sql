@@ -28,6 +28,7 @@ CREATE INDEX IF NOT EXISTS idx_invoices_status ON invoices(status);
 
 ALTER TABLE invoices ENABLE ROW LEVEL SECURITY;
 
+DROP TRIGGER IF EXISTS handle_updated_at_invoices ON invoices;
 CREATE TRIGGER handle_updated_at_invoices BEFORE UPDATE ON invoices
   FOR EACH ROW EXECUTE FUNCTION moddatetime(updated_at);
 

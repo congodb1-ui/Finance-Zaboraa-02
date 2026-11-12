@@ -40,7 +40,7 @@ export function getCurrentFY(refDate: Date = new Date()): FYInfo {
 /**
  * Returns options for FY dropdowns (default 3 to 5 years backwards)
  */
-export function getFYOptions(count: number = 4, refDate: Date = new Date()): FYInfo[] {
+export function getFYOptions(count: number = 3, refDate: Date = new Date()): FYInfo[] {
   const current = getCurrentFY(refDate);
   const options: FYInfo[] = [];
 
