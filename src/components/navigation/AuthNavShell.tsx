@@ -10,6 +10,7 @@ import {
   Building2,
   Upload,
   Receipt,
+  Sliders,
   FileSpreadsheet,
   Settings,
   LogOut,
@@ -35,7 +36,8 @@ export const AuthNavShell: React.FC<AuthNavShellProps> = ({
     { name: 'Dashboard', path: '/dashboard', icon: LayoutDashboard },
     { name: 'Accounts', path: '/accounts', icon: Building2 },
     { name: 'Upload Statements', path: '/upload', icon: Upload },
-    { name: 'Transactions', path: '/transactions', icon: Receipt, placeholder: true },
+    { name: 'Transactions', path: '/transactions', icon: Receipt },
+    { name: 'Rules', path: '/rules', icon: Sliders },
     { name: 'Reports', path: '/reports', icon: FileSpreadsheet, placeholder: true },
     { name: 'Settings', path: '/settings', icon: Settings },
   ];

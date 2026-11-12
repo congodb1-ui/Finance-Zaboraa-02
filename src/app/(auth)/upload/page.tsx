@@ -204,7 +204,7 @@ export default function StatementUploadPage() {
 
     setIsProcessing(true);
     try {
-      const { upload: updated } = await finalizeImport(activeUpload.id, replacePreviousId);
+      const { upload: updated, result } = await finalizeImport(activeUpload.id, replacePreviousId);
       setActiveUpload(updated);
       setCurrentStep('imported');
 
@@ -212,9 +212,13 @@ export default function StatementUploadPage() {
       const freshHistory = await getUploads();
       setUploadsHistory(freshHistory);
 
+      const msg = result
+        ? `Successfully imported ${result.imported_count} transactions into ledger (${result.duplicate_count} duplicates skipped, ${result.transfer_pairs_found} transfer pairs detected).`
+        : `Successfully imported ${updated.imported_count || updated.row_count} transactions into ledger!`;
+
       setStatusMessage({
         type: 'success',
-        text: `Successfully imported ${updated.imported_count || updated.row_count} transactions into ledger!`,
+        text: msg,
       });
     } catch (err: any) {
       console.error('Finalize failed:', err);

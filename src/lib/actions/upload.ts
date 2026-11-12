@@ -678,31 +678,22 @@ export async function getUploadDetails(uploadId: string): Promise<{
 }
 
 /**
- * Finalizes import:
- * In Batch 3a, sets status to 'review' or 'imported'.
- * If replacePreviousId is provided, marks previous upload as 'replaced'.
+ * Finalizes import (Batch 4):
+ * Commits staged transactions through the multiset dedup, rules engine, transfer
+ * detection, batch insert, and audit logging pipeline.
  */
 export async function finalizeImport(
   uploadId: string,
   replacePreviousId?: string
-): Promise<{ success: boolean; upload: StatementUpload }> {
+): Promise<{ success: boolean; upload: StatementUpload; result?: any }> {
+  // Dynamically import to prevent circular dependency if needed, or call commitUploadTransactions
+  const { commitUploadTransactions } = await import('./transactions');
+  const commitResult = await commitUploadTransactions(uploadId, replacePreviousId);
+
   const upload = localUploadsStore.find((u) => u.id === uploadId);
   if (!upload) throw new Error('Upload not found.');
 
-  if (replacePreviousId) {
-    const prev = localUploadsStore.find((u) => u.id === replacePreviousId);
-    if (prev) {
-      prev.status = 'replaced';
-      prev.updated_at = new Date().toISOString();
-    }
-  }
-
-  upload.status = 'imported';
-  upload.imported_at = new Date().toISOString();
-  upload.imported_count = upload.row_count || 0;
-  upload.updated_at = new Date().toISOString();
-
-  return { success: true, upload: { ...upload } };
+  return { success: true, upload: { ...upload }, result: commitResult };
 }
 
 /**

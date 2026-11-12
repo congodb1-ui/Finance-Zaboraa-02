@@ -4,6 +4,8 @@ import { LandingSkeleton } from './components/landing/LandingSkeleton';
 import DashboardPlaceholderPage from './app/(auth)/dashboard/page';
 import AccountsPage from './app/(auth)/accounts/page';
 import StatementUploadPage from './app/(auth)/upload/page';
+import TransactionsPage from './app/(auth)/transactions/page';
+import RulesPage from './app/(auth)/rules/page';
 import SettingsPage from './app/(auth)/settings/page';
 import { AuthNavShell } from './components/navigation/AuthNavShell';
 import { DesignSystemPlayground } from './components/showcase/DesignSystemPlayground';
@@ -20,13 +22,15 @@ import {
   Building2,
   LayoutDashboard,
   Upload,
+  Receipt,
+  Sliders,
   Settings,
 } from 'lucide-react';
 
 export default function App() {
   const { user, isAuthenticated, isLoading } = useAuth();
   const [currentRoute, setCurrentRoute] = useState<
-    '/' | '/dashboard' | '/accounts' | '/upload' | '/settings' | '/playground'
+    '/' | '/dashboard' | '/accounts' | '/upload' | '/transactions' | '/rules' | '/settings' | '/playground'
   >('/');
   const [authNotice, setAuthNotice] = useState<string | null>(null);
 
@@ -37,6 +41,8 @@ export default function App() {
       if (hash === 'dashboard') setCurrentRoute('/dashboard');
       else if (hash === 'accounts') setCurrentRoute('/accounts');
       else if (hash === 'upload') setCurrentRoute('/upload');
+      else if (hash === 'transactions') setCurrentRoute('/transactions');
+      else if (hash === 'rules') setCurrentRoute('/rules');
       else if (hash === 'settings') setCurrentRoute('/settings');
       else if (hash === 'playground') setCurrentRoute('/playground');
       else setCurrentRoute('/');
@@ -56,9 +62,16 @@ export default function App() {
   }, [isAuthenticated, isLoading, currentRoute]);
 
   // Auth Guard Check for protected routes
-  const navigateTo = (route: '/' | '/dashboard' | '/accounts' | '/upload' | '/settings' | '/playground') => {
+  const navigateTo = (
+    route: '/' | '/dashboard' | '/accounts' | '/upload' | '/transactions' | '/rules' | '/settings' | '/playground'
+  ) => {
     const isProtected =
-      route === '/dashboard' || route === '/accounts' || route === '/upload' || route === '/settings';
+      route === '/dashboard' ||
+      route === '/accounts' ||
+      route === '/upload' ||
+      route === '/transactions' ||
+      route === '/rules' ||
+      route === '/settings';
     if (isProtected && !isAuthenticated) {
       setAuthNotice(`Auth Guard: Unauthenticated visit to ${route} blocked and redirected to /`);
       setTimeout(() => setAuthNotice(null), 5000);
@@ -107,7 +120,7 @@ export default function App() {
             <span className="text-slate-500">|</span>
             <span className="inline-flex items-center gap-1 text-[11px] font-medium text-emerald-400 bg-emerald-950/60 px-2 py-0.5 rounded border border-emerald-800/60">
               <CheckCircle2 className="w-3 h-3" />
-              Batch 3a: Statement Upload Ready
+              Batch 4: Transactions & Rules Ready
             </span>
           </div>
 
@@ -159,6 +172,30 @@ export default function App() {
             >
               <Upload className="w-3 h-3" />
               <span>/upload</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => navigateTo('/transactions')}
+              className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium transition-colors cursor-pointer ${
+                currentRoute === '/transactions'
+                  ? 'bg-indigo-600 text-white shadow-xs'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              <Receipt className="w-3 h-3" />
+              <span>/transactions</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => navigateTo('/rules')}
+              className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium transition-colors cursor-pointer ${
+                currentRoute === '/rules'
+                  ? 'bg-indigo-600 text-white shadow-xs'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              <Sliders className="w-3 h-3" />
+              <span>/rules</span>
             </button>
             <button
               type="button"
@@ -258,6 +295,18 @@ export default function App() {
         {currentRoute === '/upload' && (
           <AuthNavShell activePathOverride="/upload" onNavigateOverride={(p) => navigateTo(p as any)}>
             <StatementUploadPage />
+          </AuthNavShell>
+        )}
+
+        {currentRoute === '/transactions' && (
+          <AuthNavShell activePathOverride="/transactions" onNavigateOverride={(p) => navigateTo(p as any)}>
+            <TransactionsPage />
+          </AuthNavShell>
+        )}
+
+        {currentRoute === '/rules' && (
+          <AuthNavShell activePathOverride="/rules" onNavigateOverride={(p) => navigateTo(p as any)}>
+            <RulesPage />
           </AuthNavShell>
         )}
 
