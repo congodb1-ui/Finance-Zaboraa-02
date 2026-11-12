@@ -1,0 +1,68 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --font-sans: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-heading: 'Manrope', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  
+  --color-brand-600: #4F46E5;
+  --color-brand-500: #6366F1;
+  --color-brand-700: #4338CA;
+  
+  --color-credit-light: #16A34A;
+  --color-credit-dark: #22C55E;
+  
+  --color-debit-light: #DC2626;
+  --color-debit-dark: #F87171;
+  
+  --color-warning-light: #D97706;
+  --color-warning-dark: #FBBF24;
+}
+
+:root {
+  --bg-page: #F8FAFC;
+  --bg-card: #FFFFFF;
+  --border-subtle: #E2E8F0;
+  --text-primary: #0F172A;
+  --text-secondary: #64748B;
+  
+  --color-brand: #4F46E5;
+  --color-brand-hover: #4338CA;
+  --color-credit: #16A34A;
+  --color-debit: #DC2626;
+  --color-warning: #D97706;
+  --color-neutral: #64748B;
+}
+
+.dark {
+  --bg-page: #0B1120;
+  --bg-card: #111827;
+  --border-subtle: #1F2937;
+  --text-primary: #E5E7EB;
+  --text-secondary: #94A3B8;
+  
+  --color-brand: #6366F1;
+  --color-brand-hover: #4F46E5;
+  --color-credit: #22C55E;
+  --color-debit: #F87171;
+  --color-warning: #FBBF24;
+  --color-neutral: #94A3B8;
+}
+
+/* Typography and Tabular Figures for Financial Numbers */
+.font-tabular {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+}
+
+.font-heading {
+  font-family: 'Manrope', sans-serif;
+}
+
+body {
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  background-color: var(--bg-page);
+  color: var(--text-primary);
+  min-height: 100vh;
+}

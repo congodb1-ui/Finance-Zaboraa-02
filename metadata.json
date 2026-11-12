@@ -1,0 +1,6 @@
+{
+  "name": "Zaboraa Finance",
+  "description": "Private personal accounting portal — Zaboraa Finance. Your money, clearly accounted.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
