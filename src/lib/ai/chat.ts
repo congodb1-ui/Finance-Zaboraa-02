@@ -182,11 +182,13 @@ export async function executePreWrittenQuery(
 /**
  * Ask-Your-Data Chat Controller
  * 7-step security architecture: Natural Language -> Parameters -> Validation -> Pre-written Query -> Natural Language Synthesis
- */
+import { getBroadDateRange } from '../fy-utils';
+
 export async function askYourDataChat(
   userQuestion: string,
   profileName?: string
 ): Promise<ChatAnswerResponse> {
+  const broadRange = getBroadDateRange(3, 1);
   const [accounts, categories, ledger] = await Promise.all([
     getAccounts(),
     getCategories(),
@@ -194,8 +196,8 @@ export async function askYourDataChat(
       page: 1,
       pageSize: 500,
       filters: {
-        startDate: '2024-04-01',
-        endDate: '2028-03-31',
+        startDate: broadRange.startDate,
+        endDate: broadRange.endDate,
         accountIds: [],
         categoryIds: [],
         workspaceId: 'all',

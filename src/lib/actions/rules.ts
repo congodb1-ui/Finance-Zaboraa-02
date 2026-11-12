@@ -3,268 +3,136 @@ import type { TransactionRule, RuleFormData } from '../../types/transactions';
 import { evaluateRuleMatch } from '../rules-engine';
 import { getTransactions } from './transactions';
 
-// Seed default rules for the rules engine
-let localRulesStore: TransactionRule[] = [
-  {
-    id: 'rule_swiggy_food',
-    user_id: 'default_owner',
-    name: 'Swiggy Food & Dining',
-    priority: 10,
-    match_field: 'description',
-    match_type: 'contains',
-    match_value: 'SWIGGY',
-    set_category: 'cat_1', // Food & Dining
-    set_workspace: 'ws_personal',
-    set_txn_type: 'expense',
-    set_tags: ['food', 'online'],
-    is_active: true,
-    created_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
-    category: {
-      id: 'cat_1',
-      name: 'Food & Dining',
-      color_index: 5,
-    },
-    workspace: {
-      id: 'ws_personal',
-      name: 'Personal',
-    },
-  },
-  {
-    id: 'rule_zomato_food',
-    user_id: 'default_owner',
-    name: 'Zomato Dining & Delivery',
-    priority: 20,
-    match_field: 'description',
-    match_type: 'contains',
-    match_value: 'ZOMATO',
-    set_category: 'cat_1',
-    set_workspace: 'ws_personal',
-    set_txn_type: 'expense',
-    set_tags: ['food', 'zomato'],
-    is_active: true,
-    created_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
-    category: {
-      id: 'cat_1',
-      name: 'Food & Dining',
-      color_index: 5,
-    },
-    workspace: {
-      id: 'ws_personal',
-      name: 'Personal',
-    },
-  },
-  {
-    id: 'rule_client_consulting',
-    user_id: 'default_owner',
-    name: 'Client Consulting Income',
-    priority: 30,
-    match_field: 'description',
-    match_type: 'contains',
-    match_value: 'CONSULT',
-    set_category: 'cat_6', // Freelance / Consulting
-    set_workspace: 'ws_business',
-    set_txn_type: 'income',
-    set_tags: ['consulting', 'business'],
-    is_active: true,
-    created_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
-    category: {
-      id: 'cat_6',
-      name: 'Freelance / Consulting',
-      color_index: 0,
-    },
-    workspace: {
-      id: 'ws_business',
-      name: 'Business',
-    },
-  },
-  {
-    id: 'rule_wework_office',
-    user_id: 'default_owner',
-    name: 'WeWork Office Rent',
-    priority: 40,
-    match_field: 'description',
-    match_type: 'contains',
-    match_value: 'WEWORK',
-    set_category: 'cat_7',
-    set_workspace: 'ws_business',
-    set_txn_type: 'expense',
-    set_tags: ['office', 'rent'],
-    is_active: true,
-    created_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
-    category: {
-      id: 'cat_7',
-      name: 'Client Payment',
-      color_index: 0,
-    },
-    workspace: {
-      id: 'ws_business',
-      name: 'Business',
-    },
-  },
-];
-
 export async function getRules(): Promise<TransactionRule[]> {
-  try {
-    const supabase = createClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
+  const supabase = createClient();
+  const { data: { user } } = await supabase.auth.getUser();
 
-    if (user) {
-      const { data, error } = await supabase
-        .from('transaction_rules')
-        .select('*, categories(id, name, color_index), workspaces(id, name)')
-        .order('priority', { ascending: true });
+  if (!user) return [];
 
-      if (!error && data && data.length > 0) {
-        return data.map((d: any) => ({
-          ...d,
-          category: d.categories,
-          workspace: d.workspaces,
-        }));
-      }
-    }
-  } catch {
-    // local fallback
+  const { data, error } = await supabase
+    .from('transaction_rules')
+    .select('*, categories(id, name, color_index), workspaces(id, name)')
+    .eq('user_id', user.id)
+    .order('priority', { ascending: true });
+
+  if (error || !data) {
+    console.error('Failed to get transaction rules:', error);
+    return [];
   }
 
-  return [...localRulesStore].sort((a, b) => a.priority - b.priority);
+  return data.map((d: any) => ({
+    ...d,
+    category: d.categories,
+    workspace: d.workspaces,
+  }));
 }
 
 export async function createRule(data: RuleFormData): Promise<TransactionRule> {
-  const newRule: TransactionRule = {
-    id: `rule_${Date.now()}`,
-    user_id: 'default_owner',
-    name: data.name.trim(),
-    priority: data.priority ?? (localRulesStore.length + 1) * 10,
-    match_field: data.match_field,
-    match_type: data.match_type,
-    match_value: data.match_value.trim(),
-    set_category: data.set_category || null,
-    set_workspace: data.set_workspace || null,
-    set_txn_type: data.set_txn_type || null,
-    set_tags: data.set_tags || null,
-    is_active: data.is_active ?? true,
-    created_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
-  };
+  const supabase = createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) throw new Error('Unauthorized');
 
-  try {
-    const supabase = createClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-
-    if (user) {
-      const { data: inserted, error } = await supabase
-        .from('transaction_rules')
-        .insert({
-          user_id: user.id,
-          name: newRule.name,
-          priority: newRule.priority,
-          match_field: newRule.match_field,
-          match_type: newRule.match_type,
-          match_value: newRule.match_value,
-          set_category: newRule.set_category,
-          set_workspace: newRule.set_workspace,
-          set_txn_type: newRule.set_txn_type,
-          set_tags: newRule.set_tags,
-          is_active: newRule.is_active,
-        })
-        .select()
-        .single();
-
-      if (!error && inserted) {
-        newRule.id = inserted.id;
-      }
-    }
-  } catch {
-    // Continue
+  // Determine next priority if not supplied
+  let priority = data.priority;
+  if (priority === undefined) {
+    const existing = await getRules();
+    priority = (existing.length + 1) * 10;
   }
 
-  localRulesStore.push(newRule);
-  return newRule;
+  const { data: inserted, error } = await supabase
+    .from('transaction_rules')
+    .insert({
+      user_id: user.id,
+      name: data.name.trim(),
+      priority,
+      match_field: data.match_field,
+      match_type: data.match_type,
+      match_value: data.match_value.trim(),
+      set_category: data.set_category || null,
+      set_workspace: data.set_workspace || null,
+      set_txn_type: data.set_txn_type || null,
+      set_tags: data.set_tags || null,
+      is_active: data.is_active ?? true,
+    })
+    .select('*, categories(id, name, color_index), workspaces(id, name)')
+    .single();
+
+  if (error || !inserted) {
+    console.error('Failed to create rule:', error);
+    throw new Error(error?.message || 'Failed to create rule');
+  }
+
+  return {
+    ...inserted,
+    category: inserted.categories,
+    workspace: inserted.workspaces,
+  };
 }
 
 export async function updateRule(
   id: string,
   data: Partial<RuleFormData & { is_active: boolean }>
 ): Promise<TransactionRule> {
-  try {
-    const supabase = createClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
+  const supabase = createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) throw new Error('Unauthorized');
 
-    if (user) {
-      await supabase
-        .from('transaction_rules')
-        .update({
-          ...data,
-          updated_at: new Date().toISOString(),
-        })
-        .eq('id', id);
-    }
-  } catch {
-    // Continue
+  const { data: updated, error } = await supabase
+    .from('transaction_rules')
+    .update({
+      ...data,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', id)
+    .eq('user_id', user.id)
+    .select('*, categories(id, name, color_index), workspaces(id, name)')
+    .single();
+
+  if (error || !updated) {
+    console.error('Failed to update rule:', error);
+    throw new Error(error?.message || 'Rule not found or update failed');
   }
 
-  const idx = localRulesStore.findIndex((r) => r.id === id);
-  if (idx === -1) throw new Error('Rule not found');
-
-  localRulesStore[idx] = {
-    ...localRulesStore[idx],
-    ...data,
-    updated_at: new Date().toISOString(),
+  return {
+    ...updated,
+    category: updated.categories,
+    workspace: updated.workspaces,
   };
-
-  return localRulesStore[idx];
 }
 
 export async function deleteRule(id: string): Promise<boolean> {
-  try {
-    const supabase = createClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
+  const supabase = createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) throw new Error('Unauthorized');
 
-    if (user) {
-      await supabase.from('transaction_rules').delete().eq('id', id);
-    }
-  } catch {
-    // Continue
+  const { error } = await supabase
+    .from('transaction_rules')
+    .delete()
+    .eq('id', id)
+    .eq('user_id', user.id);
+
+  if (error) {
+    console.error('Failed to delete rule:', error);
+    return false;
   }
 
-  localRulesStore = localRulesStore.filter((r) => r.id !== id);
   return true;
 }
 
 export async function reorderRules(orderedIds: string[]): Promise<TransactionRule[]> {
-  orderedIds.forEach((id, idx) => {
-    const rule = localRulesStore.find((r) => r.id === id);
-    if (rule) {
-      rule.priority = (idx + 1) * 10;
-      rule.updated_at = new Date().toISOString();
-    }
-  });
+  const supabase = createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) throw new Error('Unauthorized');
 
-  try {
-    const supabase = createClient();
-    for (let i = 0; i < orderedIds.length; i++) {
-      await supabase
-        .from('transaction_rules')
-        .update({ priority: (i + 1) * 10 })
-        .eq('id', orderedIds[i]);
-    }
-  } catch {
-    // Continue
+  for (let i = 0; i < orderedIds.length; i++) {
+    await supabase
+      .from('transaction_rules')
+      .update({ priority: (i + 1) * 10, updated_at: new Date().toISOString() })
+      .eq('id', orderedIds[i])
+      .eq('user_id', user.id);
   }
 
-  return [...localRulesStore].sort((a, b) => a.priority - b.priority);
+  return getRules();
 }
 
 /**

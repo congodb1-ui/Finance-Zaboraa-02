@@ -13,6 +13,7 @@ import AskYourDataPage from './app/(auth)/ai/page';
 import AISettingsPage from './app/(auth)/settings/ai/page';
 import RecurringPage from './app/(auth)/recurring/page';
 import BudgetsPage from './app/(auth)/budgets/page';
+import { InvoiceList } from './components/invoices/InvoiceList';
 import { useIdleLogout } from './hooks/useIdleLogout';
 import { IdleWarningModal } from './components/auth/IdleWarningModal';
 import { AuthNavShell } from './components/navigation/AuthNavShell';
@@ -35,6 +36,7 @@ import {
   Target,
   Sliders,
   FileSpreadsheet,
+  FileText,
   Settings,
   Sparkles,
 } from 'lucide-react';
@@ -42,7 +44,7 @@ import {
 export default function App() {
   const { user, isAuthenticated, isLoading } = useAuth();
   const [currentRoute, setCurrentRoute] = useState<
-    '/' | '/dashboard' | '/accounts' | '/account-detail' | '/upload' | '/transactions' | '/recurring' | '/budgets' | '/rules' | '/reports' | '/ai' | '/settings' | '/settings/ai' | '/playground'
+    '/' | '/dashboard' | '/accounts' | '/account-detail' | '/upload' | '/transactions' | '/recurring' | '/budgets' | '/rules' | '/invoices' | '/reports' | '/ai' | '/settings' | '/settings/ai' | '/playground'
   >('/');
   const [selectedAccountId, setSelectedAccountId] = useState<string>('acc_hdfc_01');
   const [authNotice, setAuthNotice] = useState<string | null>(null);
@@ -81,6 +83,7 @@ export default function App() {
       else if (hash === 'recurring') setCurrentRoute('/recurring');
       else if (hash === 'budgets') setCurrentRoute('/budgets');
       else if (hash === 'rules') setCurrentRoute('/rules');
+      else if (hash === 'invoices') setCurrentRoute('/invoices');
       else if (hash === 'reports' || hash === 'reports-itr' || hash === 'reports/itr') setCurrentRoute('/reports');
       else if (hash === 'ai' || hash === 'ask-ai') setCurrentRoute('/ai');
       else if (hash === 'settings/ai' || hash === 'settings-ai') setCurrentRoute('/settings/ai');
@@ -123,6 +126,7 @@ export default function App() {
       targetRoute === '/recurring' ||
       targetRoute === '/budgets' ||
       targetRoute === '/rules' ||
+      targetRoute === '/invoices' ||
       targetRoute === '/reports' ||
       targetRoute === '/ai' ||
       targetRoute === '/settings' ||
@@ -191,7 +195,7 @@ export default function App() {
             <span className="text-slate-500">|</span>
             <span className="inline-flex items-center gap-1 text-[11px] font-medium text-emerald-400 bg-emerald-950/60 px-2 py-0.5 rounded border border-emerald-800/60">
               <CheckCircle2 className="w-3 h-3" />
-              Batch 7: Extras & Hardening Complete
+              Batch 8: Production Wiring Complete
             </span>
           </div>
 
@@ -455,6 +459,12 @@ export default function App() {
         {currentRoute === '/rules' && (
           <AuthNavShell activePathOverride="/rules" onNavigateOverride={(p) => navigateTo(p as any)}>
             <RulesPage />
+          </AuthNavShell>
+        )}
+
+        {currentRoute === '/invoices' && (
+          <AuthNavShell activePathOverride="/invoices" onNavigateOverride={(p) => navigateTo(p as any)}>
+            <InvoiceList />
           </AuthNavShell>
         )}
 

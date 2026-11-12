@@ -14,7 +14,7 @@ const PREVIEW_SESSION_KEY = 'zaboraa_preview_session';
 
 /**
  * Initiates Google OAuth login via Supabase Auth
- * Falls back to demo session when Supabase credentials are placeholder/offline.
+ * Uses window.location.origin + '/#dashboard' for client-side PKCE in Vite SPA.
  */
 export async function signInWithGoogle(redirectTo?: string) {
   const isPlaceholder =
@@ -36,7 +36,8 @@ export async function signInWithGoogle(redirectTo?: string) {
         ? window.location.origin
         : process.env.NEXT_PUBLIC_APP_URL || 'https://zaboraa.com';
 
-    const targetRedirect = redirectTo || `${origin}/api/auth/callback`;
+    // In a Vite SPA, redirecting to /#dashboard lets the Supabase client exchange PKCE code cleanly
+    const targetRedirect = redirectTo || `${origin}/#dashboard`;
 
     const { data, error } = await supabase.auth.signInWithOAuth({
       provider: 'google',
@@ -96,7 +97,38 @@ export async function signOut(redirectTo: string = '/') {
 }
 
 /**
- * Client React Hook for tracking Supabase Auth state
+ * Verifies with Express server whether the authenticated user is on ALLOWED_EMAILS.
+ * If 403 Forbidden is returned, signs out immediately.
+ */
+async function verifyServerAllowlist(token?: string | null): Promise<boolean> {
+  if (!token) return true;
+
+  try {
+    const res = await fetch('/api/ai/test', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+    });
+
+    if (res.status === 403) {
+      console.warn('[Zaboraa Security] Account rejected by server ALLOWED_EMAILS check.');
+      await signOut('/');
+      if (typeof window !== 'undefined') {
+        window.alert('Your Google account is not on the allow list for this app.');
+      }
+      return false;
+    }
+    return true;
+  } catch {
+    // If server unreachable or error, allow client to proceed
+    return true;
+  }
+}
+
+/**
+ * Client React Hook for tracking Supabase Auth state with defence-in-depth allowlist verification
  */
 export function useAuth(): AuthState & {
   signInWithGoogle: (redirectTo?: string) => Promise<any>;
@@ -118,6 +150,15 @@ export function useAuth(): AuthState & {
       } = await supabase.auth.getUser();
 
       if (sbUser) {
+        const { data: sessionData } = await supabase.auth.getSession();
+        const token = sessionData.session?.access_token;
+        const allowed = await verifyServerAllowlist(token);
+        if (!allowed) {
+          setUser(null);
+          setIsLoading(false);
+          return;
+        }
+
         setUser(mapSupabaseUserToProfile(sbUser));
         setIsLoading(false);
         return;
@@ -140,8 +181,14 @@ export function useAuth(): AuthState & {
     // Listen to real-time auth changes (sign in, token refresh, sign out)
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, session) => {
+    } = supabase.auth.onAuthStateChange(async (_event, session) => {
       if (session?.user) {
+        const allowed = await verifyServerAllowlist(session.access_token);
+        if (!allowed) {
+          setUser(null);
+          setIsLoading(false);
+          return;
+        }
         setUser(mapSupabaseUserToProfile(session.user));
       } else if (typeof window !== 'undefined' && localStorage.getItem(PREVIEW_SESSION_KEY) === 'true') {
         setUser(DEMO_USER_PROFILE);

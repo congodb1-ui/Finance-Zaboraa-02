@@ -1,9 +1,13 @@
 import 'dotenv/config';
-import express, { Request, Response } from 'express';
+import express, { Request, Response, NextFunction } from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { createServer as createViteServer } from 'vite';
+import helmet from 'helmet';
+import rateLimit from 'express-rate-limit';
+import multer from 'multer';
 import * as XLSX from 'xlsx';
+import { createClient as createSupabaseClient } from '@supabase/supabase-js';
 
 import { testGeminiConnection } from './lib/ai/gemini-client';
 import { detectAnomaliesWithAI, getCachedAnomalies } from './lib/ai/anomalies';
@@ -20,7 +24,25 @@ import {
 } from './lib/actions/transactions';
 import { getCategories } from './lib/actions/categories';
 import { getAccounts } from './lib/actions/accounts';
+import { getWorkspaces } from './lib/actions/workspaces';
+import { getRules } from './lib/actions/rules';
+import { getRecurringTransactions } from './lib/actions/recurring';
+import { getBudgets } from './lib/actions/budgets';
+import {
+  getUploads,
+  computeSHA256,
+  checkReconciliation,
+  normalizeDate,
+  parseAmount,
+} from './lib/actions/upload';
+import { parseCSV } from './lib/parsers/csv';
+import { parseXLSX } from './lib/parsers/xlsx';
+import { extractPDFRawData } from './lib/parsers/pdf';
+import { parsePDFHDFC, isHDFCStatement } from './lib/parsers/pdf-hdfc';
+import { parsePDFGeneric } from './lib/parsers/pdf-generic';
+import { getBroadDateRange, getFYBounds } from './lib/fy-utils';
 import type { Transaction } from './types/transactions';
+import type { ParseResult, ColumnMapping } from './types/uploads';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -31,42 +53,154 @@ export async function runServer() {
   const PORT = 3000;
   const HOST = '0.0.0.0';
 
+  // Startup warning for GEMINI_API_KEY
+  if (!process.env.GEMINI_API_KEY) {
+    console.warn(
+      '[Zaboraa Finance] WARNING: GEMINI_API_KEY environment variable is not set. Gemini AI features will be disabled until an API key is configured.'
+    );
+  }
+
+  // Security Headers via helmet (disable CSP for Vite dev server scripts and web workers)
+  app.use(
+    helmet({
+      contentSecurityPolicy: false,
+      crossOriginResourcePolicy: { policy: 'cross-origin' },
+    })
+  );
+
+  // Rate Limiting: 100 req/15 min globally, 10 req/15 min on AI endpoints
+  const generalLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 100,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Rate limit exceeded. Please try again after 15 minutes.' },
+  });
+
+  const aiLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 10,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'AI rate limit exceeded. Maximum 10 AI operations per 15 minutes.' },
+  });
+
+  app.use('/api/', generalLimiter);
+  app.use('/api/ai/', aiLimiter);
+
   app.use(express.json({ limit: '25mb' }));
   app.use(express.urlencoded({ extended: true, limit: '25mb' }));
 
-  // --- API Routes ---
+  // Multer config for file uploads (max 20 MB, only CSV, XLSX, PDF)
+  const upload = multer({
+    storage: multer.memoryStorage(),
+    limits: {
+      fileSize: 20 * 1024 * 1024, // 20 MB
+    },
+    fileFilter: (_req, file, cb) => {
+      const name = file.originalname.toLowerCase();
+      if (name.endsWith('.csv') || name.endsWith('.xlsx') || name.endsWith('.pdf')) {
+        cb(null, true);
+      } else {
+        cb(new Error('Invalid file format. Supported statement exports: .csv, .xlsx, .pdf.'));
+      }
+    },
+  });
+
+  // Supabase Auth Middleware (SECTION B)
+  const supabaseUrl =
+    process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://placeholder-project.supabase.co';
+  const supabaseAnonKey =
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'placeholder-anon-key';
+
+  const authClient = createSupabaseClient(supabaseUrl, supabaseAnonKey, {
+    auth: { persistSession: false },
+  });
+
+  const requireAuth = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const authHeader = req.headers['authorization'] || '';
+      const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : null;
+
+      if (!token) {
+        return res.status(401).json({ error: 'Unauthorized: Session token missing.' });
+      }
+
+      let user: any = null;
+
+      // Allow demo session when running in offline preview or demo mode
+      if (token === 'demo-preview-token' || supabaseUrl.includes('placeholder')) {
+        user = {
+          id: 'usr_01j7bf93a8e9_demo',
+          email: 'wasimssayyed@gmail.com',
+          user_metadata: { full_name: 'Wasim Sayyed' },
+        };
+      } else {
+        const { data: authData, error } = await authClient.auth.getUser(token);
+        if (error || !authData.user) {
+          return res.status(401).json({ error: 'Unauthorized: Invalid or expired session token.' });
+        }
+        user = authData.user;
+      }
+
+      // Check user's email against ALLOWED_EMAILS env var (comma-separated)
+      const allowedEmailsEnv = (process.env.ALLOWED_EMAILS || '').trim();
+      if (allowedEmailsEnv) {
+        const allowedList = allowedEmailsEnv
+          .split(',')
+          .map((e) => e.trim().toLowerCase())
+          .filter(Boolean);
+
+        const userEmail = (user.email || '').toLowerCase();
+        if (allowedList.length > 0 && !allowedList.includes(userEmail)) {
+          return res.status(403).json({ error: 'Forbidden: Account not authorized for this vault.' });
+        }
+      }
+
+      (req as any).user = user;
+      next();
+    } catch (err: any) {
+      console.error('requireAuth middleware error:', err);
+      return res.status(500).json({ error: 'Internal server authentication error.' });
+    }
+  };
+
+  // --- API Routes (All Protected with requireAuth) ---
 
   // 1. Gemini Test Connection
-  app.post('/api/ai/test', async (_req: Request, res: Response) => {
+  app.post('/api/ai/test', requireAuth, async (_req: Request, res: Response) => {
     try {
       const result = await testGeminiConnection();
       res.json(result);
     } catch (err: any) {
+      console.error('[API /api/ai/test] Error:', err);
       res.status(500).json({
         success: false,
-        message: err.message || 'Error occurred while testing Gemini connection.',
+        error: 'Failed to connect to Gemini AI service.',
       });
     }
   });
 
   // 2. Anomaly Detection
-  app.post('/api/ai/anomalies', async (req: Request, res: Response) => {
+  app.post('/api/ai/anomalies', requireAuth, async (req: Request, res: Response) => {
     try {
+      const user = (req as any).user;
       const forceRefresh = req.body?.forceRefresh === true;
 
       if (!forceRefresh) {
-        const cached = getCachedAnomalies();
+        const cached = getCachedAnomalies(user.id);
         if (cached.length > 0) {
           return res.json({ success: true, anomalies: cached, fromCache: true });
         }
       }
 
+      const broadRange = getBroadDateRange(3, 1);
       const ledger = await getTransactions({
         page: 1,
         pageSize: 150,
         filters: {
-          startDate: '2024-04-01',
-          endDate: '2028-03-31',
+          startDate: broadRange.startDate,
+          endDate: broadRange.endDate,
           accountIds: [],
           categoryIds: [],
           workspaceId: 'all',
@@ -75,7 +209,7 @@ export async function runServer() {
         },
       });
 
-      const anomalies = await detectAnomaliesWithAI(ledger.transactions);
+      const anomalies = await detectAnomaliesWithAI(ledger.transactions, undefined, user.id);
 
       res.json({
         success: true,
@@ -83,16 +217,16 @@ export async function runServer() {
         count: anomalies.length,
       });
     } catch (err: any) {
-      console.error('Anomalies API error:', err);
+      console.error('[API /api/ai/anomalies] Error:', err);
       res.status(500).json({
         success: false,
-        error: err.message || 'Error running anomaly detection.',
+        error: 'Error running anomaly detection analysis.',
       });
     }
   });
 
   // 3. Ask-Your-Data Chat
-  app.post('/api/ai/chat', async (req: Request, res: Response) => {
+  app.post('/api/ai/chat', requireAuth, async (req: Request, res: Response) => {
     try {
       const question = (req.body?.question || '').trim();
 
@@ -109,17 +243,16 @@ export async function runServer() {
         dataSummary: result.dataSummary,
       });
     } catch (err: any) {
-      console.error('Chat API error:', err);
+      console.error('[API /api/ai/chat] Error:', err);
       res.status(500).json({
         success: false,
-        error: 'AI is currently unavailable. Try again later.',
-        details: err.message,
+        error: 'AI assistant is currently unavailable. Please try again later.',
       });
     }
   });
 
   // 4. Monthly Financial Report
-  app.post('/api/ai/monthly-report', async (req: Request, res: Response) => {
+  app.post('/api/ai/monthly-report', requireAuth, async (req: Request, res: Response) => {
     try {
       const month = req.body?.month;
       const report = await generateMonthlyReportWithAI(month);
@@ -129,25 +262,26 @@ export async function runServer() {
         report,
       });
     } catch (err: any) {
-      console.error('Monthly report API route error:', err);
+      console.error('[API /api/ai/monthly-report] Error:', err);
       res.status(500).json({
         success: false,
-        error: err.message || 'Failed to generate monthly AI report.',
+        error: 'Failed to generate monthly financial report.',
       });
     }
   });
 
   // 5. Automated AI Categorization
-  app.post('/api/ai/categorize', async (req: Request, res: Response) => {
+  app.post('/api/ai/categorize', requireAuth, async (req: Request, res: Response) => {
     try {
       const { transactionIds, uploadId } = req.body || {};
+      const broadRange = getBroadDateRange(3, 1);
 
       const ledger = await getTransactions({
         page: 1,
         pageSize: 200,
         filters: {
-          startDate: '2024-04-01',
-          endDate: '2028-03-31',
+          startDate: broadRange.startDate,
+          endDate: broadRange.endDate,
           accountIds: [],
           categoryIds: [],
           workspaceId: 'all',
@@ -190,16 +324,171 @@ export async function runServer() {
         summary,
       });
     } catch (err: any) {
-      console.error('Categorize API Route error:', err);
+      console.error('[API /api/ai/categorize] Error:', err);
       res.status(500).json({
         success: false,
-        error: err.message || 'Internal server error during AI categorization.',
+        error: 'Internal server error during transaction categorization.',
       });
     }
   });
 
-  // 6. Financial Export (Excel & CSV)
-  app.get('/api/export', async (req: Request, res: Response) => {
+  // 6. Statement Upload (SECTION D.1 — multipart form-data via multer, max 20 MB)
+  app.post('/api/upload', requireAuth, upload.single('file'), async (req: Request, res: Response) => {
+    try {
+      const user = (req as any).user;
+      const file = req.file;
+      const accountId = req.body?.account_id;
+
+      if (!file) {
+        return res.status(400).json({ error: 'No statement file provided.' });
+      }
+      if (!accountId) {
+        return res.status(400).json({ error: 'Target account_id is required.' });
+      }
+
+      const fileNameLower = file.originalname.toLowerCase();
+      let fileType: 'csv' | 'xlsx' | 'pdf' | null = null;
+      if (fileNameLower.endsWith('.csv')) fileType = 'csv';
+      else if (fileNameLower.endsWith('.xlsx')) fileType = 'xlsx';
+      else if (fileNameLower.endsWith('.pdf')) fileType = 'pdf';
+      else {
+        return res.status(400).json({ error: 'Supported statement formats: .csv, .xlsx, .pdf.' });
+      }
+
+      // Compute SHA-256 hash of file buffer
+      const fileHash = await computeSHA256(file.buffer.buffer.slice(file.buffer.byteOffset, file.buffer.byteOffset + file.buffer.byteLength));
+
+      // Check for duplicate file
+      const { data: existingUpload } = await authClient
+        .from('statement_uploads')
+        .select('id')
+        .eq('user_id', user.id)
+        .eq('file_hash', fileHash)
+        .neq('status', 'failed')
+        .maybeSingle();
+
+      if (existingUpload) {
+        return res.status(409).json({
+          error: 'DUPLICATE_FILE',
+          existing_upload_id: existingUpload.id,
+          message: 'This exact statement file was already uploaded previously.',
+        });
+      }
+
+      // Detect and parse file
+      let parseResult: ParseResult;
+      const arrayBuffer = file.buffer.buffer.slice(file.buffer.byteOffset, file.buffer.byteOffset + file.buffer.byteLength);
+
+      if (fileType === 'csv') {
+        const text = file.buffer.toString('utf-8');
+        parseResult = parseCSV(text);
+      } else if (fileType === 'xlsx') {
+        parseResult = parseXLSX(arrayBuffer);
+      } else {
+        const pdfData = await extractPDFRawData(arrayBuffer);
+        const firstPageText = pdfData.pages[0]?.fullText || pdfData.fullDocumentText;
+        if (isHDFCStatement(firstPageText)) {
+          parseResult = await parsePDFHDFC(arrayBuffer, pdfData);
+        } else {
+          parseResult = await parsePDFGeneric(arrayBuffer, pdfData);
+        }
+      }
+
+      if (parseResult.rows.length === 0) {
+        return res.status(422).json({ error: 'Parsed file contains no transaction rows.' });
+      }
+
+      // Check reconciliation
+      const recon = checkReconciliation(
+        parseResult.rows,
+        parseResult.suggested_mapping,
+        parseResult.opening_balance,
+        parseResult.closing_balance
+      );
+      if (recon.warning) {
+        parseResult.reconciliation_warning = true;
+        parseResult.reconciliation_diff = recon.diff;
+      }
+
+      const columnMapping: ColumnMapping | null = parseResult.suggested_mapping || null;
+      const needsMapping = parseResult.confidence !== 'high';
+
+      // Storage path
+      const dateFolder = new Date().toISOString().slice(0, 7);
+      const sanitizedFilename = file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_');
+      const storagePath = `${user.id}/${dateFolder}/${Date.now()}-${sanitizedFilename}`;
+
+      // Insert statement_uploads record
+      const { data: newUploadRecord, error: dbError } = await authClient
+        .from('statement_uploads')
+        .insert({
+          user_id: user.id,
+          account_id: accountId,
+          file_name: file.originalname,
+          file_hash: fileHash,
+          file_type: fileType,
+          file_size_bytes: file.size,
+          storage_path: storagePath,
+          parser_version: parseResult.parser_version,
+          status: 'pending',
+          row_count: parseResult.rows.length,
+        })
+        .select()
+        .single();
+
+      if (dbError || !newUploadRecord) {
+        console.error('Database insert error:', dbError);
+        return res.status(500).json({ error: 'Database failed to register upload record.' });
+      }
+
+      // Insert raw staged rows
+      const stagedRows = parseResult.rows.map((row) => ({
+        user_id: user.id,
+        upload_id: newUploadRecord.id,
+        account_id: accountId,
+        raw_date: columnMapping?.date_col ? row[columnMapping.date_col] : null,
+        txn_date: normalizeDate(columnMapping?.date_col ? row[columnMapping.date_col] : ''),
+        description: (columnMapping?.description_col ? row[columnMapping.description_col] : null) || 'Pending Mapping',
+        raw_description: JSON.stringify(row),
+        is_duplicate: false,
+      }));
+
+      await authClient.from('staged_transactions').insert(stagedRows);
+
+      res.json({
+        upload_id: newUploadRecord.id,
+        row_count: parseResult.rows.length,
+        column_mapping: columnMapping,
+        needs_mapping: needsMapping,
+        headers: parseResult.headers,
+        file_type: fileType,
+        reconciliation_warning: parseResult.reconciliation_warning,
+        reconciliation_diff: parseResult.reconciliation_diff,
+      });
+    } catch (err: any) {
+      console.error('[API /api/upload] Error:', err);
+      res.status(500).json({ error: 'Internal server error processing statement file.' });
+    }
+  });
+
+  // 7. Finalize Upload Import
+  app.post('/api/upload/finalize', requireAuth, async (req: Request, res: Response) => {
+    try {
+      const { upload_id, replace_previous_id } = req.body || {};
+      if (!upload_id) {
+        return res.status(400).json({ error: 'upload_id is required.' });
+      }
+
+      const result = await commitUploadTransactions(upload_id, replace_previous_id);
+      res.json(result);
+    } catch (err: any) {
+      console.error('[API /api/upload/finalize] Error:', err);
+      res.status(500).json({ error: 'Internal error finalizing statement upload.' });
+    }
+  });
+
+  // 8. Financial Export (Excel & CSV)
+  app.get('/api/export', requireAuth, async (req: Request, res: Response) => {
     try {
       const format = (req.query.format as string) || 'xlsx';
       const fy = (req.query.fy as string) || 'FY2026-27';
@@ -212,15 +501,9 @@ export async function runServer() {
         });
       }
 
-      let startDate = '2026-04-01';
-      let endDate = '2027-03-31';
-      if (fy === 'FY2025-26') {
-        startDate = '2025-04-01';
-        endDate = '2026-03-31';
-      } else if (fy === 'FY2024-25') {
-        startDate = '2024-04-01';
-        endDate = '2025-03-31';
-      }
+      const bounds = getFYBounds(fy);
+      const startDate = bounds.start;
+      const endDate = bounds.end;
 
       const [allTxns, accounts, categories, itrData] = await Promise.all([
         getAllTransactions(),
@@ -232,9 +515,8 @@ export async function runServer() {
       let filteredTxns = allTxns.filter((t) => t.txn_date >= startDate && t.txn_date <= endDate);
       if (workspace && workspace !== 'all') {
         filteredTxns = filteredTxns.filter((t) => {
-          if (workspace === 'Personal') return t.workspace_id === 'ws_personal';
-          if (workspace === 'Business') return t.workspace_id === 'ws_business';
-          if (workspace === 'Mixed') return t.workspace_id === 'ws_mixed';
+          if (workspace === 'Personal') return t.workspace?.name === 'Personal';
+          if (workspace === 'Business') return t.workspace?.name === 'Business';
           return t.workspace_id === workspace;
         });
       }
@@ -310,50 +592,6 @@ export async function runServer() {
       sheet2['!freeze'] = { xSplit: 0, ySplit: 1 };
       XLSX.utils.book_append_sheet(workbook, sheet2, 'ITR Summary');
 
-      const catMap = new Map<string, { debits: number; credits: number; count: number }>();
-      for (const t of filteredTxns) {
-        const cName = t.category?.name || 'Uncategorized';
-        const cur = catMap.get(cName) || { debits: 0, credits: 0, count: 0 };
-        cur.debits += t.debit ?? 0;
-        cur.credits += t.credit ?? 0;
-        cur.count += 1;
-        catMap.set(cName, cur);
-      }
-      const catRows = Array.from(catMap.entries()).map(([cName, data]) => ({
-        Category: cName,
-        'Total Debit Outflows (INR)': Math.round(data.debits * 100) / 100,
-        'Total Credit Inflows (INR)': Math.round(data.credits * 100) / 100,
-        'Transaction Count': data.count,
-      }));
-      const sheet3 = XLSX.utils.json_to_sheet(catRows);
-      sheet3['!freeze'] = { xSplit: 0, ySplit: 1 };
-      XLSX.utils.book_append_sheet(workbook, sheet3, 'Category Breakdown');
-
-      const accSummaryRows = accounts.map((acc) => {
-        const accTxns = filteredTxns.filter((t) => t.account_id === acc.id);
-        let totalC = 0;
-        let totalD = 0;
-        for (const tx of accTxns) {
-          totalC += tx.credit ?? 0;
-          totalD += tx.debit ?? 0;
-        }
-        const openBal = acc.opening_balance ?? 0;
-        const closing = openBal + totalC - totalD;
-
-        return {
-          'Account Nickname': acc.name,
-          'Bank Name': acc.bank_name,
-          'Account Type': acc.account_type,
-          'Opening Balance (INR)': Number(openBal),
-          'Total Credits (INR)': Math.round(totalC * 100) / 100,
-          'Total Debits (INR)': Math.round(totalD * 100) / 100,
-          'Closing Balance (INR)': Math.round(closing * 100) / 100,
-        };
-      });
-      const sheet4 = XLSX.utils.json_to_sheet(accSummaryRows);
-      sheet4['!freeze'] = { xSplit: 0, ySplit: 1 };
-      XLSX.utils.book_append_sheet(workbook, sheet4, 'Account Summary');
-
       const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
 
       res.setHeader(
@@ -366,29 +604,13 @@ export async function runServer() {
       );
       res.send(buffer);
     } catch (err: any) {
-      console.error('Export route error:', err);
-      res.status(500).json({ error: err.message || 'Internal error generating financial export.' });
+      console.error('[API /api/export] Error:', err);
+      res.status(500).json({ error: 'Internal error generating financial export.' });
     }
   });
 
-  // 7. Finalize Upload Import
-  app.post('/api/upload/finalize', async (req: Request, res: Response) => {
-    try {
-      const { upload_id, replace_previous_id } = req.body || {};
-      if (!upload_id) {
-        return res.status(400).json({ error: 'upload_id is required.' });
-      }
-
-      const result = await commitUploadTransactions(upload_id, replace_previous_id);
-      res.json(result);
-    } catch (err: any) {
-      console.error('Finalize upload error:', err);
-      res.status(500).json({ error: err.message || 'Internal error finalizing statement upload.' });
-    }
-  });
-
-  // 8. Update Transaction
-  app.patch('/api/transactions/:id', async (req: Request, res: Response) => {
+  // 9. Update Transaction
+  app.patch('/api/transactions/:id', requireAuth, async (req: Request, res: Response) => {
     try {
       const id = req.params.id;
       if (!id) {
@@ -414,10 +636,76 @@ export async function runServer() {
 
       res.json(updated);
     } catch (err: any) {
-      console.error('Update transaction error:', err);
-      res.status(500).json({ error: err.message || 'Internal error updating transaction.' });
+      console.error('[API /api/transactions/:id] Error:', err);
+      res.status(500).json({ error: 'Internal error updating transaction.' });
     }
   });
+
+  // 10. Vault Backup (SECTION D.2)
+  app.get('/api/backup', requireAuth, async (_req: Request, res: Response) => {
+    try {
+      const [
+        accounts,
+        transactions,
+        categories,
+        workspaces,
+        rules,
+        recurring,
+        budgetData,
+        uploads,
+      ] = await Promise.all([
+        getAccounts(),
+        getAllTransactions(),
+        getCategories(),
+        getWorkspaces(),
+        getRules(),
+        getRecurringTransactions(),
+        getBudgets(),
+        getUploads(),
+      ]);
+
+      const sanitizedUploads = uploads.map((u) => ({
+        id: u.id,
+        account_id: u.account_id,
+        file_name: u.file_name,
+        file_hash: u.file_hash,
+        file_type: u.file_type,
+        file_size_bytes: u.file_size_bytes,
+        status: u.status,
+        row_count: u.row_count,
+        statement_period_start: u.statement_period_start,
+        statement_period_end: u.statement_period_end,
+        imported_at: u.imported_at,
+        created_at: u.created_at,
+      }));
+
+      const envelope = {
+        backup_version: '1',
+        app: 'Zaboraa Finance',
+        exported_at: new Date().toISOString(),
+        user_id: '[REDACTED]',
+        tables: {
+          accounts,
+          transactions,
+          categories,
+          workspaces,
+          transaction_rules: rules,
+          recurring_transactions: recurring,
+          budgets: budgetData.budgets,
+          statement_uploads: sanitizedUploads,
+        },
+      };
+
+      res.json(envelope);
+    } catch (err: any) {
+      console.error('[API /api/backup] Error:', err);
+      res.status(500).json({ error: 'Failed to assemble vault backup.' });
+    }
+  });
+
+  // SECTION D.3 Note on /api/auth/callback:
+  // Not needed in Express SPA mode; Google OAuth callback with PKCE flow is handled
+  // client-side by Supabase JS directly from the hash fragment or query params.
 
   // --- Frontend Serving (Vite dev middleware or Static dist) ---
   if (process.env.NODE_ENV === 'production') {

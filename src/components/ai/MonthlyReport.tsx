@@ -3,6 +3,7 @@
 import React, { useState, useEffect } from 'react';
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '../ui/Card';
 import { Button } from '../ui/Button';
+import { apiPost } from '../../lib/api-client';
 import type { GeneratedMonthlyReport } from '../../lib/ai/monthly-report';
 import {
   FileText,
@@ -80,13 +81,7 @@ export const MonthlyReport: React.FC<MonthlyReportProps> = ({
     setErrorMessage(null);
 
     try {
-      const res = await fetch('/api/ai/monthly-report', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ month: defaultMonth }),
-      });
-
-      const data = await res.json();
+      const data = await apiPost('/api/ai/monthly-report', { month: defaultMonth });
       if (data.success && data.report) {
         setReport(data.report);
         const now = Date.now();

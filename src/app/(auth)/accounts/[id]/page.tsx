@@ -27,6 +27,8 @@ import {
   ShieldCheck,
 } from 'lucide-react';
 
+import { getCurrentFY } from '../../../../lib/fy-utils';
+
 interface AccountDetailPageProps {
   accountId?: string;
   onBack?: () => void;
@@ -43,7 +45,7 @@ export default function AccountDetailPage({
       const match = window.location.hash.match(/id=([a-zA-Z0-9_-]+)/);
       if (match) return match[1];
     }
-    return 'acc_hdfc_01';
+    return '';
   });
 
   const [account, setAccount] = useState<AccountWithBalance | null>(null);
@@ -58,9 +60,10 @@ export default function AccountDetailPage({
   const [isLoading, setIsLoading] = useState(true);
 
   // Filters for the account ledger
+  const currFY = getCurrentFY();
   const [filterDates, setFilterDates] = useState({
-    startDate: '2026-04-01',
-    endDate: '2027-03-31',
+    startDate: currFY.start,
+    endDate: currFY.end,
   });
 
   const loadAccountData = useCallback(async () => {
