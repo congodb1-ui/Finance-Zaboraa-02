@@ -5,6 +5,7 @@ import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '../..
 import { ThemeToggle } from '../../../components/ui/ThemeToggle';
 import { Button } from '../../../components/ui/Button';
 import { signOut, useAuth } from '../../../lib/auth';
+import { BackupSection } from '../../../components/settings/BackupSection';
 import {
   SunMoon,
   LogOut,
