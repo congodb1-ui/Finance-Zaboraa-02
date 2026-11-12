@@ -12,7 +12,6 @@ import { Card } from '../../../components/ui/Card';
 import type { BudgetWithSpending, BudgetPeriod, BudgetFormData } from '../../../types/budgets';
 import type { Category } from '../../../types/categories';
 import type { Workspace } from '../../../types/workspaces';
-import { getCurrentFY, getFYOptions } from '../../../lib/fy-utils';
 import {
   Target,
   Plus,
@@ -25,9 +24,7 @@ import {
 } from 'lucide-react';
 
 export default function BudgetsPage() {
-  const fyList = getFYOptions(3);
-  const defaultFY = `${getCurrentFY().start.slice(0, 4)}-${getCurrentFY().end.slice(2, 4)}`;
-  const [selectedFY, setSelectedFY] = useState(defaultFY);
+  const [selectedFY, setSelectedFY] = useState('2026-27');
   const [selectedPeriod, setSelectedPeriod] = useState<BudgetPeriod>('monthly');
 
   const [budgets, setBudgets] = useState<BudgetWithSpending[]>([]);
@@ -99,14 +96,9 @@ export default function BudgetsPage() {
               onChange={(e) => setSelectedFY(e.target.value)}
               className="bg-transparent font-semibold focus:outline-hidden cursor-pointer"
             >
-              {fyList.map((f) => {
-                const val = `${f.start.slice(0, 4)}-${f.end.slice(2, 4)}`;
-                return (
-                  <option key={val} value={val}>
-                    FY {f.start.slice(0, 4)}–{f.end.slice(2, 4)}
-                  </option>
-                );
-              })}
+              <option value="2026-27">FY 2026–27</option>
+              <option value="2025-26">FY 2025–26</option>
+              <option value="2024-25">FY 2024–25</option>
             </select>
           </div>
 

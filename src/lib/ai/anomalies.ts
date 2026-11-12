@@ -19,8 +19,8 @@ export interface DetectedAnomaly {
   };
 }
 
-// In-memory cache for detected anomalies scoped per user_id
-const userAnomalyCache = new Map<string, DetectedAnomaly[]>();
+// In-memory cache for detected anomalies per user session
+let cachedAnomalies: DetectedAnomaly[] = [];
 
 /**
  * Scans up to 90 days of transactions for financial anomalies using gemini-2.5-flash.
@@ -28,11 +28,8 @@ const userAnomalyCache = new Map<string, DetectedAnomaly[]>();
  */
 export async function detectAnomaliesWithAI(
   transactions: Transaction[],
-  profileName?: string,
-  userId?: string
+  profileName?: string
 ): Promise<DetectedAnomaly[]> {
-  const userKey = userId || transactions[0]?.user_id || 'default_user';
-
   if (!transactions || transactions.length === 0) return [];
 
   // Filter last 90 days
@@ -86,7 +83,7 @@ ${JSON.stringify(maskedPayload, null, 2)}`;
 
     if (isAIError(res)) {
       console.warn('[Anomaly Detection Warning]', res.message);
-      return userAnomalyCache.get(userKey) || [];
+      return cachedAnomalies;
     }
 
     const cleanedText = res.text.replace(/```(?:json)?/gi, '').replace(/```/g, '').trim();
@@ -129,17 +126,16 @@ ${JSON.stringify(maskedPayload, null, 2)}`;
         });
       }
 
-      userAnomalyCache.set(userKey, validAnomalies);
+      cachedAnomalies = validAnomalies;
       return validAnomalies;
     }
   } catch (err) {
     console.error('Failed to parse anomaly detection results:', err);
   }
 
-  return userAnomalyCache.get(userKey) || [];
+  return cachedAnomalies;
 }
 
-export function getCachedAnomalies(userId?: string): DetectedAnomaly[] {
-  const userKey = userId || 'default_user';
-  return [...(userAnomalyCache.get(userKey) || [])];
+export function getCachedAnomalies(): DetectedAnomaly[] {
+  return [...cachedAnomalies];
 }

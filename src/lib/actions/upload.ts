@@ -67,8 +67,208 @@ export function checkReconciliation(
   return { warning: false, diff: 0 };
 }
 
-// In-memory buffer for raw parsed rows per upload during staging wizard
-const inFlightRawParsedRows = new Map<string, Array<Record<string, string>>>();
+// In-memory store for statement uploads and staged transactions for preview / local mode
+let localUploadsStore: StatementUpload[] = [
+  {
+    id: 'up_hdfc_nov26_pdf',
+    user_id: 'default_owner',
+    account_id: 'acc_hdfc_01',
+    file_name: 'HDFC_Salary_Nov2026.pdf',
+    file_hash: 'c3d4e5f67890123456789abcdef0123456789abcdef0123456789abcdef01234b',
+    file_type: 'pdf',
+    file_size_bytes: 142500,
+    storage_path: 'default_owner/2026-11/1731000000-HDFC_Salary_Nov2026.pdf',
+    parser_version: 'hdfc-pdf-v1',
+    status: 'imported',
+    row_count: 42,
+    imported_count: 42,
+    duplicate_count: 0,
+    error_message: null,
+    statement_period_start: '2026-11-01',
+    statement_period_end: '2026-11-15',
+    imported_at: '2026-11-16T09:00:00.000Z',
+    created_at: '2026-11-16T08:55:00.000Z',
+    updated_at: '2026-11-16T09:00:00.000Z',
+    account: {
+      id: 'acc_hdfc_01',
+      name: 'HDFC Main Savings',
+      bank_name: 'HDFC Bank',
+      account_number_last4: '4819',
+    },
+  },
+  {
+    id: 'up_hdfc_oct26',
+    user_id: 'default_owner',
+    account_id: 'acc_hdfc_01',
+    file_name: 'HDFC_Oct2026_Statement.csv',
+    file_hash: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+    file_type: 'csv',
+    file_size_bytes: 48200,
+    storage_path: 'default_owner/2026-10/1729000000-HDFC_Oct2026_Statement.csv',
+    parser_version: 'csv-generic-v1',
+    status: 'imported',
+    row_count: 38,
+    imported_count: 38,
+    duplicate_count: 0,
+    error_message: null,
+    statement_period_start: '2026-10-01',
+    statement_period_end: '2026-10-31',
+    imported_at: '2026-11-01T10:30:00.000Z',
+    created_at: '2026-11-01T10:28:00.000Z',
+    updated_at: '2026-11-01T10:30:00.000Z',
+    account: {
+      id: 'acc_hdfc_01',
+      name: 'HDFC Main Savings',
+      bank_name: 'HDFC Bank',
+      account_number_last4: '4819',
+    },
+  },
+  {
+    id: 'up_sbi_sep26',
+    user_id: 'default_owner',
+    account_id: 'acc_sbi_02',
+    file_name: 'SBI_Salary_Q2_2026.xlsx',
+    file_hash: 'a1b2c3d4e5f67890123456789abcdef0123456789abcdef0123456789abcdef0',
+    file_type: 'xlsx',
+    file_size_bytes: 92400,
+    storage_path: 'default_owner/2026-09/1726000000-SBI_Salary_Q2_2026.xlsx',
+    parser_version: 'xlsx-generic-v1',
+    status: 'imported',
+    row_count: 24,
+    imported_count: 24,
+    duplicate_count: 0,
+    error_message: null,
+    statement_period_start: '2026-07-01',
+    statement_period_end: '2026-09-30',
+    imported_at: '2026-10-02T14:15:00.000Z',
+    created_at: '2026-10-02T14:12:00.000Z',
+    updated_at: '2026-10-02T14:15:00.000Z',
+    account: {
+      id: 'acc_sbi_02',
+      name: 'SBI Salary Account',
+      bank_name: 'State Bank of India',
+      account_number_last4: '9102',
+    },
+  },
+  {
+    id: 'up_kotak_nov26_rep',
+    user_id: 'default_owner',
+    account_id: 'acc_kotak_04',
+    file_name: 'Kotak_Card_Cycle_Nov_v1.csv',
+    file_hash: 'b2c3d4e5f67890123456789abcdef0123456789abcdef0123456789abcdef01a',
+    file_type: 'csv',
+    file_size_bytes: 28100,
+    storage_path: 'default_owner/2026-11/1730000000-Kotak_Card_Cycle_Nov_v1.csv',
+    parser_version: 'csv-generic-v1',
+    status: 'replaced',
+    row_count: 19,
+    imported_count: 0,
+    duplicate_count: 0,
+    error_message: null,
+    statement_period_start: '2026-10-01',
+    statement_period_end: '2026-10-25',
+    imported_at: null,
+    created_at: '2026-11-04T08:00:00.000Z',
+    updated_at: '2026-11-06T11:20:00.000Z',
+    account: {
+      id: 'acc_kotak_04',
+      name: 'Kotak White Credit Card',
+      bank_name: 'Kotak Mahindra Bank',
+      account_number_last4: '7021',
+    },
+  },
+];
+
+let localStagedTransactionsStore: StagedTransaction[] = [
+  {
+    id: 'stg_1',
+    user_id: 'default_owner',
+    upload_id: 'up_hdfc_oct26',
+    account_id: 'acc_hdfc_01',
+    raw_date: '28/10/2026',
+    txn_date: '2026-10-28',
+    description: 'Swiggy Bangalore Delivery',
+    raw_description: 'UPI/48291048/SWIGGY/BLR/FOOD',
+    debit: 840.0,
+    credit: null,
+    balance: 485200.0,
+    reference_number: 'UPI48291048',
+    is_duplicate: false,
+    duplicate_of_id: null,
+    created_at: '2026-11-01T10:29:00.000Z',
+  },
+  {
+    id: 'stg_2',
+    user_id: 'default_owner',
+    upload_id: 'up_hdfc_oct26',
+    account_id: 'acc_hdfc_01',
+    raw_date: '24/10/2026',
+    txn_date: '2026-10-24',
+    description: 'Client Consulting Retainer',
+    raw_description: 'NEFT/N102934/APEXIND/CONSULT',
+    debit: null,
+    credit: 125000.0,
+    balance: 486040.0,
+    reference_number: 'NEFT102934',
+    is_duplicate: false,
+    duplicate_of_id: null,
+    created_at: '2026-11-01T10:29:00.000Z',
+  },
+  {
+    id: 'stg_3',
+    user_id: 'default_owner',
+    upload_id: 'up_hdfc_oct26',
+    account_id: 'acc_hdfc_01',
+    raw_date: '18/10/2026',
+    txn_date: '2026-10-18',
+    description: 'WeWork Coworking Office Rent',
+    raw_description: 'UPI/48910293/WEWORK/RENT',
+    debit: 32000.0,
+    credit: null,
+    balance: 361040.0,
+    reference_number: 'UPI48910293',
+    is_duplicate: false,
+    duplicate_of_id: null,
+    created_at: '2026-11-01T10:29:00.000Z',
+  },
+  {
+    id: 'stg_4',
+    user_id: 'default_owner',
+    upload_id: 'up_hdfc_oct26',
+    account_id: 'acc_hdfc_01',
+    raw_date: '10/10/2026',
+    txn_date: '2026-10-10',
+    description: 'Transfer to Kotak Card Bill',
+    raw_description: 'IMPS/KOTAKCC/BILLPAY/7021',
+    debit: 45000.0,
+    credit: null,
+    balance: 393040.0,
+    reference_number: 'IMPS702100',
+    is_duplicate: false,
+    duplicate_of_id: null,
+    created_at: '2026-11-01T10:29:00.000Z',
+  },
+  {
+    id: 'stg_5',
+    user_id: 'default_owner',
+    upload_id: 'up_hdfc_oct26',
+    account_id: 'acc_hdfc_01',
+    raw_date: '02/10/2026',
+    txn_date: '2026-10-02',
+    description: 'Apollo Pharmacy Medicines',
+    raw_description: 'POS/APOLLO PHARMACY/MUMBAI',
+    debit: 1420.0,
+    credit: null,
+    balance: 438040.0,
+    reference_number: 'POS902341',
+    is_duplicate: false,
+    duplicate_of_id: null,
+    created_at: '2026-11-01T10:29:00.000Z',
+  },
+];
+
+// In-memory store for raw parsed rows per upload before column mapping confirmation
+const localRawParsedRows = new Map<string, Array<Record<string, string>>>();
 
 /**
  * Computes SHA-256 hash string of raw array buffer bytes
@@ -127,9 +327,17 @@ export async function processStatementUpload(
   file: File,
   accountId: string
 ): Promise<UploadApiResponse> {
+  // STEP 1 — Authenticate
   const supabase = createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) throw new Error('Unauthorized');
+  let userId = 'default_owner';
+  try {
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+    if (user) userId = user.id;
+  } catch {
+    // Sandbox preview mode
+  }
 
   // STEP 2 — Validate File type and size
   const maxBytes = 20 * 1024 * 1024; // 20 MB
@@ -153,39 +361,34 @@ export async function processStatementUpload(
   const arrayBuffer = await file.arrayBuffer();
   const fileHash = await computeSHA256(arrayBuffer);
 
-  // Check duplicate file hash in Supabase
-  const { data: existingUpload } = await supabase
-    .from('statement_uploads')
-    .select('id, row_count, file_type')
-    .eq('user_id', user.id)
-    .eq('file_hash', fileHash)
-    .neq('status', 'failed')
-    .maybeSingle();
-
-  if (existingUpload) {
+  // Check duplicate file hash for this user
+  const duplicate = localUploadsStore.find(
+    (u) => u.user_id === userId && u.file_hash === fileHash && u.status !== 'failed'
+  );
+  if (duplicate) {
     return {
-      upload_id: existingUpload.id,
-      row_count: existingUpload.row_count || 0,
+      upload_id: duplicate.id,
+      row_count: duplicate.row_count || 0,
       column_mapping: null,
       needs_mapping: false,
       headers: [],
       error: 'DUPLICATE_FILE',
-      existing_upload_id: existingUpload.id,
-      file_type: existingUpload.file_type,
+      existing_upload_id: duplicate.id,
+      file_type: duplicate.file_type,
     };
   }
 
   // STEP 4 — Upload to Supabase Storage path: {user_id}/{YYYY-MM}/{timestamp}-{sanitized-filename}
   const dateFolder = new Date().toISOString().slice(0, 7); // "YYYY-MM"
   const sanitizedName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
-  const storagePath = `${user.id}/${dateFolder}/${Date.now()}-${sanitizedName}`;
+  const storagePath = `${userId}/${dateFolder}/${Date.now()}-${sanitizedName}`;
 
   try {
     await supabase.storage.from('statements').upload(storagePath, file, {
       upsert: false,
     });
-  } catch (err: any) {
-    console.warn('Storage upload notice:', err.message);
+  } catch {
+    // Supabase storage fallback in dev / offline mode
   }
 
   // STEP 5 — Detect file type and run parser
@@ -196,7 +399,7 @@ export async function processStatementUpload(
   } else if (fileType === 'xlsx') {
     parseResult = parseXLSX(arrayBuffer);
   } else {
-    // PDF Parser Router (HDFC vs Generic)
+    // Batch 3b: PDF Parser Router (HDFC vs Generic)
     const pdfData = await extractPDFRawData(arrayBuffer);
     const firstPageText = pdfData.pages[0]?.fullText || pdfData.fullDocumentText;
 
@@ -211,7 +414,7 @@ export async function processStatementUpload(
     throw new Error('No transaction rows could be parsed from this file.');
   }
 
-  // STEP 6 — Reconciliation check
+  // STEP 6 — Reconciliation check (tolerance: ±1 INR)
   const recon = checkReconciliation(
     parseResult.rows,
     parseResult.suggested_mapping,
@@ -223,93 +426,84 @@ export async function processStatementUpload(
     parseResult.reconciliation_diff = recon.diff;
   }
 
-  // STEP 7 — Create statement_uploads record in Supabase
-  const { data: newUpload, error: uploadErr } = await supabase
-    .from('statement_uploads')
-    .insert({
-      user_id: user.id,
-      account_id: accountId,
-      file_name: file.name,
-      file_hash: fileHash,
-      file_type: fileType,
-      file_size_bytes: file.size,
-      storage_path: storagePath,
-      parser_version: parseResult.parser_version,
-      status: 'pending',
-      row_count: parseResult.rows.length,
-      duplicate_count: 0,
-    })
-    .select()
-    .single();
+  // Fetch account info
+  const accounts = await getAccounts();
+  const matchedAccount = accounts.find((a) => a.id === accountId);
 
-  if (uploadErr || !newUpload) {
-    throw new Error(uploadErr?.message || 'Failed to register upload record in database.');
-  }
+  // STEP 7 — Create statement_uploads record
+  const uploadId = `up_${Date.now()}`;
+  const newUpload: StatementUpload = {
+    id: uploadId,
+    user_id: userId,
+    account_id: accountId,
+    file_name: file.name,
+    file_hash: fileHash,
+    file_type: fileType,
+    file_size_bytes: file.size,
+    storage_path: storagePath,
+    parser_version: parseResult.parser_version,
+    status: 'pending',
+    row_count: parseResult.rows.length,
+    imported_count: null,
+    duplicate_count: 0,
+    error_message: null,
+    statement_period_start: null,
+    statement_period_end: null,
+    imported_at: null,
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+    reconciliation_warning: parseResult.reconciliation_warning,
+    reconciliation_diff: parseResult.reconciliation_diff,
+    account: matchedAccount
+      ? {
+          id: matchedAccount.id,
+          name: matchedAccount.name,
+          bank_name: matchedAccount.bank_name,
+          account_number_last4: matchedAccount.account_number_last4,
+        }
+      : undefined,
+  };
 
-  // Store raw parsed rows in buffer for mapping wizard confirmation
-  inFlightRawParsedRows.set(newUpload.id, parseResult.rows);
+  localUploadsStore.unshift(newUpload);
 
-  // If high confidence auto-mapping, stage immediately
-  const columnMapping: ColumnMapping | null = parseResult.suggested_mapping || null;
+  // Store raw parsed rows in temporary cache for mapping wizard confirmation
+  localRawParsedRows.set(uploadId, parseResult.rows);
+
   const needsMapping = parseResult.confidence !== 'high';
 
   return {
-    upload_id: newUpload.id,
+    upload_id: uploadId,
     row_count: parseResult.rows.length,
-    column_mapping: columnMapping,
+    column_mapping: parseResult.suggested_mapping || null,
     needs_mapping: needsMapping,
     headers: parseResult.headers,
-    file_type: fileType,
     detected_bank: parseResult.detected_bank,
+    sample_rows: parseResult.rows.slice(0, 5),
+    file_type: fileType,
     reconciliation_warning: parseResult.reconciliation_warning,
     reconciliation_diff: parseResult.reconciliation_diff,
   };
 }
 
 /**
- * Applies column mapping to raw parsed rows and saves staged transactions in Supabase
+ * STEP 8 & CONFIRMATION:
+ * Applies the confirmed column mapping, transforms raw parsed rows into
+ * normalized staged_transactions, calculates statement period, and advances status to 'review'.
  */
 export async function confirmMappingAndStaging(
   uploadId: string,
   mapping: ColumnMapping,
   skipBalance: boolean = false
-): Promise<{ success: boolean; staged_count: number; date_start: string; date_end: string }> {
-  const supabase = createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) throw new Error('Unauthorized');
+): Promise<{ success: boolean; staged_count: number; date_start?: string; date_end?: string }> {
+  const upload = localUploadsStore.find((u) => u.id === uploadId);
+  if (!upload) throw new Error('Upload record not found.');
 
-  const { data: upload, error: uploadErr } = await supabase
-    .from('statement_uploads')
-    .select('*')
-    .eq('id', uploadId)
-    .eq('user_id', user.id)
-    .single();
-
-  if (uploadErr || !upload) {
-    throw new Error('Upload record not found in database.');
-  }
-
-  const rawRows = inFlightRawParsedRows.get(uploadId) || [];
+  const rawRows = localRawParsedRows.get(uploadId) || [];
   if (rawRows.length === 0) {
-    // If memory buffer was cleared, check existing staged rows
-    const { data: existingStaged } = await supabase
-      .from('staged_transactions')
-      .select('txn_date')
-      .eq('upload_id', uploadId);
-
-    if (existingStaged && existingStaged.length > 0) {
-      const dates = existingStaged.map((s) => s.txn_date).sort();
-      return {
-        success: true,
-        staged_count: existingStaged.length,
-        date_start: dates[0] || '',
-        date_end: dates[dates.length - 1] || '',
-      };
-    }
     throw new Error('No raw rows available for this upload. Please re-upload.');
   }
 
-  const stagedRows: any[] = [];
+  const stagedRows: StagedTransaction[] = [];
   let minDate = '';
   let maxDate = '';
 
@@ -339,13 +533,15 @@ export async function confirmMappingAndStaging(
 
     const balance = !skipBalance && mapping.balance_col ? parseAmount(r[mapping.balance_col]) : null;
 
+    // Track min / max dates for statement period
     if (txnDate) {
       if (!minDate || txnDate < minDate) minDate = txnDate;
       if (!maxDate || txnDate > maxDate) maxDate = txnDate;
     }
 
     stagedRows.push({
-      user_id: user.id,
+      id: `stg_${Date.now()}_${i}`,
+      user_id: upload.user_id,
       upload_id: upload.id,
       account_id: upload.account_id,
       raw_date: rawDate,
@@ -357,32 +553,21 @@ export async function confirmMappingAndStaging(
       balance,
       reference_number: reference?.trim() || null,
       is_duplicate: false,
+      duplicate_of_id: null,
+      created_at: new Date().toISOString(),
     });
   }
 
-  // Remove existing staged rows for this upload in Supabase first
-  await supabase.from('staged_transactions').delete().eq('upload_id', uploadId);
-
-  // Insert staged rows in batches of 50
-  for (let i = 0; i < stagedRows.length; i += 50) {
-    const chunk = stagedRows.slice(i, i + 50);
-    const { error: insertErr } = await supabase.from('staged_transactions').insert(chunk);
-    if (insertErr) {
-      console.error('Failed to insert staged batch:', insertErr);
-    }
-  }
+  // Remove any previous staged rows for this upload and push new
+  localStagedTransactionsStore = localStagedTransactionsStore.filter((s) => s.upload_id !== uploadId);
+  localStagedTransactionsStore.push(...stagedRows);
 
   // Update statement upload record
-  await supabase
-    .from('statement_uploads')
-    .update({
-      status: 'review',
-      row_count: stagedRows.length,
-      statement_period_start: minDate || null,
-      statement_period_end: maxDate || null,
-      updated_at: new Date().toISOString(),
-    })
-    .eq('id', uploadId);
+  upload.status = 'review';
+  upload.row_count = stagedRows.length;
+  upload.statement_period_start = minDate || null;
+  upload.statement_period_end = maxDate || null;
+  upload.updated_at = new Date().toISOString();
 
   return {
     success: true,
@@ -393,44 +578,33 @@ export async function confirmMappingAndStaging(
 }
 
 /**
- * Checks if the statement date range overlaps with an existing imported upload
+ * Checks if the statement date range overlaps by >50% with an existing imported upload
+ * for the same account (Deliverable 8).
  */
-export async function checkDateOverlapAsync(
+export function checkDateOverlap(
   accountId: string,
   newStart?: string | null,
   newEnd?: string | null,
   excludeUploadId?: string
-): Promise<OverlapCheckResult> {
+): OverlapCheckResult {
   if (!newStart || !newEnd) {
-    return { has_overlap: false, overlap_percentage: 0 };
-  }
-
-  const supabase = createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return { has_overlap: false, overlap_percentage: 0 };
-
-  const { data: existingUploads } = await supabase
-    .from('statement_uploads')
-    .select('*')
-    .eq('user_id', user.id)
-    .eq('account_id', accountId)
-    .in('status', ['imported', 'review']);
-
-  if (!existingUploads || existingUploads.length === 0) {
     return { has_overlap: false, overlap_percentage: 0 };
   }
 
   const newStartMs = new Date(newStart).getTime();
   const newEndMs = new Date(newEnd).getTime();
-  const newDuration = Math.max(newEndMs - newStartMs, 86400000);
+  const newDuration = Math.max(newEndMs - newStartMs, 86400000); // at least 1 day
 
-  for (const existing of existingUploads) {
+  for (const existing of localUploadsStore) {
     if (existing.id === excludeUploadId) continue;
+    if (existing.account_id !== accountId) continue;
+    if (existing.status !== 'imported' && existing.status !== 'review') continue;
     if (!existing.statement_period_start || !existing.statement_period_end) continue;
 
     const existStartMs = new Date(existing.statement_period_start).getTime();
     const existEndMs = new Date(existing.statement_period_end).getTime();
 
+    // Calculate overlap window
     const overlapStart = Math.max(newStartMs, existStartMs);
     const overlapEnd = Math.min(newEndMs, existEndMs);
 
@@ -457,36 +631,34 @@ export async function checkDateOverlapAsync(
   return { has_overlap: false, overlap_percentage: 0 };
 }
 
-// Synchronous wrapper for backwards compatibility
-export function checkDateOverlap(
-  accountId: string,
-  newStart?: string | null,
-  newEnd?: string | null,
-  excludeUploadId?: string
-): OverlapCheckResult {
-  return { has_overlap: false, overlap_percentage: 0 };
-}
-
 /**
  * Get all statement uploads for current user
  */
 export async function getUploads(): Promise<StatementUpload[]> {
-  const supabase = createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return [];
+  try {
+    const supabase = createClient();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
 
-  const { data, error } = await supabase
-    .from('statement_uploads')
-    .select('*, account:accounts(id, name, bank_name, account_number_last4)')
-    .eq('user_id', user.id)
-    .order('created_at', { ascending: false });
+    if (user) {
+      const { data, error } = await supabase
+        .from('statement_uploads')
+        .select('*, accounts(id, name, bank_name, account_number_last4)')
+        .order('created_at', { ascending: false });
 
-  if (error || !data) {
-    console.error('Failed to get uploads:', error);
-    return [];
+      if (!error && data && data.length > 0) {
+        return data.map((d: any) => ({
+          ...d,
+          account: d.accounts,
+        }));
+      }
+    }
+  } catch {
+    // Return local store
   }
 
-  return data;
+  return [...localUploadsStore];
 }
 
 /**
@@ -496,33 +668,17 @@ export async function getUploadDetails(uploadId: string): Promise<{
   upload: StatementUpload | null;
   transactions: StagedTransaction[];
 }> {
-  const supabase = createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return { upload: null, transactions: [] };
-
-  const [uploadRes, stagedRes] = await Promise.all([
-    supabase
-      .from('statement_uploads')
-      .select('*, account:accounts(id, name, bank_name, account_number_last4)')
-      .eq('id', uploadId)
-      .eq('user_id', user.id)
-      .single(),
-    supabase
-      .from('staged_transactions')
-      .select('*')
-      .eq('upload_id', uploadId)
-      .eq('user_id', user.id)
-      .order('txn_date', { ascending: false }),
-  ]);
+  const upload = localUploadsStore.find((u) => u.id === uploadId) || null;
+  const transactions = localStagedTransactionsStore.filter((t) => t.upload_id === uploadId);
 
   return {
-    upload: uploadRes.data || null,
-    transactions: stagedRes.data || [],
+    upload: upload ? { ...upload } : null,
+    transactions: [...transactions],
   };
 }
 
 /**
- * Finalizes import:
+ * Finalizes import (Batch 4):
  * Commits staged transactions through the multiset dedup, rules engine, transfer
  * detection, batch insert, and audit logging pipeline.
  */
@@ -530,37 +686,29 @@ export async function finalizeImport(
   uploadId: string,
   replacePreviousId?: string
 ): Promise<{ success: boolean; upload: StatementUpload; result?: any }> {
+  // Dynamically import to prevent circular dependency if needed, or call commitUploadTransactions
   const { commitUploadTransactions } = await import('./transactions');
   const commitResult = await commitUploadTransactions(uploadId, replacePreviousId);
 
-  const { upload } = await getUploadDetails(uploadId);
+  const upload = localUploadsStore.find((u) => u.id === uploadId);
   if (!upload) throw new Error('Upload not found.');
 
-  return { success: true, upload, result: commitResult };
+  return { success: true, upload: { ...upload }, result: commitResult };
 }
 
 /**
  * Cancels upload: deletes staged transactions and marks status as 'failed'
  */
 export async function cancelUpload(uploadId: string): Promise<{ success: boolean }> {
-  const supabase = createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) throw new Error('Unauthorized');
+  localStagedTransactionsStore = localStagedTransactionsStore.filter((t) => t.upload_id !== uploadId);
+  localRawParsedRows.delete(uploadId);
 
-  inFlightRawParsedRows.delete(uploadId);
-
-  await Promise.all([
-    supabase.from('staged_transactions').delete().eq('upload_id', uploadId).eq('user_id', user.id),
-    supabase
-      .from('statement_uploads')
-      .update({
-        status: 'failed',
-        error_message: 'Upload cancelled by user.',
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', uploadId)
-      .eq('user_id', user.id),
-  ]);
+  const upload = localUploadsStore.find((u) => u.id === uploadId);
+  if (upload) {
+    upload.status = 'failed';
+    upload.error_message = 'Upload cancelled by user.';
+    upload.updated_at = new Date().toISOString();
+  }
 
   return { success: true };
 }

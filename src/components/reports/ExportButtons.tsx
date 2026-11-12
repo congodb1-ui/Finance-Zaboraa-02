@@ -4,7 +4,6 @@ import { Button } from '../ui/Button';
 import { FileSpreadsheet, Download, FileText, Loader2, Sparkles, AlertCircle } from 'lucide-react';
 import { getAllTransactions, getITRSummaryData } from '../../lib/actions/transactions';
 import { getAccounts } from '../../lib/actions/accounts';
-import { getFYBounds } from '../../lib/fy-utils';
 
 interface ExportButtonsProps {
   fy: string;
@@ -16,10 +15,11 @@ export const ExportButtons: React.FC<ExportButtonsProps> = ({ fy, workspace, cla
   const [isExportingExcel, setIsExportingExcel] = useState(false);
   const [isExportingCSV, setIsExportingCSV] = useState(false);
 
-  // Determine FY date bounds using dynamic utils
+  // Determine FY date bounds
   const getFYDates = (fyString: string) => {
-    const bounds = getFYBounds(fyString);
-    return { startDate: bounds.start, endDate: bounds.end };
+    if (fyString === 'FY2025-26') return { startDate: '2025-04-01', endDate: '2026-03-31' };
+    if (fyString === 'FY2024-25') return { startDate: '2024-04-01', endDate: '2025-03-31' };
+    return { startDate: '2026-04-01', endDate: '2027-03-31' };
   };
 
   const handleExportExcel = async () => {

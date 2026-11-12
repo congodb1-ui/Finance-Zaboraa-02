@@ -3,7 +3,6 @@
 import React, { useState, useEffect } from 'react';
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '../../../../components/ui/Card';
 import { Button } from '../../../../components/ui/Button';
-import { apiPost } from '../../../../lib/api-client';
 import {
   Sparkles,
   ShieldCheck,
@@ -39,14 +38,19 @@ export default function AISettingsPage() {
     setStatusMessage('Checking server environment key & Gemini API response...');
 
     try {
-      const data = await apiPost('/api/ai/test');
-      if (data && data.success) {
+      const res = await fetch('/api/ai/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      const data = await res.json();
+
+      if (res.ok && data.success) {
         setApiStatus('connected');
         setStatusMessage('Connected (GEMINI_API_KEY verified active on server)');
         if (data.raw) setTestResponse(data.raw);
       } else {
         setApiStatus('error');
-        setStatusMessage(data?.message || 'API key error — check your server GEMINI_API_KEY environment variable.');
+        setStatusMessage(data.message || 'API key error — check your server GEMINI_API_KEY environment variable.');
       }
     } catch (err: any) {
       setApiStatus('error');
@@ -70,15 +74,19 @@ export default function AISettingsPage() {
     setIsTesting(true);
     setTestResponse(null);
     try {
-      const data = await apiPost('/api/ai/test');
-      if (data && data.success) {
+      const res = await fetch('/api/ai/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      const data = await res.json();
+      if (data.success) {
         setTestResponse(`Status: 200 OK\nModel: ${data.model || 'gemini-2.5-flash'}\nResponse:\n${data.raw || 'CONNECTED'}`);
         setApiStatus('connected');
         setStatusMessage('Connected (GEMINI_API_KEY verified active on server)');
       } else {
-        setTestResponse(`Error: ${data?.message || 'Connection failed'}`);
+        setTestResponse(`Error: ${data.message || 'Connection failed'}`);
         setApiStatus('error');
-        setStatusMessage(data?.message || 'API key error — check your environment variable');
+        setStatusMessage(data.message || 'API key error — check your environment variable');
       }
     } catch (err: any) {
       setTestResponse(`Error: ${err.message}`);

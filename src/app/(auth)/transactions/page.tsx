@@ -9,7 +9,6 @@ import { BulkEditBar } from '../../../components/transactions/BulkEditBar';
 import { Button } from '../../../components/ui/Button';
 import { Card } from '../../../components/ui/Card';
 import { formatINR } from '../../../types/design-system';
-import { getCurrentFY } from '../../../lib/fy-utils';
 import {
   getTransactions,
   createManualTransaction,
@@ -41,7 +40,6 @@ import {
 } from 'lucide-react';
 
 export default function TransactionsPage() {
-  const currentFY = getCurrentFY();
   // Ledger data state
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [totalCount, setTotalCount] = useState(0);
@@ -51,10 +49,10 @@ export default function TransactionsPage() {
   const [totalCredits, setTotalCredits] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
 
-  // Filter state (defaults to dynamic current Indian FY)
+  // Filter state (defaults to Indian FY 2026-27: April 1, 2026 to March 31, 2027)
   const [filters, setFilters] = useState<TransactionFiltersState>({
-    startDate: currentFY.start,
-    endDate: currentFY.end,
+    startDate: '2026-04-01',
+    endDate: '2027-03-31',
     accountIds: [],
     categoryIds: [],
     workspaceId: 'all',

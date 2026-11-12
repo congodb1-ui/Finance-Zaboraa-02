@@ -3,7 +3,6 @@
 import React, { useState, useEffect } from 'react';
 import type { DetectedAnomaly } from '../../lib/ai/anomalies';
 import { formatINR } from '../../types/design-system';
-import { apiPost } from '../../lib/api-client';
 import {
   AlertTriangle,
   ChevronDown,
@@ -58,9 +57,17 @@ export const AnomalyBanner: React.FC<AnomalyBannerProps> = ({ onViewTransaction 
 
       setIsLoading(true);
       try {
-        const data = await apiPost('/api/ai/anomalies', { forceRefresh: false });
-        if (isMounted && Array.isArray(data.anomalies)) {
-          setAnomalies(data.anomalies);
+        const res = await fetch('/api/ai/anomalies', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ forceRefresh: false }),
+        });
+
+        if (res.ok) {
+          const data = await res.json();
+          if (isMounted && Array.isArray(data.anomalies)) {
+            setAnomalies(data.anomalies);
+          }
         }
       } catch (err) {
         console.warn('Failed to load anomalies:', err);

@@ -3,7 +3,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Card } from '../ui/Card';
 import { Button } from '../ui/Button';
-import { apiPost } from '../../lib/api-client';
 import type { AllowedQueryParams } from '../../lib/ai/chat';
 import {
   Sparkles,
@@ -98,9 +97,15 @@ export const ChatInterface: React.FC = () => {
     setIsLoading(true);
 
     try {
-      const data = await apiPost('/api/ai/chat', { question });
+      const res = await fetch('/api/ai/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ question }),
+      });
 
-      if (data && data.success) {
+      const data = await res.json();
+
+      if (res.ok && data.success) {
         const assistantMsg: ChatMessage = {
           id: `msg_a_${Date.now()}`,
           sender: 'assistant',

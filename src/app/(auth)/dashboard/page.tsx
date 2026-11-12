@@ -16,7 +16,6 @@ import { MonthlyReport } from '../../../components/ai/MonthlyReport';
 import { BudgetHealthRow } from '../../../components/dashboard/BudgetHealthRow';
 import { UpcomingRecurringWidget } from '../../../components/dashboard/UpcomingRecurringWidget';
 import { Button } from '../../../components/ui/Button';
-import { getCurrentFY, getFYOptions, getFYBounds } from '../../../lib/fy-utils';
 import {
   LayoutDashboard,
   Calendar,
@@ -32,11 +31,15 @@ interface DashboardFilters {
 }
 
 const DEFAULT_FILTERS: DashboardFilters = {
-  fy: getCurrentFY().value,
+  fy: 'FY2026-27',
   workspace: 'all',
 };
 
-const FY_OPTIONS = getFYOptions(4).map((f) => ({ value: f.value, label: f.label }));
+const FY_OPTIONS = [
+  { value: 'FY2026-27', label: 'FY 2026-27 (Apr 2026 – Mar 2027)' },
+  { value: 'FY2025-26', label: 'FY 2025-26 (Apr 2025 – Mar 2026)' },
+  { value: 'FY2024-25', label: 'FY 2024-25 (Apr 2024 – Mar 2025)' },
+];
 
 export default function DashboardPage() {
   const [isMonthlyReportOpen, setIsMonthlyReportOpen] = useState(false);
@@ -68,10 +71,11 @@ export default function DashboardPage() {
     }
   }, [filters]);
 
-  // Determine FY date bounds using dynamic utils
+  // Determine FY date bounds
   const getFYDates = (fyString: string) => {
-    const bounds = getFYBounds(fyString);
-    return { startDate: bounds.start, endDate: bounds.end };
+    if (fyString === 'FY2025-26') return { startDate: '2025-04-01', endDate: '2026-03-31' };
+    if (fyString === 'FY2024-25') return { startDate: '2024-04-01', endDate: '2025-03-31' };
+    return { startDate: '2026-04-01', endDate: '2027-03-31' };
   };
 
   const loadData = useCallback(async () => {

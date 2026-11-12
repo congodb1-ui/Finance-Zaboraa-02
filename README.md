@@ -3,15 +3,7 @@
 > **Product:** Zaboraa Finance  
 > **Domain:** [https://zaboraa.com](https://zaboraa.com)  
 > **PRD Version:** `v2.1.0`  
-> **Current Status:** Batch 8 — Production Wiring Complete
-
----
-
-### Running Locally
-1. `cp .env.example .env.local`   # fill in all values
-2. `npm install`
-3. `supabase db push`             # apply all migrations
-4. `npm run dev`                  # starts at http://localhost:3000
+> **Current Status:** Batch 2 (Accounts Module, Categories Seed, Workspaces, Nav Shell) Completed
 
 ---
 

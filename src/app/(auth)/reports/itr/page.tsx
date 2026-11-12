@@ -3,13 +3,11 @@ import { ITRSummaryTable } from '../../../../components/reports/ITRSummaryTable'
 import { WorkspaceBreakdown, WorkspaceData } from '../../../../components/reports/WorkspaceBreakdown';
 import { ExportButtons } from '../../../../components/reports/ExportButtons';
 import { getITRSummaryData } from '../../../../lib/actions/transactions';
-import { getFYOptions, getFYBounds, getCurrentFY } from '../../../../lib/fy-utils';
 import { FileText, Calendar, Loader2, Sparkles, AlertCircle } from 'lucide-react';
 import { Select } from '../../../../components/ui/Select';
 
 export default function ITRReportPage() {
-  const fyList = getFYOptions(4);
-  const [selectedFY, setSelectedFY] = useState<string>(() => fyList[0]?.value || getCurrentFY().value);
+  const [selectedFY, setSelectedFY] = useState<string>('FY2025-26');
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [reportData, setReportData] = useState<{
     lineItems: any[];
@@ -19,11 +17,23 @@ export default function ITRReportPage() {
     workspaces: [],
   });
 
-  const fyOptions = fyList.map((f) => ({ value: f.value, label: f.label }));
+  const fyOptions = [
+    { value: 'FY2025-26', label: 'FY 2025–26 (AY 2026–27)' },
+    { value: 'FY2024-25', label: 'FY 2024–25 (AY 2025–26)' },
+    { value: 'FY2026-27', label: 'FY 2026–27 (Current)' },
+  ];
 
   const getFYDateRange = (fy: string) => {
-    const bounds = getFYBounds(fy);
-    return { startDate: bounds.start, endDate: bounds.end };
+    switch (fy) {
+      case 'FY2024-25':
+        return { startDate: '2024-04-01', endDate: '2025-03-31' };
+      case 'FY2025-26':
+        return { startDate: '2025-04-01', endDate: '2026-03-31' };
+      case 'FY2026-27':
+        return { startDate: '2026-04-01', endDate: '2027-03-31' };
+      default:
+        return { startDate: '2025-04-01', endDate: '2026-03-31' };
+    }
   };
 
   useEffect(() => {
