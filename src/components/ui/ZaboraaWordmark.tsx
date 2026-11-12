@@ -1,4 +1,5 @@
 import React from 'react';
+import { ZaboraaLogoIcon } from './ZaboraaLogoIcon';
 
 interface ZaboraaWordmarkProps {
   size?: 'sm' | 'md' | 'lg';
@@ -13,17 +14,17 @@ export const ZaboraaWordmark: React.FC<ZaboraaWordmarkProps> = ({
 }) => {
   const sizeStyles = {
     sm: {
-      icon: 'w-6 h-6 text-xs rounded-md',
+      iconSize: 26,
       zaboraa: 'text-base',
       finance: 'text-sm ml-1',
     },
     md: {
-      icon: 'w-8 h-8 text-sm rounded-lg',
+      iconSize: 34,
       zaboraa: 'text-xl tracking-tight',
       finance: 'text-lg ml-1.5',
     },
     lg: {
-      icon: 'w-10 h-10 text-base rounded-xl',
+      iconSize: 44,
       zaboraa: 'text-2xl tracking-tight',
       finance: 'text-xl ml-2',
     },
@@ -34,14 +35,11 @@ export const ZaboraaWordmark: React.FC<ZaboraaWordmarkProps> = ({
   return (
     <div className={`inline-flex items-center select-none whitespace-nowrap shrink-0 ${className}`}>
       {showIcon && (
-        <div
-          className={`${style.icon} bg-indigo-600 text-white font-heading font-bold flex items-center justify-center mr-2.5 shadow-xs`}
-          aria-hidden="true"
-        >
-          Z
+        <div className="mr-2.5 flex items-center justify-center transition-transform hover:scale-105">
+          <ZaboraaLogoIcon size={style.iconSize} />
         </div>
       )}
-      <span className={`font-heading font-bold text-slate-900 dark:text-white ${style.zaboraa}`}>
+      <span className={`font-heading font-extrabold text-slate-900 dark:text-white ${style.zaboraa}`}>
         Zaboraa
       </span>
       <span className={`font-sans font-normal text-indigo-600 dark:text-indigo-400 ${style.finance}`}>

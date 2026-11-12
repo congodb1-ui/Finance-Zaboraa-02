@@ -175,7 +175,14 @@ export const DashboardWireframePreview: React.FC = () => {
             <span>FY {fyFilter}</span>
           </div>
 
-          <Button variant="primary" size="sm" leftIcon={<Upload className="w-3.5 h-3.5" />}>
+          <Button
+            variant="primary"
+            size="sm"
+            onClick={() => {
+              window.location.hash = 'upload';
+            }}
+            leftIcon={<Upload className="w-3.5 h-3.5" />}
+          >
             Upload Statement
           </Button>
         </div>

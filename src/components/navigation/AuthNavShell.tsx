@@ -34,7 +34,7 @@ export const AuthNavShell: React.FC<AuthNavShellProps> = ({
   const navItems = [
     { name: 'Dashboard', path: '/dashboard', icon: LayoutDashboard },
     { name: 'Accounts', path: '/accounts', icon: Building2 },
-    { name: 'Statements', path: '/upload', icon: Upload, placeholder: true },
+    { name: 'Upload Statements', path: '/upload', icon: Upload },
     { name: 'Transactions', path: '/transactions', icon: Receipt, placeholder: true },
     { name: 'Reports', path: '/reports', icon: FileSpreadsheet, placeholder: true },
     { name: 'Settings', path: '/settings', icon: Settings },

@@ -1,4 +1,24 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
-  <rect width="32" height="32" rx="7" fill="#4F46E5"/>
-  <path d="M9 10h14l-11 11h11v2.5H8.5l11-11H9V10z" fill="#FFFFFF"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 140" width="32" height="32" fill="none">
+  <defs>
+    <linearGradient id="cloudGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#00E5FF"/>
+      <stop offset="50%" stop-color="#38BDF8"/>
+      <stop offset="100%" stop-color="#A855F7"/>
+    </linearGradient>
+    <linearGradient id="circuitGrad" x1="15%" y1="20%" x2="90%" y2="85%">
+      <stop offset="0%" stop-color="#00F0FF"/>
+      <stop offset="50%" stop-color="#0284C7"/>
+      <stop offset="100%" stop-color="#818CF8"/>
+    </linearGradient>
+  </defs>
+  <path d="M 52 118 C 28 118, 12 102, 12 80 C 12 62, 26 48, 44 46 C 52 24, 76 12, 104 12 C 134 12, 158 28, 166 52 C 182 55, 194 68, 194 84 C 194 104, 178 118, 156 118 Z" stroke="url(#cloudGrad)" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M 64 56 L 136 56" stroke="url(#circuitGrad)" stroke-width="8" stroke-linecap="round"/>
+  <path d="M 132 58 L 74 102" stroke="url(#circuitGrad)" stroke-width="9" stroke-linecap="round"/>
+  <path d="M 74 102 L 140 102 C 152 102, 160 94, 160 84 C 160 74, 150 68, 140 70" stroke="url(#circuitGrad)" stroke-width="7" stroke-linecap="round"/>
+  <circle cx="64" cy="56" r="8" fill="#00E5FF"/>
+  <circle cx="64" cy="56" r="3.5" fill="#FFFFFF"/>
+  <circle cx="136" cy="56" r="8" fill="#00E5FF"/>
+  <circle cx="136" cy="56" r="3.5" fill="#FFFFFF"/>
+  <circle cx="56" cy="116" r="7" fill="#A855F7"/>
+  <circle cx="130" cy="102" r="7" fill="#38BDF8"/>
 </svg>
