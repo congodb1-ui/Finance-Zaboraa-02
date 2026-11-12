@@ -21,6 +21,8 @@ export interface Account {
   is_active: boolean;
   color_index: number;
   notes: string | null;
+  opening_balance?: number | null;
+  purpose?: string | null;
   credit_limit: number | null;
   billing_cycle_day: number | null;
   payment_due_day: number | null;

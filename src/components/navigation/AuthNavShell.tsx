@@ -32,13 +32,20 @@ export const AuthNavShell: React.FC<AuthNavShellProps> = ({
   const currentPath = activePathOverride || (typeof window !== 'undefined' ? window.location.pathname : '/dashboard');
   const { user } = useAuth();
 
-  const navItems = [
+  interface NavItem {
+    name: string;
+    path: string;
+    icon: React.ComponentType<{ className?: string }>;
+    placeholder?: boolean;
+  }
+
+  const navItems: NavItem[] = [
     { name: 'Dashboard', path: '/dashboard', icon: LayoutDashboard },
     { name: 'Accounts', path: '/accounts', icon: Building2 },
     { name: 'Upload Statements', path: '/upload', icon: Upload },
     { name: 'Transactions', path: '/transactions', icon: Receipt },
     { name: 'Rules', path: '/rules', icon: Sliders },
-    { name: 'Reports', path: '/reports', icon: FileSpreadsheet, placeholder: true },
+    { name: 'Reports', path: '/reports/itr', icon: FileSpreadsheet },
     { name: 'Settings', path: '/settings', icon: Settings },
   ];
 

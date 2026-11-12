@@ -3,9 +3,11 @@ import { useAuth, signInWithGoogle, signOut } from './lib/auth';
 import { LandingSkeleton } from './components/landing/LandingSkeleton';
 import DashboardPlaceholderPage from './app/(auth)/dashboard/page';
 import AccountsPage from './app/(auth)/accounts/page';
+import AccountDetailPage from './app/(auth)/accounts/[id]/page';
 import StatementUploadPage from './app/(auth)/upload/page';
 import TransactionsPage from './app/(auth)/transactions/page';
 import RulesPage from './app/(auth)/rules/page';
+import ITRReportPage from './app/(auth)/reports/itr/page';
 import SettingsPage from './app/(auth)/settings/page';
 import { AuthNavShell } from './components/navigation/AuthNavShell';
 import { DesignSystemPlayground } from './components/showcase/DesignSystemPlayground';
@@ -24,14 +26,16 @@ import {
   Upload,
   Receipt,
   Sliders,
+  FileSpreadsheet,
   Settings,
 } from 'lucide-react';
 
 export default function App() {
   const { user, isAuthenticated, isLoading } = useAuth();
   const [currentRoute, setCurrentRoute] = useState<
-    '/' | '/dashboard' | '/accounts' | '/upload' | '/transactions' | '/rules' | '/settings' | '/playground'
+    '/' | '/dashboard' | '/accounts' | '/account-detail' | '/upload' | '/transactions' | '/rules' | '/reports' | '/settings' | '/playground'
   >('/');
+  const [selectedAccountId, setSelectedAccountId] = useState<string>('acc_hdfc_01');
   const [authNotice, setAuthNotice] = useState<string | null>(null);
 
   // Sync route with browser hash or location if available
@@ -40,9 +44,15 @@ export default function App() {
       const hash = window.location.hash.replace('#', '');
       if (hash === 'dashboard') setCurrentRoute('/dashboard');
       else if (hash === 'accounts') setCurrentRoute('/accounts');
+      else if (hash.startsWith('account-detail') || hash.startsWith('accounts/')) {
+        const idMatch = hash.match(/id=([a-zA-Z0-9_-]+)/) || hash.match(/accounts\/([a-zA-Z0-9_-]+)/);
+        if (idMatch) setSelectedAccountId(idMatch[1]);
+        setCurrentRoute('/account-detail');
+      }
       else if (hash === 'upload') setCurrentRoute('/upload');
       else if (hash === 'transactions') setCurrentRoute('/transactions');
       else if (hash === 'rules') setCurrentRoute('/rules');
+      else if (hash === 'reports' || hash === 'reports-itr' || hash === 'reports/itr') setCurrentRoute('/reports');
       else if (hash === 'settings') setCurrentRoute('/settings');
       else if (hash === 'playground') setCurrentRoute('/playground');
       else setCurrentRoute('/');
@@ -63,24 +73,44 @@ export default function App() {
 
   // Auth Guard Check for protected routes
   const navigateTo = (
-    route: '/' | '/dashboard' | '/accounts' | '/upload' | '/transactions' | '/rules' | '/settings' | '/playground'
+    route: string
   ) => {
+    let targetRoute = route;
+    if (route === '/reports/itr' || route === '/reports') targetRoute = '/reports';
+    if (route.startsWith('/accounts/')) {
+      const parts = route.split('/');
+      if (parts[2]) setSelectedAccountId(parts[2]);
+      targetRoute = '/account-detail';
+    }
+
     const isProtected =
-      route === '/dashboard' ||
-      route === '/accounts' ||
-      route === '/upload' ||
-      route === '/transactions' ||
-      route === '/rules' ||
-      route === '/settings';
+      targetRoute === '/dashboard' ||
+      targetRoute === '/accounts' ||
+      targetRoute === '/account-detail' ||
+      targetRoute === '/upload' ||
+      targetRoute === '/transactions' ||
+      targetRoute === '/rules' ||
+      targetRoute === '/reports' ||
+      targetRoute === '/settings';
+
     if (isProtected && !isAuthenticated) {
-      setAuthNotice(`Auth Guard: Unauthenticated visit to ${route} blocked and redirected to /`);
+      setAuthNotice(`Auth Guard: Unauthenticated visit to ${targetRoute} blocked and redirected to /`);
       setTimeout(() => setAuthNotice(null), 5000);
       setCurrentRoute('/');
       window.location.hash = '';
       return;
     }
-    setCurrentRoute(route);
-    window.location.hash = route === '/' ? '' : route.replace('/', '');
+
+    if (targetRoute === '/reports') {
+      setCurrentRoute('/reports');
+      window.location.hash = 'reports-itr';
+    } else if (targetRoute === '/account-detail') {
+      setCurrentRoute('/account-detail');
+      window.location.hash = `account-detail?id=${selectedAccountId}`;
+    } else {
+      setCurrentRoute(targetRoute as any);
+      window.location.hash = targetRoute === '/' ? '' : targetRoute.replace('/', '');
+    }
   };
 
   const handleLogin = async () => {
@@ -120,7 +150,7 @@ export default function App() {
             <span className="text-slate-500">|</span>
             <span className="inline-flex items-center gap-1 text-[11px] font-medium text-emerald-400 bg-emerald-950/60 px-2 py-0.5 rounded border border-emerald-800/60">
               <CheckCircle2 className="w-3 h-3" />
-              Batch 4: Transactions & Rules Ready
+              Batch 5: Dashboard & Reports Complete
             </span>
           </div>
 
@@ -153,7 +183,7 @@ export default function App() {
               type="button"
               onClick={() => navigateTo('/accounts')}
               className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium transition-colors cursor-pointer ${
-                currentRoute === '/accounts'
+                currentRoute === '/accounts' || currentRoute === '/account-detail'
                   ? 'bg-indigo-600 text-white shadow-xs'
                   : 'text-slate-400 hover:text-slate-200'
               }`}
@@ -196,6 +226,18 @@ export default function App() {
             >
               <Sliders className="w-3 h-3" />
               <span>/rules</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => navigateTo('/reports')}
+              className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium transition-colors cursor-pointer ${
+                currentRoute === '/reports'
+                  ? 'bg-indigo-600 text-white shadow-xs'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              <FileSpreadsheet className="w-3 h-3" />
+              <span>/reports</span>
             </button>
             <button
               type="button"
@@ -292,6 +334,15 @@ export default function App() {
           </AuthNavShell>
         )}
 
+        {currentRoute === '/account-detail' && (
+          <AuthNavShell activePathOverride="/accounts" onNavigateOverride={(p) => navigateTo(p as any)}>
+            <AccountDetailPage
+              accountId={selectedAccountId}
+              onBack={() => navigateTo('/accounts')}
+            />
+          </AuthNavShell>
+        )}
+
         {currentRoute === '/upload' && (
           <AuthNavShell activePathOverride="/upload" onNavigateOverride={(p) => navigateTo(p as any)}>
             <StatementUploadPage />
@@ -307,6 +358,14 @@ export default function App() {
         {currentRoute === '/rules' && (
           <AuthNavShell activePathOverride="/rules" onNavigateOverride={(p) => navigateTo(p as any)}>
             <RulesPage />
+          </AuthNavShell>
+        )}
+
+        {currentRoute === '/reports' && (
+          <AuthNavShell activePathOverride="/reports/itr" onNavigateOverride={(p) => navigateTo(p as any)}>
+            <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+              <ITRReportPage />
+            </div>
           </AuthNavShell>
         )}
 

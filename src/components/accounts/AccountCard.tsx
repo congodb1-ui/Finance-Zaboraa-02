@@ -221,6 +221,16 @@ export const AccountCard: React.FC<AccountCardProps> = ({
 
         <div className="flex items-center gap-1">
           <Button
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              window.location.hash = `account-detail?id=${account.id}`;
+            }}
+            aria-label={`View ledger for ${account.name}`}
+          >
+            Ledger
+          </Button>
+          <Button
             variant="ghost"
             size="sm"
             onClick={() => onEdit(account)}

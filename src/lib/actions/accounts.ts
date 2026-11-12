@@ -16,6 +16,8 @@ let localAccountsStore: AccountWithBalance[] = [
     is_active: true,
     color_index: 0,
     notes: 'Primary personal expense & salary account',
+    opening_balance: 400000.0,
+    purpose: 'Personal',
     credit_limit: null,
     billing_cycle_day: null,
     payment_due_day: null,
@@ -35,6 +37,8 @@ let localAccountsStore: AccountWithBalance[] = [
     is_active: true,
     color_index: 1,
     notes: 'Direct client retainer & salary deposits',
+    opening_balance: 50000.0,
+    purpose: 'Personal',
     credit_limit: null,
     billing_cycle_day: null,
     payment_due_day: null,
@@ -54,6 +58,8 @@ let localAccountsStore: AccountWithBalance[] = [
     is_active: true,
     color_index: 2,
     notes: 'Professional consulting and vendor disbursements',
+    opening_balance: 750000.0,
+    purpose: 'Business',
     credit_limit: null,
     billing_cycle_day: null,
     payment_due_day: null,
@@ -73,6 +79,8 @@ let localAccountsStore: AccountWithBalance[] = [
     is_active: true,
     color_index: 7,
     notes: 'Business travel and SaaS subscriptions',
+    opening_balance: 0.0,
+    purpose: 'Business',
     credit_limit: 300000.0,
     billing_cycle_day: 1,
     payment_due_day: 20,
@@ -82,6 +90,11 @@ let localAccountsStore: AccountWithBalance[] = [
     last_import_date: new Date(Date.now() - 4 * 86400000).toISOString(),
   },
 ];
+
+export async function getAccountById(id: string): Promise<AccountWithBalance | null> {
+  const accounts = await getAccounts();
+  return accounts.find((a) => a.id === id) || null;
+}
 
 export async function getAccounts(): Promise<AccountWithBalance[]> {
   try {

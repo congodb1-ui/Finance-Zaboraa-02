@@ -994,3 +994,475 @@ export async function bulkUpdateTransactions(
 
   return { updatedCount };
 }
+
+/**
+ * Helper to fetch all transactions without pagination
+ */
+export async function getAllTransactions(): Promise<Transaction[]> {
+  const { transactions } = await getTransactions({ page: 1, pageSize: 10000 });
+  return transactions;
+}
+
+/**
+ * Calculates running balance for an account starting from opening_balance
+ * Ordered chronologically (txn_date ASC, created_at ASC)
+ */
+export async function getAccountLedgerWithRunningBalance(
+  accountId: string,
+  options?: {
+    startDate?: string;
+    endDate?: string;
+    categoryId?: string;
+    txnType?: string;
+    search?: string;
+  }
+): Promise<{
+  account: any;
+  transactions: (Transaction & { calculated_running_balance: number })[];
+  dailyBalancePoints: { date: string; balance: number }[];
+}> {
+  const accounts = await getAccounts();
+  const account = accounts.find((a) => a.id === accountId);
+  if (!account) throw new Error('Account not found');
+
+  const openingBalance = account.opening_balance ?? 0;
+
+  // Fetch all transactions for this account ordered chronologically ASC
+  const allAccountTxns = localTransactionsStore
+    .filter((t) => t.account_id === accountId)
+    .sort((a, b) => {
+      if (a.txn_date !== b.txn_date) return a.txn_date.localeCompare(b.txn_date);
+      return a.created_at.localeCompare(b.created_at);
+    });
+
+  let running = openingBalance;
+  const chronologicalWithBalance: (Transaction & { calculated_running_balance: number })[] = [];
+  const balanceByDate = new Map<string, number>();
+
+  for (const tx of allAccountTxns) {
+    const debit = tx.debit ?? 0;
+    const credit = tx.credit ?? 0;
+    running = running + credit - debit;
+    chronologicalWithBalance.push({
+      ...tx,
+      calculated_running_balance: Math.round(running * 100) / 100,
+    });
+    balanceByDate.set(tx.txn_date, Math.round(running * 100) / 100);
+  }
+
+  // Daily balance points for BalanceChart
+  const dailyBalancePoints: { date: string; balance: number }[] = [];
+  if (options?.startDate && options?.endDate) {
+    let cur = new Date(options.startDate);
+    const end = new Date(options.endDate);
+    let lastKnownBalance = openingBalance;
+
+    while (cur <= end) {
+      const dStr = cur.toISOString().split('T')[0];
+      if (balanceByDate.has(dStr)) {
+        lastKnownBalance = balanceByDate.get(dStr)!;
+      }
+      dailyBalancePoints.push({
+        date: dStr,
+        balance: lastKnownBalance,
+      });
+      cur.setDate(cur.getDate() + 1);
+    }
+  } else {
+    // Collect from chronological points
+    for (const [date, bal] of balanceByDate.entries()) {
+      dailyBalancePoints.push({ date, balance: bal });
+    }
+  }
+
+  // Now apply filters for display, then order DESC (newest first for ledger UI)
+  let displayList = [...chronologicalWithBalance];
+
+  if (options?.startDate) {
+    displayList = displayList.filter((t) => t.txn_date >= options.startDate!);
+  }
+  if (options?.endDate) {
+    displayList = displayList.filter((t) => t.txn_date <= options.endDate!);
+  }
+  if (options?.categoryId) {
+    displayList = displayList.filter((t) => t.category_id === options.categoryId);
+  }
+  if (options?.txnType && options.txnType !== 'all') {
+    displayList = displayList.filter((t) => t.txn_type === options.txnType);
+  }
+  if (options?.search && options.search.trim()) {
+    const q = options.search.trim().toLowerCase();
+    displayList = displayList.filter(
+      (t) =>
+        (t.description || '').toLowerCase().includes(q) ||
+        (t.reference_number || '').toLowerCase().includes(q)
+    );
+  }
+
+  displayList.sort((a, b) => {
+    if (a.txn_date !== b.txn_date) return b.txn_date.localeCompare(a.txn_date);
+    return b.created_at.localeCompare(a.created_at);
+  });
+
+  return {
+    account,
+    transactions: displayList,
+    dailyBalancePoints,
+  };
+}
+
+/**
+ * Compute high-performance Dashboard metrics
+ */
+export async function getDashboardMetrics(
+  fyRange: { startDate: string; endDate: string },
+  workspaceFilter: string = 'all'
+) {
+  const [accounts, categories, workspaces] = await Promise.all([
+    getAccounts(),
+    getCategories(),
+    getWorkspaces(),
+  ]);
+
+  // Net Worth Calculation: sum of current balances across all active accounts
+  // Credit card balances are liabilities (negative)
+  let netWorth = 0;
+  const accountBreakdown: { type: string; total: number; count: number }[] = [];
+  const typeMap = new Map<string, number>();
+  const typeCount = new Map<string, number>();
+
+  for (const acc of accounts) {
+    if (!acc.is_active) continue;
+    // Calculate current balance from opening balance + credits - debits
+    const accTxns = localTransactionsStore.filter((t) => t.account_id === acc.id);
+    let bal = acc.opening_balance ?? 0;
+    for (const tx of accTxns) {
+      bal += (tx.credit ?? 0) - (tx.debit ?? 0);
+    }
+
+    // For credit card, if balance is positive, it's either an overpayment or liability
+    // Outstanding credit card balance represents a liability
+    if (acc.account_type === 'credit_card') {
+      const liability = bal < 0 ? bal : -bal;
+      netWorth += liability;
+      const cur = typeMap.get('credit_card') || 0;
+      typeMap.set('credit_card', cur + liability);
+      typeCount.set('credit_card', (typeCount.get('credit_card') || 0) + 1);
+    } else {
+      netWorth += bal;
+      const cur = typeMap.get(acc.account_type) || 0;
+      typeMap.set(acc.account_type, cur + bal);
+      typeCount.set(acc.account_type, (typeCount.get(acc.account_type) || 0) + 1);
+    }
+  }
+
+  for (const [t, total] of typeMap.entries()) {
+    accountBreakdown.push({
+      type: t,
+      total: Math.round(total * 100) / 100,
+      count: typeCount.get(t) || 0,
+    });
+  }
+
+  // Filter transactions by FY date range and Workspace filter
+  let periodTxns = localTransactionsStore.filter(
+    (t) => t.txn_date >= fyRange.startDate && t.txn_date <= fyRange.endDate
+  );
+
+  if (workspaceFilter && workspaceFilter !== 'all') {
+    periodTxns = periodTxns.filter((t) => {
+      if (workspaceFilter === 'Personal') return t.workspace_id === 'ws_personal';
+      if (workspaceFilter === 'Business') return t.workspace_id === 'ws_business';
+      if (workspaceFilter === 'Mixed') return t.workspace_id === 'ws_mixed';
+      return t.workspace_id === workspaceFilter;
+    });
+  }
+
+  // Cashflow: Exclude internal transfers!
+  // Income: sum of credits where not transfer and (txn_type = 'income' or credit > 0)
+  // Expenses: sum of debits where not transfer and txn_type = 'expense'
+  let totalIncome = 0;
+  let totalExpenses = 0;
+
+  // Month-by-month breakdown (12 months of Indian FY: Apr, May, Jun, Jul, Aug, Sep, Oct, Nov, Dec, Jan, Feb, Mar)
+  const fyMonths = [
+    { label: 'Apr', monthNum: '04' },
+    { label: 'May', monthNum: '05' },
+    { label: 'Jun', monthNum: '06' },
+    { label: 'Jul', monthNum: '07' },
+    { label: 'Aug', monthNum: '08' },
+    { label: 'Sep', monthNum: '09' },
+    { label: 'Oct', monthNum: '10' },
+    { label: 'Nov', monthNum: '11' },
+    { label: 'Dec', monthNum: '12' },
+    { label: 'Jan', monthNum: '01' },
+    { label: 'Feb', monthNum: '02' },
+    { label: 'Mar', monthNum: '03' },
+  ];
+
+  const monthMap = new Map<string, { income: number; expense: number }>();
+  for (const m of fyMonths) {
+    monthMap.set(m.label, { income: 0, expense: 0 });
+  }
+
+  // Category breakdown map for spending donut
+  const categorySpendMap = new Map<string, number>();
+
+  // Business income and expense running totals for Tax Provision
+  let businessIncome = 0;
+  let businessExpense = 0;
+
+  for (const tx of periodTxns) {
+    // Exclude transfers from income, expenses, and tax calculations
+    if (tx.is_transfer || tx.txn_type === 'transfer') continue;
+
+    // Track Business Workspace specifically for Tax Provision
+    const isBusiness = tx.workspace_id === 'ws_business' || tx.workspace?.name?.toLowerCase() === 'business';
+
+    if (tx.credit && tx.credit > 0 && tx.txn_type !== 'refund') {
+      totalIncome += tx.credit;
+      if (isBusiness) businessIncome += tx.credit;
+
+      // Assign to month
+      const mStr = tx.txn_date.slice(5, 7);
+      const matchMonth = fyMonths.find((m) => m.monthNum === mStr);
+      if (matchMonth) {
+        const cur = monthMap.get(matchMonth.label)!;
+        cur.income += tx.credit;
+      }
+    }
+
+    if (tx.debit && tx.debit > 0) {
+      totalExpenses += tx.debit;
+      if (isBusiness) businessExpense += tx.debit;
+
+      // Assign to month
+      const mStr = tx.txn_date.slice(5, 7);
+      const matchMonth = fyMonths.find((m) => m.monthNum === mStr);
+      if (matchMonth) {
+        const cur = monthMap.get(matchMonth.label)!;
+        cur.expense += tx.debit;
+      }
+
+      // Track Category Spend
+      const catId = tx.category_id || 'uncategorized';
+      const curSpend = categorySpendMap.get(catId) || 0;
+      categorySpendMap.set(catId, curSpend + tx.debit);
+    }
+  }
+
+  const monthlyCashflow = fyMonths.map((m) => {
+    const data = monthMap.get(m.label)!;
+    return {
+      month: m.label,
+      income: Math.round(data.income),
+      expense: Math.round(data.expense),
+      net: Math.round(data.income - data.expense),
+    };
+  });
+
+  // Fixed 10-color categorical palette from PRD §6.3
+  const PRD_PALETTE = [
+    '#6366F1', '#0EA5E9', '#14B8A6', '#22C55E', '#84CC16',
+    '#EAB308', '#F97316', '#EF4444', '#EC4899', '#A855F7',
+  ];
+
+  // Spending by Category (Top 8 categories, rest as "Other")
+  const sortedCategories = Array.from(categorySpendMap.entries())
+    .map(([catId, amount]) => {
+      const cat = categories.find((c) => c.id === catId);
+      return {
+        id: catId,
+        name: cat?.name || (catId === 'uncategorized' ? 'Uncategorized' : 'General Expense'),
+        amount: Math.round(amount * 100) / 100,
+        colorIndex: cat?.color_index ?? 0,
+      };
+    })
+    .sort((a, b) => b.amount - a.amount);
+
+  const top8 = sortedCategories.slice(0, 8);
+  const remaining = sortedCategories.slice(8);
+
+  const finalCategoryList: {
+    id: string;
+    name: string;
+    amount: number;
+    percentage: number;
+    color: string;
+  }[] = [];
+
+  const totalCatSpend = sortedCategories.reduce((sum, c) => sum + c.amount, 0) || 1;
+
+  top8.forEach((item, idx) => {
+    finalCategoryList.push({
+      id: item.id,
+      name: item.name,
+      amount: item.amount,
+      percentage: Math.round((item.amount / totalCatSpend) * 100),
+      color: PRD_PALETTE[item.colorIndex % PRD_PALETTE.length],
+    });
+  });
+
+  if (remaining.length > 0) {
+    const otherSum = remaining.reduce((sum, c) => sum + c.amount, 0);
+    finalCategoryList.push({
+      id: 'other',
+      name: 'Other',
+      amount: Math.round(otherSum * 100) / 100,
+      percentage: Math.round((otherSum / totalCatSpend) * 100),
+      color: '#64748B',
+    });
+  }
+
+  // Tax Provision calculation
+  const taxableProfit = Math.max(0, businessIncome - businessExpense);
+  const taxProvision30 = Math.round(taxableProfit * 0.3 * 100) / 100;
+
+  // Recent 10 transactions
+  const recentTransactions = localTransactionsStore
+    .slice(0, 10)
+    .map((t) => {
+      const acc = t.account || accounts.find((a) => a.id === t.account_id);
+      return {
+        ...t,
+        account: acc
+          ? {
+              id: acc.id,
+              name: acc.name,
+              bank_name: acc.bank_name,
+              account_number_last4: acc.account_number_last4,
+            }
+          : undefined,
+      };
+    });
+
+  return {
+    netWorth: Math.round(netWorth * 100) / 100,
+    accountBreakdown,
+    totalIncome: Math.round(totalIncome * 100) / 100,
+    totalExpenses: Math.round(totalExpenses * 100) / 100,
+    netCashflow: Math.round((totalIncome - totalExpenses) * 100) / 100,
+    monthlyCashflow,
+    spendingByCategory: finalCategoryList,
+    taxProvision: {
+      businessIncome: Math.round(businessIncome * 100) / 100,
+      businessExpense: Math.round(businessExpense * 100) / 100,
+      taxableProfit: Math.round(taxableProfit * 100) / 100,
+      taxProvision: taxProvision30,
+    },
+    recentTransactions,
+  };
+}
+
+/**
+ * Generates ITR Summary data matching Indian ITR Schedule
+ */
+export async function getITRSummaryData(fyRange: { startDate: string; endDate: string }) {
+  const [categories, workspaces] = await Promise.all([getCategories(), getWorkspaces()]);
+
+  const txns = localTransactionsStore.filter(
+    (t) =>
+      t.txn_date >= fyRange.startDate &&
+      t.txn_date <= fyRange.endDate &&
+      !t.is_transfer &&
+      t.txn_type !== 'transfer'
+  );
+
+  let businessIncome = 0;
+  let otherPersonalIncome = 0;
+  let businessExpenses = 0;
+  let personalExpenses = 0;
+
+  const workspaceMonthMap = {
+    Personal: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    Business: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    Mixed: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+  };
+
+  const wsSpendCategories = {
+    Personal: new Map<string, number>(),
+    Business: new Map<string, number>(),
+    Mixed: new Map<string, number>(),
+  };
+
+  for (const t of txns) {
+    const isBusiness = t.workspace_id === 'ws_business';
+    const isPersonal = t.workspace_id === 'ws_personal' || (!t.workspace_id && !isBusiness);
+    const mIdx = Math.max(0, parseInt(t.txn_date.slice(5, 7), 10) - 1);
+
+    if (t.credit && t.credit > 0) {
+      if (isBusiness) {
+        businessIncome += t.credit;
+        workspaceMonthMap.Business[mIdx] += t.credit;
+      } else {
+        otherPersonalIncome += t.credit;
+        workspaceMonthMap.Personal[mIdx] += t.credit;
+      }
+    }
+
+    if (t.debit && t.debit > 0) {
+      const catName = categories.find((c) => c.id === t.category_id)?.name || 'General';
+      if (isBusiness) {
+        businessExpenses += t.debit;
+        workspaceMonthMap.Business[mIdx] -= t.debit;
+        const cur = wsSpendCategories.Business.get(catName) || 0;
+        wsSpendCategories.Business.set(catName, cur + t.debit);
+      } else {
+        personalExpenses += t.debit;
+        workspaceMonthMap.Personal[mIdx] -= t.debit;
+        const cur = wsSpendCategories.Personal.get(catName) || 0;
+        wsSpendCategories.Personal.set(catName, cur + t.debit);
+      }
+    }
+  }
+
+  const totalGrossIncome = businessIncome + otherPersonalIncome;
+  const totalDeductions = businessExpenses; // Standard business expense deductions
+  const netTaxableIncome = Math.max(0, totalGrossIncome - totalDeductions);
+  const estimatedTax30 = Math.round(netTaxableIncome * 0.3 * 100) / 100;
+
+  // Format top 5 spend categories for workspace cards
+  const formatTop5 = (map: Map<string, number>) =>
+    Array.from(map.entries())
+      .map(([name, amount]) => ({ name, amount }))
+      .sort((a, b) => b.amount - a.amount)
+      .slice(0, 5);
+
+  return {
+    lineItems: [
+      { section: 'Income', lineItem: 'Business Income (Gross Receipts)', amount: businessIncome },
+      { section: 'Income', lineItem: 'Other Income (Personal & Investments)', amount: otherPersonalIncome },
+      { section: 'Income', lineItem: 'Total Gross Income', amount: totalGrossIncome, isSubtotal: true },
+      { section: 'Deductions', lineItem: 'Business Expenses (Allowable deductions)', amount: businessExpenses },
+      { section: 'Deductions', lineItem: 'Total Deductions', amount: totalDeductions, isSubtotal: true },
+      { section: 'Taxable Income', lineItem: 'Net Taxable Income (Estimated)', amount: netTaxableIncome, isTotal: true },
+      { section: 'Tax', lineItem: 'Tax @ 30% (Estimated, reference only)', amount: estimatedTax30, isTax: true },
+    ],
+    workspaces: [
+      {
+        name: 'Personal',
+        income: otherPersonalIncome,
+        expenses: personalExpenses,
+        net: otherPersonalIncome - personalExpenses,
+        topCategories: formatTop5(wsSpendCategories.Personal),
+        sparkline: workspaceMonthMap.Personal.map((val, idx) => ({ month: idx + 1, val })),
+      },
+      {
+        name: 'Business',
+        income: businessIncome,
+        expenses: businessExpenses,
+        net: businessIncome - businessExpenses,
+        topCategories: formatTop5(wsSpendCategories.Business),
+        sparkline: workspaceMonthMap.Business.map((val, idx) => ({ month: idx + 1, val })),
+      },
+      {
+        name: 'Mixed / Both',
+        income: 0,
+        expenses: 0,
+        net: 0,
+        topCategories: formatTop5(wsSpendCategories.Mixed),
+        sparkline: workspaceMonthMap.Mixed.map((val, idx) => ({ month: idx + 1, val })),
+      },
+    ],
+  };
+}
