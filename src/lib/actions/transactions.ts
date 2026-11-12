@@ -639,7 +639,37 @@ export async function commitUploadTransactions(
     });
   }
 
-  // STEP 9 — Return
+  // STEP 9 — If AI features are enabled and key is present, run description cleaning, auto-categorization & anomaly detection
+  try {
+    const isAiEnabled = typeof window !== 'undefined' ? localStorage.getItem('zaboraa_ai_enabled') === 'true' : true;
+    if (isAiEnabled && newlyInsertedTransactions.length > 0) {
+      // 1. Clean machine-generated narrations
+      const { batchCleanDescriptionsWithAI } = await import('../ai/clean-description');
+      const cleanedResults = await batchCleanDescriptionsWithAI(newlyInsertedTransactions);
+      for (const c of cleanedResults) {
+        const tx = newlyInsertedTransactions.find((t) => t.id === c.transaction_id);
+        if (tx) tx.description = c.cleaned_description;
+      }
+
+      // 2. Auto-categorize uncategorized transactions
+      const uncategorized = newlyInsertedTransactions.filter((t) => !t.category_id && !t.is_transfer);
+      if (uncategorized.length > 0) {
+        const { categorizeTransactionsWithAI } = await import('../ai/categorize');
+        const catRes = await categorizeTransactionsWithAI(uncategorized, categories);
+        if (catRes.results.length > 0) {
+          await applyAICategorizations(catRes.results);
+        }
+      }
+
+      // 3. Scan for anomalies
+      const { detectAnomaliesWithAI } = await import('../ai/anomalies');
+      await detectAnomaliesWithAI(localTransactionsStore);
+    }
+  } catch (aiErr) {
+    console.warn('Post-import AI pipeline notice (continuing without breaking import):', aiErr);
+  }
+
+  // STEP 10 — Return
   return {
     imported_count: newlyInsertedTransactions.length,
     duplicate_count: duplicateCount,
@@ -1466,3 +1496,108 @@ export async function getITRSummaryData(fyRange: { startDate: string; endDate: s
     ],
   };
 }
+
+/**
+ * Applies 3-tier AI categorization suggestions to ledger transactions
+ * Strictly checks audit log: never overrides user edits or rule-defined categories.
+ * Writes audit log entry for every category change.
+ */
+export async function applyAICategorizations(
+  results: Array<{
+    transaction_id: string;
+    category_id: string | null;
+    confidence: 'high' | 'medium' | 'low';
+    score?: number;
+    reasoning?: string;
+  }>
+): Promise<{ updatedCount: number }> {
+  let updatedCount = 0;
+  const categories = await getCategories();
+
+  for (const res of results) {
+    const tx = localTransactionsStore.find((t) => t.id === res.transaction_id);
+    if (!tx) continue;
+
+    // NEVER re-categorize if already set by user or rule
+    if (tx.is_manual) continue;
+    const hasUserEdit = localAuditLogStore.some(
+      (a) => a.record_id === tx.id && a.action === 'update' && (a.new_data as any)?.category_id
+    );
+    if (hasUserEdit) continue;
+
+    const matchedCat = categories.find((c) => c.id === res.category_id);
+
+    if (res.confidence === 'high' && res.category_id) {
+      const oldCat = tx.category_id;
+      tx.category_id = res.category_id;
+      tx.category = matchedCat
+        ? {
+            id: matchedCat.id,
+            name: matchedCat.name,
+            color_index: matchedCat.color_index,
+            icon: matchedCat.icon,
+          }
+        : undefined;
+      tx.ai_suggestion = {
+        category_id: res.category_id,
+        confidence: 'high',
+        score: res.score || 0.9,
+        is_ai_applied: true,
+      };
+      tx.updated_at = new Date().toISOString();
+
+      localAuditLogStore.push({
+        id: `aud_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+        user_id: tx.user_id,
+        table_name: 'transactions',
+        record_id: tx.id,
+        action: 'update',
+        old_data: { category_id: oldCat },
+        new_data: { category_id: res.category_id, confidence: res.confidence, score: res.score },
+        created_at: new Date().toISOString(),
+      });
+      updatedCount++;
+    } else if (res.confidence === 'medium' && res.category_id) {
+      const oldCat = tx.category_id;
+      tx.category_id = res.category_id;
+      tx.category = matchedCat
+        ? {
+            id: matchedCat.id,
+            name: matchedCat.name,
+            color_index: matchedCat.color_index,
+            icon: matchedCat.icon,
+          }
+        : undefined;
+      tx.ai_suggestion = {
+        category_id: res.category_id,
+        confidence: 'medium',
+        score: res.score || 0.7,
+        is_ai_applied: true,
+      };
+      tx.updated_at = new Date().toISOString();
+
+      localAuditLogStore.push({
+        id: `aud_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+        user_id: tx.user_id,
+        table_name: 'transactions',
+        record_id: tx.id,
+        action: 'update',
+        old_data: { category_id: oldCat },
+        new_data: { category_id: res.category_id, confidence: res.confidence, score: res.score },
+        created_at: new Date().toISOString(),
+      });
+      updatedCount++;
+    } else {
+      // Low confidence (< 0.5): Do NOT apply — leave category_id null, show in Needs Review queue
+      tx.ai_suggestion = {
+        category_id: res.category_id,
+        confidence: 'low',
+        score: res.score || 0.3,
+        is_ai_applied: false,
+      };
+    }
+  }
+
+  return { updatedCount };
+}
+

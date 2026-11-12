@@ -213,6 +213,43 @@ export const TransactionRow: React.FC<TransactionRowProps> = ({
               Categorization & Metadata
             </h3>
 
+            {/* AI Insights & Anomaly Diagnostics */}
+            {(transaction.ai_suggestion || transaction.anomaly) && (
+              <div className="p-3 rounded-xl border border-indigo-200 dark:border-indigo-900/60 bg-indigo-50/50 dark:bg-indigo-950/30 space-y-2 text-xs">
+                <div className="flex items-center gap-2 font-semibold text-indigo-900 dark:text-indigo-200">
+                  <span className="text-base">🤖</span>
+                  <span>Gemini AI Intelligence Insights</span>
+                </div>
+
+                {transaction.ai_suggestion && (
+                  <div className="text-[11px] text-slate-700 dark:text-slate-300 flex items-center justify-between">
+                    <span>AI Confidence Score:</span>
+                    <span
+                      className={`font-semibold uppercase tracking-wider px-2 py-0.5 rounded text-[10px] ${
+                        transaction.ai_suggestion.confidence === 'high'
+                          ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300'
+                          : transaction.ai_suggestion.confidence === 'medium'
+                          ? 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300'
+                          : 'bg-slate-200 text-slate-800 dark:bg-slate-800 dark:text-slate-300'
+                      }`}
+                    >
+                      {transaction.ai_suggestion.confidence} (
+                      {Math.round((transaction.ai_suggestion.score || 0.7) * 100)}%)
+                    </span>
+                  </div>
+                )}
+
+                {transaction.anomaly && (
+                  <div className="p-2 rounded-lg bg-amber-100/60 dark:bg-amber-950/60 border border-amber-200 dark:border-amber-900 text-[11px] text-amber-900 dark:text-amber-200 space-y-0.5">
+                    <span className="font-semibold block">
+                      ⚠️ Anomaly Detected ({transaction.anomaly.severity} severity):
+                    </span>
+                    <p>{transaction.anomaly.explanation}</p>
+                  </div>
+                )}
+              </div>
+            )}
+
             {/* Transfer Toggle */}
             <div className="p-3 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 flex items-center justify-between">
               <div>

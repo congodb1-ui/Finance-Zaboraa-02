@@ -212,19 +212,36 @@ export const TransactionTable: React.FC<TransactionTableProps> = ({
                         ⇄ Transfer
                       </span>
                     ) : tx.category ? (
-                      <span className="inline-flex items-center gap-1.5 text-[11px] font-medium px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-200">
-                        <span
-                          className="w-2 h-2 rounded-full shrink-0"
-                          style={{
-                            backgroundColor:
-                              tx.category.color_index !== undefined
-                                ? ['#6366F1', '#0EA5E9', '#14B8A6', '#22C55E', '#84CC16', '#EAB308', '#F97316', '#EF4444', '#EC4899', '#A855F7'][
-                                    tx.category.color_index % 10
-                                  ]
-                                : '#6366F1',
-                          }}
-                        />
-                        <span>{tx.category.name}</span>
+                      <div className="flex items-center gap-1">
+                        <span className="inline-flex items-center gap-1.5 text-[11px] font-medium px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-200">
+                          <span
+                            className="w-2 h-2 rounded-full shrink-0"
+                            style={{
+                              backgroundColor:
+                                tx.category.color_index !== undefined
+                                  ? ['#6366F1', '#0EA5E9', '#14B8A6', '#22C55E', '#84CC16', '#EAB308', '#F97316', '#EF4444', '#EC4899', '#A855F7'][
+                                      tx.category.color_index % 10
+                                    ]
+                                  : '#6366F1',
+                            }}
+                          />
+                          <span>{tx.category.name}</span>
+                        </span>
+                        {tx.ai_suggestion?.confidence === 'medium' && (
+                          <span
+                            title="AI Categorized (Medium Confidence) — click row to review or override"
+                            className="inline-flex items-center gap-0.5 text-[10px] font-semibold text-amber-700 dark:text-amber-300 bg-amber-100 dark:bg-amber-950/80 px-1.5 py-0.2 rounded border border-amber-300 dark:border-amber-800"
+                          >
+                            🤖 Review
+                          </span>
+                        )}
+                      </div>
+                    ) : tx.ai_suggestion?.confidence === 'low' ? (
+                      <span
+                        title="AI suggested category low confidence — Needs user review"
+                        className="inline-flex items-center gap-1 text-[10px] font-semibold text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/60 px-2 py-0.5 rounded border border-amber-200 dark:border-amber-800"
+                      >
+                        ⚠️ Needs Review
                       </span>
                     ) : (
                       <span className="text-slate-400 text-[11px] italic">Uncategorized</span>

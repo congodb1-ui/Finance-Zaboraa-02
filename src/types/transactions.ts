@@ -21,6 +21,18 @@ export interface Transaction {
   tags: string[] | null;
   is_manual: boolean;
   source_staged_id: string | null;
+  ai_suggestion?: {
+    category_id: string | null;
+    confidence: 'high' | 'medium' | 'low';
+    score?: number;
+    reasoning?: string;
+    is_ai_applied?: boolean;
+  } | null;
+  anomaly?: {
+    anomaly_type: 'large_amount' | 'possible_duplicate' | 'unusual_category' | 'unusual_timing';
+    explanation: string;
+    severity: 'high' | 'medium' | 'low';
+  } | null;
   created_at: string;
   updated_at: string;
 

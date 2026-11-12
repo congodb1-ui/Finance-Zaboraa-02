@@ -14,6 +14,7 @@ import {
   Bell,
   User,
   KeyRound,
+  Sparkles,
 } from 'lucide-react';
 
 export default function SettingsPage() {
@@ -60,7 +61,38 @@ export default function SettingsPage() {
         </CardContent>
       </Card>
 
-      {/* 2. Session & Sign Out */}
+      {/* 2. Gemini AI Intelligence Settings (Batch 6) */}
+      <Card className="border-indigo-200 dark:border-indigo-900/60 bg-indigo-50/20 dark:bg-indigo-950/20">
+        <CardHeader>
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Sparkles className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />
+              <CardTitle>Gemini AI Intelligence Engine</CardTitle>
+            </div>
+            <span className="text-[11px] font-mono px-2 py-0.5 rounded bg-indigo-100 dark:bg-indigo-950/80 text-indigo-700 dark:text-indigo-300 font-semibold border border-indigo-200 dark:border-indigo-800">
+              Batch 6 Active
+            </span>
+          </div>
+          <CardDescription>
+            Master AI toggle, Gemini 2.5 Flash / Pro model telemetry, PII masking rules, and connection diagnostic tools.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="flex items-center justify-between pt-2">
+          <div className="text-xs text-slate-600 dark:text-slate-300">
+            Automated categorization, machine narration cleaning, anomaly detection, and Ask-Your-Data chat.
+          </div>
+          <Button
+            variant="primary"
+            size="sm"
+            onClick={() => (window.location.hash = 'settings/ai')}
+            leftIcon={<Sparkles className="w-3.5 h-3.5" />}
+          >
+            Configure AI
+          </Button>
+        </CardContent>
+      </Card>
+
+      {/* 3. Session & Sign Out */}
       <Card>
         <CardHeader>
           <div className="flex items-center gap-2">

@@ -11,6 +11,9 @@ import { ExportButtons } from '../../../components/reports/ExportButtons';
 import { getDashboardMetrics } from '../../../lib/actions/transactions';
 import { getAccounts } from '../../../lib/actions/accounts';
 import type { AccountWithBalance } from '../../../types/accounts';
+import { AnomalyBanner } from '../../../components/ai/AnomalyBanner';
+import { MonthlyReport } from '../../../components/ai/MonthlyReport';
+import { Button } from '../../../components/ui/Button';
 import {
   LayoutDashboard,
   Calendar,
@@ -37,6 +40,7 @@ const FY_OPTIONS = [
 ];
 
 export default function DashboardPage() {
+  const [isMonthlyReportOpen, setIsMonthlyReportOpen] = useState(false);
   // Load persisted filters or defaults
   const [filters, setFilters] = useState<DashboardFilters>(() => {
     if (typeof window !== 'undefined') {
@@ -112,6 +116,14 @@ export default function DashboardPage() {
 
   return (
     <div className="min-h-screen pb-20">
+      {/* Monthly Report Modal Dialog */}
+      {isMonthlyReportOpen && (
+        <MonthlyReport
+          isOpen={isMonthlyReportOpen}
+          onClose={() => setIsMonthlyReportOpen(false)}
+        />
+      )}
+
       {/* Sticky Global FY & Workspace Filter Bar */}
       <div className="sticky top-11 md:top-0 z-20 bg-white/95 dark:bg-[#0B1120]/95 backdrop-blur-md border-b border-slate-200 dark:border-slate-800 py-3 px-4 sm:px-6 transition-colors shadow-2xs">
         <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-3 text-xs">
@@ -127,8 +139,18 @@ export default function DashboardPage() {
             </span>
           </div>
 
-          {/* Filter Dropdowns + Export Buttons */}
+          {/* Filter Dropdowns + Monthly Report + Export Buttons */}
           <div className="flex flex-wrap items-center gap-2.5">
+            {/* Monthly Report Button */}
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setIsMonthlyReportOpen(true)}
+              leftIcon={<Sparkles className="w-3.5 h-3.5 text-indigo-500" />}
+            >
+              Monthly Report
+            </Button>
+
             {/* FY Selector */}
             <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-slate-800 dark:text-slate-200">
               <Calendar className="w-3.5 h-3.5 text-slate-400" />
@@ -181,6 +203,9 @@ export default function DashboardPage() {
 
       {/* Main Dashboard Grid */}
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-6 space-y-6">
+        {/* Anomaly Detection Banner */}
+        <AnomalyBanner />
+
         {/* Row 1: Two Column Grid (Desktop) / Single Column (Mobile) */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           {/* Net Worth Card */}

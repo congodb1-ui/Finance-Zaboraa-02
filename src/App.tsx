@@ -9,6 +9,8 @@ import TransactionsPage from './app/(auth)/transactions/page';
 import RulesPage from './app/(auth)/rules/page';
 import ITRReportPage from './app/(auth)/reports/itr/page';
 import SettingsPage from './app/(auth)/settings/page';
+import AskYourDataPage from './app/(auth)/ai/page';
+import AISettingsPage from './app/(auth)/settings/ai/page';
 import { AuthNavShell } from './components/navigation/AuthNavShell';
 import { DesignSystemPlayground } from './components/showcase/DesignSystemPlayground';
 import { ThemeToggle } from './components/ui/ThemeToggle';
@@ -28,12 +30,13 @@ import {
   Sliders,
   FileSpreadsheet,
   Settings,
+  Sparkles,
 } from 'lucide-react';
 
 export default function App() {
   const { user, isAuthenticated, isLoading } = useAuth();
   const [currentRoute, setCurrentRoute] = useState<
-    '/' | '/dashboard' | '/accounts' | '/account-detail' | '/upload' | '/transactions' | '/rules' | '/reports' | '/settings' | '/playground'
+    '/' | '/dashboard' | '/accounts' | '/account-detail' | '/upload' | '/transactions' | '/rules' | '/reports' | '/ai' | '/settings' | '/settings/ai' | '/playground'
   >('/');
   const [selectedAccountId, setSelectedAccountId] = useState<string>('acc_hdfc_01');
   const [authNotice, setAuthNotice] = useState<string | null>(null);
@@ -53,6 +56,8 @@ export default function App() {
       else if (hash === 'transactions') setCurrentRoute('/transactions');
       else if (hash === 'rules') setCurrentRoute('/rules');
       else if (hash === 'reports' || hash === 'reports-itr' || hash === 'reports/itr') setCurrentRoute('/reports');
+      else if (hash === 'ai' || hash === 'ask-ai') setCurrentRoute('/ai');
+      else if (hash === 'settings/ai' || hash === 'settings-ai') setCurrentRoute('/settings/ai');
       else if (hash === 'settings') setCurrentRoute('/settings');
       else if (hash === 'playground') setCurrentRoute('/playground');
       else setCurrentRoute('/');
@@ -91,7 +96,9 @@ export default function App() {
       targetRoute === '/transactions' ||
       targetRoute === '/rules' ||
       targetRoute === '/reports' ||
-      targetRoute === '/settings';
+      targetRoute === '/ai' ||
+      targetRoute === '/settings' ||
+      targetRoute === '/settings/ai';
 
     if (isProtected && !isAuthenticated) {
       setAuthNotice(`Auth Guard: Unauthenticated visit to ${targetRoute} blocked and redirected to /`);
@@ -107,6 +114,12 @@ export default function App() {
     } else if (targetRoute === '/account-detail') {
       setCurrentRoute('/account-detail');
       window.location.hash = `account-detail?id=${selectedAccountId}`;
+    } else if (targetRoute === '/settings/ai') {
+      setCurrentRoute('/settings/ai');
+      window.location.hash = 'settings/ai';
+    } else if (targetRoute === '/ai') {
+      setCurrentRoute('/ai');
+      window.location.hash = 'ai';
     } else {
       setCurrentRoute(targetRoute as any);
       window.location.hash = targetRoute === '/' ? '' : targetRoute.replace('/', '');
@@ -138,7 +151,7 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-[#0B1120] text-slate-900 dark:text-slate-100 flex flex-col font-sans transition-colors">
-      {/* Batch 3a Navigation & Auth Status Bar */}
+      {/* Batch 6 Navigation & Auth Status Bar */}
       <div className="bg-slate-900 text-slate-200 border-b border-slate-800 text-xs py-2 px-4 sticky top-0 z-50">
         <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-3">
           {/* Brand & Batch Identifier */}
@@ -150,7 +163,7 @@ export default function App() {
             <span className="text-slate-500">|</span>
             <span className="inline-flex items-center gap-1 text-[11px] font-medium text-emerald-400 bg-emerald-950/60 px-2 py-0.5 rounded border border-emerald-800/60">
               <CheckCircle2 className="w-3 h-3" />
-              Batch 5: Dashboard & Reports Complete
+              Batch 6: Gemini AI Complete
             </span>
           </div>
 
@@ -241,9 +254,21 @@ export default function App() {
             </button>
             <button
               type="button"
+              onClick={() => navigateTo('/ai')}
+              className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium transition-colors cursor-pointer ${
+                currentRoute === '/ai'
+                  ? 'bg-indigo-600 text-white shadow-xs'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              <Sparkles className="w-3 h-3 text-indigo-400" />
+              <span>/ai</span>
+            </button>
+            <button
+              type="button"
               onClick={() => navigateTo('/settings')}
               className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium transition-colors cursor-pointer ${
-                currentRoute === '/settings'
+                currentRoute === '/settings' || currentRoute === '/settings/ai'
                   ? 'bg-indigo-600 text-white shadow-xs'
                   : 'text-slate-400 hover:text-slate-200'
               }`}
@@ -369,9 +394,21 @@ export default function App() {
           </AuthNavShell>
         )}
 
+        {currentRoute === '/ai' && (
+          <AuthNavShell activePathOverride="/ai" onNavigateOverride={(p) => navigateTo(p as any)}>
+            <AskYourDataPage />
+          </AuthNavShell>
+        )}
+
         {currentRoute === '/settings' && (
           <AuthNavShell activePathOverride="/settings" onNavigateOverride={(p) => navigateTo(p as any)}>
             <SettingsPage />
+          </AuthNavShell>
+        )}
+
+        {currentRoute === '/settings/ai' && (
+          <AuthNavShell activePathOverride="/settings" onNavigateOverride={(p) => navigateTo(p as any)}>
+            <AISettingsPage />
           </AuthNavShell>
         )}
 
