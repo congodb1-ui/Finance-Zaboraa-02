@@ -1,7 +1,8 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { createClient as createSupabaseClient } from '../../lib/supabase/client';
-import { getInvoiceV2, cancelInvoice } from '../../lib/actions/invoicesV2';
+import { getInvoiceV2, cancelInvoice, undoPayment } from '../../lib/actions/invoicesV2';
 import { getLogoSignedUrl } from '../../lib/actions/businessProfile';
+import { RecordPaymentModal } from './RecordPaymentModal';
 import { formatCurrency, getDecimalsForCurrency } from '../../lib/data/currencies';
 import { countryCodeToFlag, getCountryByCode } from '../../lib/data/countries';
 import { formatINR } from '../../types/design-system';
@@ -22,6 +23,9 @@ import {
   AlertCircle,
   AlertTriangle,
   CheckCircle2,
+  IndianRupee,
+  RotateCcw,
+  ArrowUpRight,
 } from 'lucide-react';
 
 export interface InvoiceViewProps {
@@ -126,6 +130,16 @@ export const InvoiceView: React.FC<InvoiceViewProps> = ({ invoiceId, onNavigate 
   const [cancelling, setCancelling] = useState(false);
   const [statusNotice, setStatusNotice] = useState<string | null>(null);
 
+  const [isPaymentModalOpen, setIsPaymentModalOpen] = useState(false);
+  const [showUndoConfirm, setShowUndoConfirm] = useState(false);
+  const [undoingPayment, setUndoingPayment] = useState(false);
+  const [linkedTxn, setLinkedTxn] = useState<{
+    id: string;
+    txn_date: string;
+    description: string;
+    credit: number;
+  } | null>(null);
+
   const goTo = (path: string) => {
     if (onNavigate) {
       onNavigate(path);
@@ -193,6 +207,48 @@ export const InvoiceView: React.FC<InvoiceViewProps> = ({ invoiceId, onNavigate 
     };
   }, [invoiceId]);
 
+  useEffect(() => {
+    let active = true;
+    async function loadLinkedTransaction() {
+      if (!invoice?.linked_transaction_id) {
+        setLinkedTxn(null);
+        return;
+      }
+      try {
+        const supabase = createSupabaseClient();
+        const {
+          data: { user },
+        } = await supabase.auth.getUser();
+        if (!user || !active) return;
+
+        const { data } = await supabase
+          .from('transactions')
+          .select('id, txn_date, description, credit')
+          .eq('id', invoice.linked_transaction_id)
+          .eq('user_id', user.id)
+          .maybeSingle();
+
+        if (!active) return;
+        if (data) {
+          setLinkedTxn({
+            id: data.id,
+            txn_date: data.txn_date,
+            description: data.description || '',
+            credit: Number(data.credit) || 0,
+          });
+        } else {
+          setLinkedTxn(null);
+        }
+      } catch {
+        if (active) setLinkedTxn(null);
+      }
+    }
+    loadLinkedTransaction();
+    return () => {
+      active = false;
+    };
+  }, [invoice?.linked_transaction_id]);
+
   const handlePrint = () => {
     window.print();
   };
@@ -211,6 +267,24 @@ export const InvoiceView: React.FC<InvoiceViewProps> = ({ invoiceId, onNavigate 
       setErrorMsg(err?.message || 'Failed to cancel invoice.');
     } finally {
       setCancelling(false);
+    }
+  };
+
+  const handleConfirmUndoPayment = async () => {
+    if (!invoice) return;
+    setUndoingPayment(true);
+    setErrorMsg(null);
+    try {
+      const supabase = createSupabaseClient();
+      const updated = await undoPayment(supabase, invoice.id);
+      setInvoice(updated);
+      setLinkedTxn(null);
+      setShowUndoConfirm(false);
+      setStatusNotice(`Payment record reset. Invoice ${updated.invoice_number} is marked Sent.`);
+    } catch (err: any) {
+      setErrorMsg(err?.message || 'Failed to undo payment.');
+    } finally {
+      setUndoingPayment(false);
     }
   };
 
@@ -455,6 +529,176 @@ export const InvoiceView: React.FC<InvoiceViewProps> = ({ invoiceId, onNavigate 
           <div className="p-3 rounded-xl border border-red-300 bg-red-50 text-red-800 flex items-center gap-2 text-xs">
             <AlertCircle className="w-4 h-4 shrink-0" />
             <span>{errorMsg}</span>
+          </div>
+        )}
+
+        {/* Screen-Only Payment Section */}
+        {invoice.status !== 'draft' && invoice.status !== 'cancelled' && (
+          <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-xs space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h2 className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+                  Payment
+                </h2>
+                {invoice.status === 'sent' && (
+                  <p className="text-xs text-slate-600 mt-0.5">
+                    Awaiting payment realization in {currencyCode}.
+                  </p>
+                )}
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                {(invoice.status === 'sent' || invoice.status === 'partial') && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowUndoConfirm(false);
+                      setIsPaymentModalOpen(true);
+                    }}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-indigo-600 text-white hover:bg-indigo-700 transition-colors cursor-pointer"
+                  >
+                    <IndianRupee className="w-3.5 h-3.5" />
+                    <span>Record Payment</span>
+                  </button>
+                )}
+
+                {(invoice.status === 'partial' || invoice.status === 'paid') && (
+                  <button
+                    type="button"
+                    onClick={() => setShowUndoConfirm((prev) => !prev)}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border border-slate-300 bg-white text-slate-700 hover:bg-slate-50 transition-colors cursor-pointer"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" />
+                    <span>Undo Payment</span>
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {invoice.status === 'partial' && (
+              <div className="space-y-2 pt-2 border-t border-slate-100">
+                <div className="flex flex-wrap items-center justify-between gap-2 text-xs font-tabular">
+                  <span className="text-slate-700">
+                    Received:{' '}
+                    <span className="font-semibold text-slate-900">
+                      {formatCurrency(Number(invoice.amount_received || 0), currencyCode)}
+                    </span>{' '}
+                    of {formatCurrency(Number(invoice.total || 0), currencyCode)}
+                  </span>
+                  {invoice.inr_received !== null && (
+                    <span className="text-slate-600">
+                      INR credited:{' '}
+                      <span className="font-semibold text-slate-900">
+                        {formatINR(Number(invoice.inr_received || 0))}
+                      </span>
+                    </span>
+                  )}
+                </div>
+                <div className="w-full h-2 rounded-full bg-slate-100 overflow-hidden">
+                  <div
+                    className="h-full bg-amber-500 transition-all"
+                    style={{
+                      width: `${
+                        Number(invoice.total || 0) > 0
+                          ? Math.min(
+                              100,
+                              Math.round(
+                                (Number(invoice.amount_received || 0) /
+                                  Number(invoice.total || 1)) *
+                                  100
+                              )
+                            )
+                          : 0
+                      }%`,
+                    }}
+                  />
+                </div>
+              </div>
+            )}
+
+            {invoice.status === 'paid' && (
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-2 border-t border-slate-100 text-xs font-tabular">
+                <div>
+                  <span className="text-slate-500 block">Paid Amount</span>
+                  <span className="font-semibold text-slate-900">
+                    {formatCurrency(
+                      Number(invoice.amount_received ?? invoice.total ?? 0),
+                      currencyCode
+                    )}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-slate-500 block">INR Received</span>
+                  <span className="font-semibold text-green-700">
+                    {invoice.inr_received !== null && invoice.inr_received !== undefined
+                      ? formatINR(Number(invoice.inr_received))
+                      : invoice.inr_equivalent !== null
+                      ? formatINR(Number(invoice.inr_equivalent))
+                      : '—'}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-slate-500 block">Date Paid</span>
+                  <span className="font-semibold text-slate-900">
+                    {invoice.paid_at ? String(invoice.paid_at).slice(0, 10) : '—'}
+                  </span>
+                </div>
+              </div>
+            )}
+
+            {invoice.linked_transaction_id && (
+              <div className="pt-2 border-t border-slate-100 flex flex-wrap items-center justify-between gap-2 text-xs">
+                <div className="text-slate-700 font-tabular">
+                  {linkedTxn ? (
+                    <span>
+                      Linked transaction: {linkedTxn.txn_date} {linkedTxn.description}{' '}
+                      <span className="font-semibold text-green-700">
+                        {formatINR(linkedTxn.credit)}
+                      </span>
+                    </span>
+                  ) : (
+                    <span>Linked transaction: {invoice.linked_transaction_id}</span>
+                  )}
+                </div>
+                <a
+                  href="#transactions"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    goTo('/transactions');
+                  }}
+                  className="inline-flex items-center gap-1 font-medium text-indigo-600 hover:underline cursor-pointer"
+                >
+                  <span>View in Transactions</span>
+                  <ArrowUpRight className="w-3.5 h-3.5" />
+                </a>
+              </div>
+            )}
+
+            {showUndoConfirm && (
+              <div className="p-3 rounded-lg border border-amber-300 bg-amber-50 text-amber-900 flex flex-wrap items-center justify-between gap-3 text-xs">
+                <span className="font-medium">
+                  This will reset the payment record. Continue?
+                </span>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    disabled={undoingPayment}
+                    onClick={() => setShowUndoConfirm(false)}
+                    className="px-3 py-1 rounded border border-amber-300 bg-white text-slate-700 hover:bg-slate-50 cursor-pointer"
+                  >
+                    Keep
+                  </button>
+                  <button
+                    type="button"
+                    disabled={undoingPayment}
+                    onClick={handleConfirmUndoPayment}
+                    className="px-3 py-1 rounded bg-red-600 text-white hover:bg-red-700 font-medium cursor-pointer disabled:opacity-50"
+                  >
+                    {undoingPayment ? 'Resetting...' : 'Confirm Reset'}
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -818,6 +1062,23 @@ export const InvoiceView: React.FC<InvoiceViewProps> = ({ invoiceId, onNavigate 
             This invoice was generated by Zaboraa Finance.
           </div>
         </div>
+      </div>
+
+      <div className="screen-only">
+        <RecordPaymentModal
+          isOpen={isPaymentModalOpen}
+          invoice={invoice}
+          onClose={() => setIsPaymentModalOpen(false)}
+          onSuccess={(updated) => {
+            setInvoice(updated);
+            setIsPaymentModalOpen(false);
+            setStatusNotice(
+              updated.status === 'paid'
+                ? `Payment recorded. Invoice ${updated.invoice_number} is now marked Paid.`
+                : `Partial payment recorded for invoice ${updated.invoice_number}.`
+            );
+          }}
+        />
       </div>
     </div>
   );

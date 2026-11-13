@@ -647,3 +647,172 @@ export async function markInvoicePaidV2(
 
   return mapInvoiceRow(updated);
 }
+
+export interface RecordPaymentData {
+  amount_received: number;
+  inr_received: number;
+  bank_charges?: number;
+  paid_at: string;
+  linked_transaction_id?: string | null;
+  notes?: string | null;
+}
+
+export async function recordPayment(
+  supabaseClient: any,
+  invoiceId: string,
+  data: RecordPaymentData
+): Promise<InvoiceV2> {
+  const supabase = isSupabaseClientLike(supabaseClient)
+    ? supabaseClient
+    : createSupabaseClient();
+  const targetId = isSupabaseClientLike(supabaseClient) ? invoiceId : supabaseClient;
+  const payloadData: RecordPaymentData = isSupabaseClientLike(supabaseClient)
+    ? data
+    : (invoiceId as unknown as RecordPaymentData);
+
+  const {
+    data: { user },
+    error: authError,
+  } = await supabase.auth.getUser();
+
+  if (authError || !user) {
+    throw new Error('Unauthorized');
+  }
+
+  const amountReceived = Number(payloadData.amount_received);
+  if (!Number.isFinite(amountReceived) || amountReceived <= 0) {
+    throw new Error('Amount received must be greater than zero.');
+  }
+
+  const inrReceived = Number(payloadData.inr_received);
+  if (!Number.isFinite(inrReceived) || inrReceived < 0) {
+    throw new Error('INR received must be a valid non-negative number.');
+  }
+
+  const bankCharges = Number(payloadData.bank_charges ?? 0);
+  if (!Number.isFinite(bankCharges) || bankCharges < 0) {
+    throw new Error('Bank charges must be zero or positive.');
+  }
+
+  const { data: existing, error: fetchError } = await supabase
+    .from('invoices')
+    .select('id, status, total, currency, amount_received, inr_received, paid_at, linked_transaction_id, notes')
+    .eq('id', targetId)
+    .eq('user_id', user.id)
+    .maybeSingle();
+
+  if (fetchError || !existing) {
+    throw new Error(fetchError?.message || 'Invoice not found.');
+  }
+
+  if (existing.status === 'draft' || existing.status === 'cancelled') {
+    throw new Error(`Cannot record payment for a ${existing.status} invoice.`);
+  }
+
+  const decimals = getDecimalsForCurrency(existing.currency || 'INR');
+  const existingAmountReceived = Number(existing.amount_received ?? 0) || 0;
+  const existingInrReceived = Number(existing.inr_received ?? 0) || 0;
+
+  const newTotalReceived = roundToDecimals(existingAmountReceived + amountReceived, decimals);
+  const newInrReceived = roundToDecimals(existingInrReceived + inrReceived, 2);
+  const invoiceTotal = Number(existing.total ?? 0);
+
+  const newStatus = newTotalReceived >= invoiceTotal ? 'paid' : 'partial';
+  const nextPaidAt = newStatus === 'paid' ? payloadData.paid_at : existing.paid_at || null;
+  const nextLinkedTxnId =
+    payloadData.linked_transaction_id !== undefined
+      ? payloadData.linked_transaction_id || null
+      : existing.linked_transaction_id || null;
+
+  let nextNotes =
+    payloadData.notes !== undefined
+      ? payloadData.notes?.trim() || null
+      : existing.notes || null;
+
+  if (bankCharges > 0) {
+    const chargeNote = `Bank/transfer charges: ₹${bankCharges.toFixed(2)}`;
+    if (!nextNotes) {
+      nextNotes = chargeNote;
+    } else if (!nextNotes.includes(chargeNote)) {
+      nextNotes = `${nextNotes}\n${chargeNote}`;
+    }
+  }
+
+  const { data: updated, error } = await supabase
+    .from('invoices')
+    .update({
+      amount_received: newTotalReceived,
+      inr_received: newInrReceived,
+      status: newStatus,
+      paid_at: nextPaidAt,
+      linked_transaction_id: nextLinkedTxnId,
+      notes: nextNotes,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', targetId)
+    .eq('user_id', user.id)
+    .select('*, clients(name, country)')
+    .single();
+
+  if (error || !updated) {
+    throw new Error(error?.message || 'Failed to record payment.');
+  }
+
+  return mapInvoiceRow(updated);
+}
+
+export async function undoPayment(
+  supabaseClient: any,
+  invoiceId: string
+): Promise<InvoiceV2> {
+  const supabase = isSupabaseClientLike(supabaseClient)
+    ? supabaseClient
+    : createSupabaseClient();
+  const targetId = isSupabaseClientLike(supabaseClient) ? invoiceId : supabaseClient;
+
+  const {
+    data: { user },
+    error: authError,
+  } = await supabase.auth.getUser();
+
+  if (authError || !user) {
+    throw new Error('Unauthorized');
+  }
+
+  const { data: existing, error: fetchError } = await supabase
+    .from('invoices')
+    .select('id, status')
+    .eq('id', targetId)
+    .eq('user_id', user.id)
+    .maybeSingle();
+
+  if (fetchError || !existing) {
+    throw new Error(fetchError?.message || 'Invoice not found.');
+  }
+
+  if (existing.status === 'draft' || existing.status === 'cancelled') {
+    throw new Error(`Cannot undo payment on a ${existing.status} invoice.`);
+  }
+
+  const { data: updated, error } = await supabase
+    .from('invoices')
+    .update({
+      amount_received: 0,
+      inr_received: 0,
+      status: 'sent',
+      paid_at: null,
+      linked_transaction_id: null,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', targetId)
+    .eq('user_id', user.id)
+    .select('*, clients(name, country)')
+    .single();
+
+  if (error || !updated) {
+    throw new Error(error?.message || 'Failed to undo payment.');
+  }
+
+  return mapInvoiceRow(updated);
+}
+
