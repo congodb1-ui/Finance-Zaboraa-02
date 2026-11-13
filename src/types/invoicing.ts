@@ -115,6 +115,8 @@ export interface BankSnapshot {
   bank_name?: string | null;
   bank_address?: string | null;
   last4?: string | null;
+  account_number?: string | null;
+  iban?: string | null;
   swift_bic?: string | null;
   ifsc?: string | null;
   intermediary_bank?: string | null;
@@ -141,5 +143,31 @@ export interface InvoiceV2 extends Omit<Invoice, 'status'> {
 
 export type InvoiceV2FormData = Omit<
   InvoiceV2,
-  'id' | 'user_id' | 'created_at' | 'updated_at'
->;
+  | 'id'
+  | 'user_id'
+  | 'invoice_number'
+  | 'subtotal'
+  | 'total'
+  | 'inr_equivalent'
+  | 'seller_snapshot'
+  | 'client_snapshot'
+  | 'bank_snapshot'
+  | 'amount_received'
+  | 'inr_received'
+  | 'paid_at'
+  | 'linked_transaction_id'
+  | 'created_at'
+  | 'updated_at'
+> & {
+  invoice_number?: string;
+  subtotal?: number;
+  total?: number;
+  inr_equivalent?: number | null;
+  seller_snapshot?: SellerSnapshot | null;
+  client_snapshot?: ClientSnapshot | null;
+  bank_snapshot?: BankSnapshot | null;
+  amount_received?: number | null;
+  inr_received?: number | null;
+  paid_at?: string | null;
+  linked_transaction_id?: string | null;
+};

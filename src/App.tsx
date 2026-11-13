@@ -14,7 +14,12 @@ import AISettingsPage from './app/(auth)/settings/ai/page';
 import RecurringPage from './app/(auth)/recurring/page';
 import BudgetsPage from './app/(auth)/budgets/page';
 import { InvoiceList } from './components/invoices/InvoiceList';
+import { InvoiceView } from './components/invoices/InvoiceView';
+import { InvoiceForm } from './components/invoices/InvoiceForm';
 import { ClientList } from './components/clients/ClientList';
+import { createClient as createSupabaseClient } from './lib/supabase/client';
+import { getInvoiceV2, updateInvoiceV2 } from './lib/actions/invoicesV2';
+import type { InvoiceV2, InvoiceV2FormData } from './types/invoicing';
 import { useIdleLogout } from './hooks/useIdleLogout';
 import { IdleWarningModal } from './components/auth/IdleWarningModal';
 import { AuthNavShell } from './components/navigation/AuthNavShell';
@@ -47,9 +52,12 @@ import {
 export default function App() {
   const { user, isAuthenticated, isLoading } = useAuth();
   const [currentRoute, setCurrentRoute] = useState<
-    '/' | '/dashboard' | '/accounts' | '/account-detail' | '/upload' | '/transactions' | '/invoices' | '/clients' | '/recurring' | '/budgets' | '/rules' | '/reports' | '/ai' | '/settings' | '/settings/ai' | '/playground'
+    '/' | '/dashboard' | '/accounts' | '/account-detail' | '/upload' | '/transactions' | '/invoices' | '/invoice-view' | '/invoice-edit' | '/clients' | '/recurring' | '/budgets' | '/rules' | '/reports' | '/ai' | '/settings' | '/settings/ai' | '/playground'
   >('/');
   const [selectedAccountId, setSelectedAccountId] = useState<string>('acc_hdfc_01');
+  const [selectedInvoiceId, setSelectedInvoiceId] = useState<string>('');
+  const [editDraftInvoice, setEditDraftInvoice] = useState<InvoiceV2 | null>(null);
+  const [editSaving, setEditSaving] = useState(false);
   const [authNotice, setAuthNotice] = useState<string | null>(null);
 
   // 30-min idle auto-logout with 25-min warning
@@ -74,6 +82,14 @@ export default function App() {
   useEffect(() => {
     const handleHashChange = () => {
       const hash = window.location.hash.replace('#', '');
+      const path = window.location.pathname || '';
+      const invoiceEditMatch =
+        hash.match(/^invoices\/([^/]+)\/edit$/) ||
+        path.match(/^\/invoices\/([^/]+)\/edit$/);
+      const invoiceViewMatch =
+        hash.match(/^invoices\/([^/]+)$/) ||
+        path.match(/^\/invoices\/([^/]+)$/);
+
       if (hash === 'dashboard') setCurrentRoute('/dashboard');
       else if (hash === 'accounts') setCurrentRoute('/accounts');
       else if (hash.startsWith('account-detail') || hash.startsWith('accounts/')) {
@@ -83,6 +99,14 @@ export default function App() {
       }
       else if (hash === 'upload') setCurrentRoute('/upload');
       else if (hash === 'transactions') setCurrentRoute('/transactions');
+      else if (invoiceEditMatch) {
+        setSelectedInvoiceId(invoiceEditMatch[1]);
+        setCurrentRoute('/invoice-edit');
+      }
+      else if (invoiceViewMatch) {
+        setSelectedInvoiceId(invoiceViewMatch[1]);
+        setCurrentRoute('/invoice-view');
+      }
       else if (hash === 'invoices') setCurrentRoute('/invoices');
       else if (hash === 'clients') setCurrentRoute('/clients');
       else if (hash === 'recurring') setCurrentRoute('/recurring');
@@ -101,11 +125,49 @@ export default function App() {
     return () => window.removeEventListener('hashchange', handleHashChange);
   }, []);
 
-  // If already authenticated and visiting /, redirect to /dashboard immediately (no flash)
+  // Load draft invoice when visiting /invoices/:id/edit
   useEffect(() => {
-    if (!isLoading && isAuthenticated && currentRoute === '/') {
+    let active = true;
+    if (currentRoute !== '/invoice-edit' || !selectedInvoiceId || !isAuthenticated) {
+      setEditDraftInvoice(null);
+      return;
+    }
+
+    async function loadDraft() {
+      try {
+        const supabase = createSupabaseClient();
+        const inv = await getInvoiceV2(supabase, selectedInvoiceId);
+        if (!active) return;
+        if (!inv || inv.status !== 'draft') {
+          setCurrentRoute('/invoice-view');
+          window.location.hash = `invoices/${selectedInvoiceId}`;
+          return;
+        }
+        setEditDraftInvoice(inv);
+      } catch {
+        if (!active) return;
+        setCurrentRoute('/invoices');
+        window.location.hash = 'invoices';
+      }
+    }
+    loadDraft();
+    return () => {
+      active = false;
+    };
+  }, [currentRoute, selectedInvoiceId, isAuthenticated]);
+
+  // If already authenticated and visiting /, redirect to /dashboard immediately (no flash)
+  // If unauthenticated and visiting a protected route directly via hash/path, redirect to /
+  useEffect(() => {
+    if (isLoading) return;
+    if (isAuthenticated && currentRoute === '/') {
       setCurrentRoute('/dashboard');
       window.location.hash = 'dashboard';
+      return;
+    }
+    if (!isAuthenticated && currentRoute !== '/' && currentRoute !== '/playground') {
+      setCurrentRoute('/');
+      window.location.hash = '';
     }
   }, [isAuthenticated, isLoading, currentRoute]);
 
@@ -114,11 +176,24 @@ export default function App() {
     route: string
   ) => {
     let targetRoute = route;
+    let nextInvoiceId = selectedInvoiceId;
+
     if (route === '/reports/itr' || route === '/reports') targetRoute = '/reports';
     if (route.startsWith('/accounts/')) {
       const parts = route.split('/');
       if (parts[2]) setSelectedAccountId(parts[2]);
       targetRoute = '/account-detail';
+    }
+    const invoiceEditMatch = route.match(/^\/invoices\/([^/]+)\/edit$/);
+    const invoiceViewMatch = route.match(/^\/invoices\/([^/]+)$/);
+    if (invoiceEditMatch) {
+      nextInvoiceId = invoiceEditMatch[1];
+      setSelectedInvoiceId(nextInvoiceId);
+      targetRoute = '/invoice-edit';
+    } else if (invoiceViewMatch) {
+      nextInvoiceId = invoiceViewMatch[1];
+      setSelectedInvoiceId(nextInvoiceId);
+      targetRoute = '/invoice-view';
     }
 
     const isProtected =
@@ -128,6 +203,8 @@ export default function App() {
       targetRoute === '/upload' ||
       targetRoute === '/transactions' ||
       targetRoute === '/invoices' ||
+      targetRoute === '/invoice-view' ||
+      targetRoute === '/invoice-edit' ||
       targetRoute === '/clients' ||
       targetRoute === '/recurring' ||
       targetRoute === '/budgets' ||
@@ -151,6 +228,12 @@ export default function App() {
     } else if (targetRoute === '/account-detail') {
       setCurrentRoute('/account-detail');
       window.location.hash = `account-detail?id=${selectedAccountId}`;
+    } else if (targetRoute === '/invoice-edit') {
+      setCurrentRoute('/invoice-edit');
+      window.location.hash = `invoices/${nextInvoiceId}/edit`;
+    } else if (targetRoute === '/invoice-view') {
+      setCurrentRoute('/invoice-view');
+      window.location.hash = `invoices/${nextInvoiceId}`;
     } else if (targetRoute === '/settings/ai') {
       setCurrentRoute('/settings/ai');
       window.location.hash = 'settings/ai';
@@ -189,8 +272,9 @@ export default function App() {
   return (
     <UserPreferencesProvider isAuthenticated={isAuthenticated}>
       <div className="min-h-screen bg-slate-50 dark:bg-[#0B1120] text-slate-900 dark:text-slate-100 flex flex-col font-sans transition-colors">
-      {/* Batch 6 Navigation & Auth Status Bar */}
-      <div className="bg-slate-900 text-slate-200 border-b border-slate-800 text-xs py-2 px-4 sticky top-0 z-50">
+      {/* Batch 6 Navigation & Auth Status Bar (hidden on print-optimized /invoices/:id page) */}
+      {currentRoute !== '/invoice-view' && (
+      <div className="screen-only bg-slate-900 text-slate-200 border-b border-slate-800 text-xs py-2 px-4 sticky top-0 z-50">
         <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-3">
           {/* Brand & Batch Identifier */}
           <div className="flex items-center gap-2.5">
@@ -415,10 +499,11 @@ export default function App() {
           </div>
         </div>
       </div>
+      )}
 
       {/* Floating Notification Toast for Auth Guard & Events */}
       {authNotice && (
-        <div className="fixed bottom-6 right-6 z-50 max-w-md p-4 bg-slate-900 text-white rounded-xl shadow-xl border border-slate-700 animate-in fade-in slide-in-from-bottom-2">
+        <div className="screen-only fixed bottom-6 right-6 z-50 max-w-md p-4 bg-slate-900 text-white rounded-xl shadow-xl border border-slate-700 animate-in fade-in slide-in-from-bottom-2">
           <div className="flex items-start gap-3">
             <ShieldCheck className="w-5 h-5 text-indigo-400 mt-0.5 shrink-0" />
             <div className="text-xs">
@@ -477,7 +562,44 @@ export default function App() {
         {currentRoute === '/invoices' && (
           <AuthNavShell activePathOverride="/invoices" onNavigateOverride={(p) => navigateTo(p as any)}>
             <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 w-full">
-              <InvoiceList />
+              <InvoiceList onViewInvoice={(id) => navigateTo(`/invoices/${id}`)} />
+            </div>
+          </AuthNavShell>
+        )}
+
+        {currentRoute === '/invoice-view' && isAuthenticated && (
+          <InvoiceView
+            invoiceId={selectedInvoiceId}
+            onNavigate={(path) => navigateTo(path)}
+          />
+        )}
+
+        {currentRoute === '/invoice-edit' && isAuthenticated && (
+          <AuthNavShell activePathOverride="/invoices" onNavigateOverride={(p) => navigateTo(p as any)}>
+            <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 w-full">
+              <InvoiceList onViewInvoice={(id) => navigateTo(`/invoices/${id}`)} />
+              {editDraftInvoice && (
+                <InvoiceForm
+                  initialData={editDraftInvoice}
+                  isLoading={editSaving}
+                  onSave={async (data: InvoiceV2FormData) => {
+                    setEditSaving(true);
+                    try {
+                      const supabase = createSupabaseClient();
+                      await updateInvoiceV2(supabase, editDraftInvoice.id, data);
+                      setEditDraftInvoice(null);
+                      navigateTo(`/invoices/${editDraftInvoice.id}`);
+                    } finally {
+                      setEditSaving(false);
+                    }
+                  }}
+                  onCancel={() => {
+                    const id = editDraftInvoice.id;
+                    setEditDraftInvoice(null);
+                    navigateTo(`/invoices/${id}`);
+                  }}
+                />
+              )}
             </div>
           </AuthNavShell>
         )}

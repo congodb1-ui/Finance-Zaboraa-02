@@ -87,3 +87,61 @@ export function getDefaultCurrencyForCountry(countryCode: string | null | undefi
   const match = COUNTRIES.find((c) => c.code === upper);
   return match?.currency || 'USD';
 }
+
+const SYMBOL_PREFIX_NO_SPACE = new Set([
+  '₹',
+  '$',
+  '€',
+  '£',
+  '¥',
+  '₩',
+  '₺',
+  '₪',
+  '₽',
+  '₱',
+  '₫',
+  '৳',
+  '₦',
+  'CA$',
+  'A$',
+  'S$',
+  'HK$',
+  'NZ$',
+  'NT$',
+  'MX$',
+  'R$',
+]);
+
+export function formatCurrency(
+  amount: number,
+  currencyCode?: string | null,
+  options?: {
+    showSign?: boolean;
+    includeCode?: boolean;
+  }
+): string {
+  const code = (currencyCode || 'INR').trim().toUpperCase();
+  const currency = getCurrencyByCode(code);
+  const decimals = currency ? currency.decimals : 2;
+  const symbol = currency?.symbol || code;
+  const safeAmount = Number.isFinite(amount) ? amount : 0;
+  const isNegative = safeAmount < 0;
+  const absAmount = Math.abs(safeAmount);
+  const sign = isNegative ? '− ' : options?.showSign && safeAmount > 0 ? '+ ' : '';
+
+  const locale = code === 'INR' ? 'en-IN' : 'en-US';
+  const formattedNumber = new Intl.NumberFormat(locale, {
+    minimumFractionDigits: decimals,
+    maximumFractionDigits: decimals,
+  }).format(absAmount);
+
+  const joined = SYMBOL_PREFIX_NO_SPACE.has(symbol)
+    ? `${symbol}${formattedNumber}`
+    : `${symbol} ${formattedNumber}`;
+
+  if (options?.includeCode && symbol !== code) {
+    return `${sign}${joined} (${code})`;
+  }
+
+  return `${sign}${joined}`;
+}

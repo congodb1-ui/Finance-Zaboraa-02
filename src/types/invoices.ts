@@ -4,6 +4,8 @@ export interface InvoiceLineItem {
   id: string;
   description: string;
   quantity?: number;
+  unit_price?: number;
+  discount?: number;
   rate: number;
   amount: number;
 }
