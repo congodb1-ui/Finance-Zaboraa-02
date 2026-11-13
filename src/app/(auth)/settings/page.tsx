@@ -8,6 +8,7 @@ import { Input } from '../../../components/ui/Input';
 import { Select } from '../../../components/ui/Select';
 import { signOut, useAuth } from '../../../lib/auth';
 import { BackupSection } from '../../../components/settings/BackupSection';
+import { BusinessProfileSection } from '../../../components/settings/BusinessProfileSection';
 import { getProfile } from '../../../lib/actions/profile';
 import { useUserPreferences } from '../../../lib/contexts/UserPreferencesContext';
 import { getFYOptions } from '../../../lib/fy-utils';
@@ -248,7 +249,10 @@ export default function SettingsPage() {
         </CardContent>
       </Card>
 
-      {/* 2. Theme Setting */}
+      {/* 2. Business & Invoicing Profile */}
+      <BusinessProfileSection />
+
+      {/* 3. Theme Setting */}
       <Card>
         <CardHeader>
           <div className="flex items-center gap-2">
