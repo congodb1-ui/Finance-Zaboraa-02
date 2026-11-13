@@ -20,6 +20,7 @@ import {
   ShieldCheck,
   Sparkles,
   FileText,
+  Users,
 } from 'lucide-react';
 
 interface AuthNavShellProps {
@@ -49,6 +50,7 @@ export const AuthNavShell: React.FC<AuthNavShellProps> = ({
     { name: 'Upload Statements', path: '/upload', icon: Upload },
     { name: 'Transactions', path: '/transactions', icon: Receipt },
     { name: 'Invoices', path: '/invoices', icon: FileText },
+    { name: 'Clients', path: '/clients', icon: Users },
     { name: 'Recurring', path: '/recurring', icon: Repeat },
     { name: 'Budgets', path: '/budgets', icon: Target },
     { name: 'Rules', path: '/rules', icon: Sliders },

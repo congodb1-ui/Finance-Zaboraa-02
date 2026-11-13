@@ -14,6 +14,7 @@ import AISettingsPage from './app/(auth)/settings/ai/page';
 import RecurringPage from './app/(auth)/recurring/page';
 import BudgetsPage from './app/(auth)/budgets/page';
 import { InvoiceList } from './components/invoices/InvoiceList';
+import { ClientList } from './components/clients/ClientList';
 import { useIdleLogout } from './hooks/useIdleLogout';
 import { IdleWarningModal } from './components/auth/IdleWarningModal';
 import { AuthNavShell } from './components/navigation/AuthNavShell';
@@ -40,12 +41,13 @@ import {
   Settings,
   Sparkles,
   FileText,
+  Users,
 } from 'lucide-react';
 
 export default function App() {
   const { user, isAuthenticated, isLoading } = useAuth();
   const [currentRoute, setCurrentRoute] = useState<
-    '/' | '/dashboard' | '/accounts' | '/account-detail' | '/upload' | '/transactions' | '/invoices' | '/recurring' | '/budgets' | '/rules' | '/reports' | '/ai' | '/settings' | '/settings/ai' | '/playground'
+    '/' | '/dashboard' | '/accounts' | '/account-detail' | '/upload' | '/transactions' | '/invoices' | '/clients' | '/recurring' | '/budgets' | '/rules' | '/reports' | '/ai' | '/settings' | '/settings/ai' | '/playground'
   >('/');
   const [selectedAccountId, setSelectedAccountId] = useState<string>('acc_hdfc_01');
   const [authNotice, setAuthNotice] = useState<string | null>(null);
@@ -82,6 +84,7 @@ export default function App() {
       else if (hash === 'upload') setCurrentRoute('/upload');
       else if (hash === 'transactions') setCurrentRoute('/transactions');
       else if (hash === 'invoices') setCurrentRoute('/invoices');
+      else if (hash === 'clients') setCurrentRoute('/clients');
       else if (hash === 'recurring') setCurrentRoute('/recurring');
       else if (hash === 'budgets') setCurrentRoute('/budgets');
       else if (hash === 'rules') setCurrentRoute('/rules');
@@ -125,6 +128,7 @@ export default function App() {
       targetRoute === '/upload' ||
       targetRoute === '/transactions' ||
       targetRoute === '/invoices' ||
+      targetRoute === '/clients' ||
       targetRoute === '/recurring' ||
       targetRoute === '/budgets' ||
       targetRoute === '/rules' ||
@@ -273,6 +277,18 @@ export default function App() {
             >
               <FileText className="w-3 h-3" />
               <span>/invoices</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => navigateTo('/clients')}
+              className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium transition-colors cursor-pointer ${
+                currentRoute === '/clients'
+                  ? 'bg-indigo-600 text-white shadow-xs'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              <Users className="w-3 h-3" />
+              <span>/clients</span>
             </button>
             <button
               type="button"
@@ -462,6 +478,14 @@ export default function App() {
           <AuthNavShell activePathOverride="/invoices" onNavigateOverride={(p) => navigateTo(p as any)}>
             <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 w-full">
               <InvoiceList />
+            </div>
+          </AuthNavShell>
+        )}
+
+        {currentRoute === '/clients' && (
+          <AuthNavShell activePathOverride="/clients" onNavigateOverride={(p) => navigateTo(p as any)}>
+            <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 w-full">
+              <ClientList />
             </div>
           </AuthNavShell>
         )}

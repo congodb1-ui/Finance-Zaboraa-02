@@ -2,6 +2,9 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '../ui/Card';
 import { Input } from '../ui/Input';
 import { Button } from '../ui/Button';
+import { CountryPicker } from '../ui/CountryPicker';
+import { CurrencyPicker } from '../ui/CurrencyPicker';
+import { getDefaultCurrencyForCountry } from '../../lib/data/currencies';
 import { createClient } from '../../lib/supabase/client';
 import {
   getBusinessProfile,
@@ -43,6 +46,7 @@ export const BusinessProfileSection: React.FC = () => {
   const [lutNumber, setLutNumber] = useState('');
   const [lutDate, setLutDate] = useState('');
   const [defaultCurrency, setDefaultCurrency] = useState('INR');
+  const [currencyOverridden, setCurrencyOverridden] = useState(false);
   const [invoicePrefix, setInvoicePrefix] = useState('INV');
   const [defaultPaymentTermsDays, setDefaultPaymentTermsDays] = useState('30');
   const [defaultNotes, setDefaultNotes] = useState('');
@@ -80,6 +84,13 @@ export const BusinessProfileSection: React.FC = () => {
           setLutNumber(existing.lut_number || '');
           setLutDate(existing.lut_date || '');
           setDefaultCurrency(existing.default_currency || 'INR');
+          if (
+            existing.country &&
+            existing.default_currency &&
+            existing.default_currency !== getDefaultCurrencyForCountry(existing.country)
+          ) {
+            setCurrencyOverridden(true);
+          }
           setInvoicePrefix(existing.invoice_prefix || 'INV');
           setDefaultPaymentTermsDays(
             String(existing.default_payment_terms_days ?? 30)
@@ -175,8 +186,8 @@ export const BusinessProfileSection: React.FC = () => {
     setSaveSuccess(null);
 
     const trimmedCurrency = defaultCurrency.trim().toUpperCase();
-    if (trimmedCurrency && trimmedCurrency.length !== 3) {
-      setSaveError('Default Currency must be a 3-letter ISO code (e.g. INR, USD).');
+    if (trimmedCurrency.length !== 3) {
+      setSaveError('Please select a 3-letter Default Currency (e.g. INR, USD, KWD).');
       return;
     }
 
@@ -339,13 +350,16 @@ export const BusinessProfileSection: React.FC = () => {
               disabled={isLoading || isSaving}
             />
 
-            <Input
+            <CountryPicker
               label="Country"
-              value={country}
-              onChange={(e) => setCountry(e.target.value.toUpperCase())}
-              placeholder="e.g. IN"
-              maxLength={2}
-              helperText="2-letter ISO country code"
+              value={country || null}
+              onChange={(code) => {
+                setCountry(code || '');
+                if (code && !currencyOverridden) {
+                  setDefaultCurrency(getDefaultCurrencyForCountry(code));
+                }
+              }}
+              placeholder="Search country..."
               disabled={isLoading || isSaving}
             />
 
@@ -392,14 +406,35 @@ export const BusinessProfileSection: React.FC = () => {
               disabled={isLoading || isSaving}
             />
 
-            <Input
-              label="Default Currency"
-              value={defaultCurrency}
-              onChange={(e) => setDefaultCurrency(e.target.value.toUpperCase())}
-              placeholder="INR"
-              maxLength={3}
-              disabled={isLoading || isSaving}
-            />
+            <div>
+              <CurrencyPicker
+                label="Default Currency"
+                value={defaultCurrency || null}
+                onChange={(code) => {
+                  setCurrencyOverridden(true);
+                  setDefaultCurrency(code || '');
+                }}
+                placeholder="Search currency..."
+                disabled={isLoading || isSaving}
+              />
+              {country &&
+                currencyOverridden &&
+                defaultCurrency !== getDefaultCurrencyForCountry(country) && (
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-1">
+                    Suggested for country:{' '}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setDefaultCurrency(getDefaultCurrencyForCountry(country));
+                        setCurrencyOverridden(false);
+                      }}
+                      className="font-mono font-medium text-indigo-600 dark:text-indigo-400 hover:underline cursor-pointer"
+                    >
+                      {getDefaultCurrencyForCountry(country)} (Apply)
+                    </button>
+                  </p>
+                )}
+            </div>
 
             <Input
               label="LUT No."
