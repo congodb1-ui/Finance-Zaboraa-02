@@ -2,9 +2,12 @@
 
 import React from 'react';
 import { ChatInterface } from '../../../components/ai/ChatInterface';
+import { useUserPreferences } from '../../../lib/contexts/UserPreferencesContext';
 import { Sparkles, ShieldCheck } from 'lucide-react';
 
 export default function AskYourDataPage() {
+  const { aiEnabled } = useUserPreferences();
+
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-4">
       {/* Top Header */}
@@ -30,7 +33,7 @@ export default function AskYourDataPage() {
       </div>
 
       {/* Main Chat Interface */}
-      <ChatInterface />
+      <ChatInterface aiEnabled={aiEnabled} />
     </div>
   );
 }

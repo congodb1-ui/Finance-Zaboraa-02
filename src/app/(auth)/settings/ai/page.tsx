@@ -4,33 +4,56 @@ import React, { useState, useEffect } from 'react';
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '../../../../components/ui/Card';
 import { Button } from '../../../../components/ui/Button';
 import { apiPost } from '../../../../lib/api-client';
+import { getAiSettings } from '../../../../lib/actions/aiSettings';
+import { useUserPreferences } from '../../../../lib/contexts/UserPreferencesContext';
 import {
   Sparkles,
-  ShieldCheck,
   CheckCircle2,
   AlertCircle,
   RefreshCw,
   Cpu,
   Lock,
-  ExternalLink,
   ChevronLeft,
 } from 'lucide-react';
 
-const AI_ENABLED_KEY = 'zaboraa_ai_enabled';
-
 export default function AISettingsPage() {
-  const [aiEnabled, setAiEnabled] = useState(false);
+  const { aiEnabled, saveAiSettings } = useUserPreferences();
+  const [localAiEnabled, setLocalAiEnabled] = useState<boolean>(aiEnabled);
+  const [isLoadingSettings, setIsLoadingSettings] = useState<boolean>(true);
+  const [isSavingToggle, setIsSavingToggle] = useState<boolean>(false);
+  const [toggleFeedback, setToggleFeedback] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [apiStatus, setApiStatus] = useState<'checking' | 'connected' | 'error'>('checking');
   const [statusMessage, setStatusMessage] = useState<string>('Testing Gemini API connectivity...');
   const [testResponse, setTestResponse] = useState<string | null>(null);
   const [isTesting, setIsTesting] = useState(false);
 
-  // Load persisted AI enabled state (default false)
+  // Sync with loaded AI settings from Supabase
   useEffect(() => {
-    if (typeof window !== 'undefined') {
-      const enabled = localStorage.getItem(AI_ENABLED_KEY) === 'true';
-      setAiEnabled(enabled);
+    let isMounted = true;
+    async function loadSettings() {
+      setIsLoadingSettings(true);
+      try {
+        const settings = await getAiSettings();
+        if (isMounted) {
+          setLocalAiEnabled(settings.ai_enabled);
+        }
+      } catch (err: any) {
+        if (isMounted) {
+          setToggleFeedback({
+            type: 'error',
+            text: err?.message || 'Failed to load AI settings from Supabase.',
+          });
+        }
+      } finally {
+        if (isMounted) {
+          setIsLoadingSettings(false);
+        }
+      }
     }
+    loadSettings();
+    return () => {
+      isMounted = false;
+    };
   }, []);
 
   // Ping Gemini test call on load
@@ -59,11 +82,28 @@ export default function AISettingsPage() {
     pingConnection();
   }, []);
 
-  const handleToggleAi = () => {
-    const nextVal = !aiEnabled;
-    setAiEnabled(nextVal);
-    if (typeof window !== 'undefined') {
-      localStorage.setItem(AI_ENABLED_KEY, String(nextVal));
+  const handleToggleAi = async () => {
+    if (isSavingToggle || isLoadingSettings) return;
+    const prevVal = localAiEnabled;
+    const nextVal = !prevVal;
+    setIsSavingToggle(true);
+    setToggleFeedback(null);
+
+    try {
+      const updated = await saveAiSettings({ ai_enabled: nextVal });
+      setLocalAiEnabled(updated.ai_enabled);
+      setToggleFeedback({
+        type: 'success',
+        text: `AI features ${updated.ai_enabled ? 'enabled' : 'disabled'} and saved to your Supabase profile.`,
+      });
+    } catch (err: any) {
+      setLocalAiEnabled(prevVal);
+      setToggleFeedback({
+        type: 'error',
+        text: err?.message || 'Failed to update AI settings.',
+      });
+    } finally {
+      setIsSavingToggle(false);
     }
   };
 
@@ -140,34 +180,52 @@ export default function AISettingsPage() {
             <button
               type="button"
               onClick={handleToggleAi}
-              className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-hidden ${
-                aiEnabled ? 'bg-indigo-600' : 'bg-slate-300 dark:bg-slate-700'
+              disabled={isLoadingSettings || isSavingToggle}
+              className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-hidden disabled:opacity-60 ${
+                localAiEnabled ? 'bg-indigo-600' : 'bg-slate-300 dark:bg-slate-700'
               }`}
               role="switch"
-              aria-checked={aiEnabled}
+              aria-checked={localAiEnabled}
             >
               <span
                 className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-md ring-0 transition duration-200 ease-in-out ${
-                  aiEnabled ? 'translate-x-5' : 'translate-x-0'
+                  localAiEnabled ? 'translate-x-5' : 'translate-x-0'
                 }`}
               />
             </button>
           </div>
         </CardHeader>
-        <CardContent className="pt-0">
+        <CardContent className="pt-0 space-y-2.5">
           <div className="flex items-center gap-2 text-xs">
             <span
               className={`w-2 h-2 rounded-full ${
-                aiEnabled ? 'bg-emerald-500' : 'bg-slate-400'
+                localAiEnabled ? 'bg-emerald-500' : 'bg-slate-400'
               }`}
             />
             <span className="font-semibold text-slate-700 dark:text-slate-300">
-              Status: {aiEnabled ? 'AI Features Active' : 'AI Features Disabled'}
+              Status: {isLoadingSettings ? 'Loading AI Settings...' : localAiEnabled ? 'AI Features Active' : 'AI Features Disabled'}
             </span>
             <span className="text-slate-400">
-              (Stored in localStorage key <code className="font-mono text-[11px]">zaboraa_ai_enabled</code>)
+              (Synced in Supabase <code className="font-mono text-[11px]">ai_settings</code>)
             </span>
           </div>
+
+          {toggleFeedback && (
+            <div
+              className={`p-2.5 rounded-lg border flex items-center gap-2 text-xs ${
+                toggleFeedback.type === 'success'
+                  ? 'bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-200'
+                  : 'bg-red-50 dark:bg-red-950/50 border-red-200 dark:border-red-800 text-red-800 dark:text-red-200'
+              }`}
+            >
+              {toggleFeedback.type === 'success' ? (
+                <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+              ) : (
+                <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+              )}
+              <span>{toggleFeedback.text}</span>
+            </div>
+          )}
         </CardContent>
       </Card>
 

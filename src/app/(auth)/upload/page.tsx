@@ -18,6 +18,7 @@ import {
   checkDateOverlap,
 } from '../../../lib/actions/upload';
 import { getAccounts } from '../../../lib/actions/accounts';
+import { useUserPreferences } from '../../../lib/contexts/UserPreferencesContext';
 import type { AccountWithBalance } from '../../../types/accounts';
 import type {
   StatementUpload,
@@ -40,6 +41,7 @@ import {
 } from 'lucide-react';
 
 export default function StatementUploadPage() {
+  const { aiEnabled } = useUserPreferences();
   const [activeTab, setActiveTab] = useState<'upload' | 'history'>('upload');
   const [accounts, setAccounts] = useState<AccountWithBalance[]>([]);
   const [selectedAccountId, setSelectedAccountId] = useState<string>('');
@@ -204,7 +206,12 @@ export default function StatementUploadPage() {
 
     setIsProcessing(true);
     try {
-      const { upload: updated, result } = await finalizeImport(activeUpload.id, replacePreviousId);
+      const { upload: updated, result } = await finalizeImport(
+        activeUpload.id,
+        replacePreviousId,
+        undefined,
+        aiEnabled
+      );
       setActiveUpload(updated);
       setCurrentStep('imported');
 

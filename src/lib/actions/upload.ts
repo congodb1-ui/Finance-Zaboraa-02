@@ -640,7 +640,8 @@ export async function getUploadDetails(
 export async function finalizeImport(
   uploadId: string,
   replacePreviousId?: string,
-  client?: any
+  client?: any,
+  aiEnabledOverride?: boolean
 ): Promise<{ success: boolean; upload: StatementUpload; result?: any }> {
   const supabase = client || createClient();
   const {
@@ -652,7 +653,12 @@ export async function finalizeImport(
   }
 
   const { commitUploadTransactions } = await import('./transactions');
-  const commitResult = await commitUploadTransactions(uploadId, replacePreviousId, supabase);
+  const commitResult = await commitUploadTransactions(
+    uploadId,
+    replacePreviousId,
+    supabase,
+    aiEnabledOverride
+  );
 
   const { upload } = await getUploadDetails(uploadId, supabase);
   if (!upload) {

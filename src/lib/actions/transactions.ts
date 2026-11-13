@@ -12,6 +12,7 @@ import { getAccounts } from './accounts';
 import { getCategories } from './categories';
 import { getWorkspaces } from './workspaces';
 import { getUploadDetails } from './upload';
+import { getAiSettings } from './aiSettings';
 
 const TRANSACTION_SELECT =
   '*, accounts(id, name, bank_name, account_number_last4), categories(id, name, color_index, icon), workspaces(id, name, color_index), statement_uploads(id, file_name)';
@@ -158,7 +159,8 @@ export async function getAuditLogs(client?: any): Promise<AuditLogEntry[]> {
 export async function commitUploadTransactions(
   uploadId: string,
   replacePreviousId?: string,
-  client?: any
+  client?: any,
+  aiEnabledOverride?: boolean
 ): Promise<FinalizeImportResult> {
   // STEP 1 — Authenticate
   const supabase = client || createClient();
@@ -500,10 +502,16 @@ export async function commitUploadTransactions(
 
   // STEP 9 — Optional post-import AI pipeline
   try {
-    const isAiEnabled =
-      typeof window !== 'undefined'
-        ? localStorage.getItem('zaboraa_ai_enabled') === 'true'
-        : Boolean(process.env.GEMINI_API_KEY);
+    let isAiEnabled: boolean;
+    if (typeof aiEnabledOverride === 'boolean') {
+      isAiEnabled = aiEnabledOverride;
+    } else {
+      const aiSettings = await getAiSettings(supabase);
+      isAiEnabled =
+        typeof window !== 'undefined'
+          ? aiSettings.ai_enabled
+          : aiSettings.ai_enabled && Boolean(process.env.GEMINI_API_KEY);
+    }
 
     if (isAiEnabled && newlyInsertedTransactions.length > 0) {
       const { batchCleanDescriptionsWithAI } = await import('../ai/clean-description');

@@ -20,6 +20,7 @@ import { AuthNavShell } from './components/navigation/AuthNavShell';
 import { DesignSystemPlayground } from './components/showcase/DesignSystemPlayground';
 import { ThemeToggle } from './components/ui/ThemeToggle';
 import { ZaboraaLogoIcon } from './components/ui/ZaboraaLogoIcon';
+import { UserPreferencesProvider } from './lib/contexts/UserPreferencesContext';
 import {
   ShieldCheck,
   Lock,
@@ -182,7 +183,8 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 dark:bg-[#0B1120] text-slate-900 dark:text-slate-100 flex flex-col font-sans transition-colors">
+    <UserPreferencesProvider isAuthenticated={isAuthenticated}>
+      <div className="min-h-screen bg-slate-50 dark:bg-[#0B1120] text-slate-900 dark:text-slate-100 flex flex-col font-sans transition-colors">
       {/* Batch 6 Navigation & Auth Status Bar */}
       <div className="bg-slate-900 text-slate-200 border-b border-slate-800 text-xs py-2 px-4 sticky top-0 z-50">
         <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-3">
@@ -515,5 +517,6 @@ export default function App() {
         )}
       </main>
     </div>
+    </UserPreferencesProvider>
   );
 }

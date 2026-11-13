@@ -5,6 +5,7 @@ import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '../ui
 import { Button } from '../ui/Button';
 import type { GeneratedMonthlyReport } from '../../lib/ai/monthly-report';
 import { apiPost } from '../../lib/api-client';
+import { useUserPreferences } from '../../lib/contexts/UserPreferencesContext';
 import {
   FileText,
   Copy,
@@ -22,29 +23,28 @@ interface MonthlyReportProps {
   isOpen?: boolean;
   onClose?: () => void;
   defaultMonth?: string;
+  aiEnabled?: boolean;
 }
 
 const LAST_RUN_KEY = 'zaboraa_monthly_report_last_run';
 const CACHED_REPORT_KEY = 'zaboraa_cached_monthly_report';
-const AI_ENABLED_KEY = 'zaboraa_ai_enabled';
 
 export const MonthlyReport: React.FC<MonthlyReportProps> = ({
   isOpen = true,
   onClose,
   defaultMonth,
+  aiEnabled: aiEnabledProp,
 }) => {
+  const { aiEnabled: contextAiEnabled } = useUserPreferences();
+  const aiEnabled = aiEnabledProp ?? contextAiEnabled;
   const [report, setReport] = useState<GeneratedMonthlyReport | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [copied, setCopied] = useState(false);
   const [lastRunMinutesAgo, setLastRunMinutesAgo] = useState<number | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [aiEnabled, setAiEnabled] = useState(false);
 
   useEffect(() => {
     if (typeof window !== 'undefined') {
-      const isEnabled = localStorage.getItem(AI_ENABLED_KEY) === 'true';
-      setAiEnabled(isEnabled);
-
       // Check last run timestamp
       const lastRunStr = localStorage.getItem(LAST_RUN_KEY);
       if (lastRunStr) {

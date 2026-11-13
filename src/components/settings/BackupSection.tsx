@@ -1,36 +1,26 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '../ui/Card';
 import { Button } from '../ui/Button';
 import { Input } from '../ui/Input';
 import { apiGet } from '../../lib/api-client';
+import { useUserPreferences } from '../../lib/contexts/UserPreferencesContext';
 import {
-  ShieldCheck,
   Lock,
   Download,
-  KeyRound,
   AlertTriangle,
   CheckCircle2,
-  Database,
   Archive,
-  Info,
 } from 'lucide-react';
 
-const LAST_BACKUP_KEY = 'zaboraa_last_backup_date';
-
 export const BackupSection: React.FC = () => {
+  const { profile, saveProfile } = useUserPreferences();
   const [passphrase, setPassphrase] = useState('');
   const [confirmPassphrase, setConfirmPassphrase] = useState('');
   const [isExporting, setIsExporting] = useState(false);
-  const [lastBackupDate, setLastBackupDate] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      const saved = localStorage.getItem(LAST_BACKUP_KEY);
-      if (saved) setLastBackupDate(saved);
-    }
-  }, []);
+  const lastBackupDate = profile?.last_backup_at ?? null;
 
   // Calculate passphrase strength
   const getPassphraseStrength = (pw: string) => {
@@ -118,8 +108,7 @@ export const BackupSection: React.FC = () => {
       URL.revokeObjectURL(url);
 
       const nowIso = new Date().toISOString();
-      localStorage.setItem(LAST_BACKUP_KEY, nowIso);
-      setLastBackupDate(nowIso);
+      await saveProfile({ last_backup_at: nowIso });
       setSuccessMsg('Encrypted backup successfully created and downloaded as .zab file.');
       setPassphrase('');
       setConfirmPassphrase('');

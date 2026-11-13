@@ -16,6 +16,7 @@ import { MonthlyReport } from '../../../components/ai/MonthlyReport';
 import { BudgetHealthRow } from '../../../components/dashboard/BudgetHealthRow';
 import { UpcomingRecurringWidget } from '../../../components/dashboard/UpcomingRecurringWidget';
 import { Button } from '../../../components/ui/Button';
+import { useUserPreferences } from '../../../lib/contexts/UserPreferencesContext';
 import {
   LayoutDashboard,
   Calendar,
@@ -42,6 +43,7 @@ const FY_OPTIONS = [
 ];
 
 export default function DashboardPage() {
+  const { aiEnabled } = useUserPreferences();
   const [isMonthlyReportOpen, setIsMonthlyReportOpen] = useState(false);
   // Load persisted filters or defaults
   const [filters, setFilters] = useState<DashboardFilters>(() => {
@@ -123,6 +125,7 @@ export default function DashboardPage() {
         <MonthlyReport
           isOpen={isMonthlyReportOpen}
           onClose={() => setIsMonthlyReportOpen(false)}
+          aiEnabled={aiEnabled}
         />
       )}
 
@@ -206,7 +209,7 @@ export default function DashboardPage() {
       {/* Main Dashboard Grid */}
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-6 space-y-6">
         {/* Anomaly Detection Banner */}
-        <AnomalyBanner />
+        <AnomalyBanner aiEnabled={aiEnabled} />
 
         {/* Row 1: Two Column Grid (Desktop) / Single Column (Mobile) */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">

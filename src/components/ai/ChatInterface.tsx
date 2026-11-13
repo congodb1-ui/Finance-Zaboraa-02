@@ -5,6 +5,7 @@ import { Card } from '../ui/Card';
 import { Button } from '../ui/Button';
 import type { AllowedQueryParams } from '../../lib/ai/chat';
 import { apiPost } from '../../lib/api-client';
+import { useUserPreferences } from '../../lib/contexts/UserPreferencesContext';
 import {
   Sparkles,
   Send,
@@ -36,22 +37,18 @@ const SUGGESTED_QUESTIONS = [
   'How much did I earn from business last FY?',
 ];
 
-const AI_ENABLED_KEY = 'zaboraa_ai_enabled';
+interface ChatInterfaceProps {
+  aiEnabled?: boolean;
+}
 
-export const ChatInterface: React.FC = () => {
+export const ChatInterface: React.FC<ChatInterfaceProps> = ({ aiEnabled: aiEnabledProp }) => {
+  const { aiEnabled: contextAiEnabled } = useUserPreferences();
+  const aiEnabled = aiEnabledProp ?? contextAiEnabled;
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputValue, setInputValue] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [aiEnabled, setAiEnabled] = useState(false);
   const [expandedDataIdx, setExpandedDataIdx] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      const enabled = localStorage.getItem(AI_ENABLED_KEY) === 'true';
-      setAiEnabled(enabled);
-    }
-  }, []);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });

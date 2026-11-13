@@ -4,6 +4,7 @@ import React, { useState, useEffect } from 'react';
 import type { DetectedAnomaly } from '../../lib/ai/anomalies';
 import { formatINR } from '../../types/design-system';
 import { apiPost } from '../../lib/api-client';
+import { useUserPreferences } from '../../lib/contexts/UserPreferencesContext';
 import {
   AlertTriangle,
   ChevronDown,
@@ -18,24 +19,25 @@ import {
 interface AnomalyBannerProps {
   onViewTransaction?: (transactionId: string) => void;
   onRefresh?: () => void;
+  aiEnabled?: boolean;
 }
 
 const DISMISSED_KEY = 'zaboraa_dismissed_anomalies';
-const AI_ENABLED_KEY = 'zaboraa_ai_enabled';
 
-export const AnomalyBanner: React.FC<AnomalyBannerProps> = ({ onViewTransaction }) => {
+export const AnomalyBanner: React.FC<AnomalyBannerProps> = ({
+  onViewTransaction,
+  aiEnabled: aiEnabledProp,
+}) => {
+  const { aiEnabled: contextAiEnabled } = useUserPreferences();
+  const aiEnabled = aiEnabledProp ?? contextAiEnabled;
   const [anomalies, setAnomalies] = useState<DetectedAnomaly[]>([]);
   const [dismissedIds, setDismissedIds] = useState<string[]>([]);
   const [isExpanded, setIsExpanded] = useState(true);
-  const [aiEnabled, setAiEnabled] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
 
-  // Check localStorage for AI enabled state & dismissed anomalies
+  // Check localStorage for dismissed anomalies (migrated in 9C)
   useEffect(() => {
     if (typeof window !== 'undefined') {
-      const isEnabled = localStorage.getItem(AI_ENABLED_KEY) === 'true';
-      setAiEnabled(isEnabled);
-
       try {
         const savedDismissed = localStorage.getItem(DISMISSED_KEY);
         if (savedDismissed) {
