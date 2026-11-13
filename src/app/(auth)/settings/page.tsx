@@ -9,6 +9,7 @@ import { Select } from '../../../components/ui/Select';
 import { signOut, useAuth } from '../../../lib/auth';
 import { BackupSection } from '../../../components/settings/BackupSection';
 import { BusinessProfileSection } from '../../../components/settings/BusinessProfileSection';
+import { PaymentInstructionList } from '../../../components/invoicing/PaymentInstructionList';
 import { getProfile } from '../../../lib/actions/profile';
 import { useUserPreferences } from '../../../lib/contexts/UserPreferencesContext';
 import { getFYOptions } from '../../../lib/fy-utils';
@@ -251,6 +252,9 @@ export default function SettingsPage() {
 
       {/* 2. Business & Invoicing Profile */}
       <BusinessProfileSection />
+
+      {/* 3. Bank & Payment Instructions */}
+      <PaymentInstructionList />
 
       {/* 3. Theme Setting */}
       <Card>

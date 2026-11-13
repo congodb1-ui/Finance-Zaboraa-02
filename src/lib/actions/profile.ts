@@ -1,4 +1,5 @@
 import { createClient } from '../supabase/client';
+import { encryptWithSecret } from '../crypto';
 
 export interface ProfileRecord {
   id: string;
@@ -29,16 +30,8 @@ export interface ProfileUpsertInput {
 
 const PAN_REGEX = /^[A-Z]{5}[0-9]{4}[A-Z]$/;
 
-function bytesToBase64(bytes: Uint8Array): string {
-  let binary = '';
-  for (let i = 0; i < bytes.length; i++) {
-    binary += String.fromCharCode(bytes[i]);
-  }
-  return btoa(binary);
-}
-
 /**
- * Encrypts a sensitive field (e.g. PAN) using Web Crypto AES-256-GCM
+ * Encrypts a sensitive field (e.g. PAN) using shared Web Crypto AES-256-GCM
  * before persisting to profiles.pan_encrypted. Never logs or stores plaintext.
  */
 export async function encryptPanValue(plaintextPan: string, userId: string): Promise<string> {
@@ -47,43 +40,7 @@ export async function encryptPanValue(plaintextPan: string, userId: string): Pro
     throw new Error('Invalid PAN format. Expected 10-character format (e.g. ABCDE1234F).');
   }
 
-  const cryptoApi = typeof globalThis !== 'undefined' ? globalThis.crypto : undefined;
-  if (!cryptoApi?.subtle) {
-    throw new Error('Web Crypto API is required to encrypt PAN before storage.');
-  }
-
-  const enc = new TextEncoder();
-  const salt = cryptoApi.getRandomValues(new Uint8Array(16));
-  const iv = cryptoApi.getRandomValues(new Uint8Array(12));
-
-  const keyMaterial = await cryptoApi.subtle.importKey(
-    'raw',
-    enc.encode(`zaboraa-vault:${userId}`),
-    'PBKDF2',
-    false,
-    ['deriveKey']
-  );
-
-  const aesKey = await cryptoApi.subtle.deriveKey(
-    {
-      name: 'PBKDF2',
-      salt,
-      iterations: 100000,
-      hash: 'SHA-256',
-    },
-    keyMaterial,
-    { name: 'AES-GCM', length: 256 },
-    false,
-    ['encrypt']
-  );
-
-  const ciphertext = await cryptoApi.subtle.encrypt(
-    { name: 'AES-GCM', iv },
-    aesKey,
-    enc.encode(normalized)
-  );
-
-  return `zbf:v1:${bytesToBase64(salt)}:${bytesToBase64(iv)}:${bytesToBase64(new Uint8Array(ciphertext))}`;
+  return encryptWithSecret(normalized, `zaboraa-vault:${userId}`);
 }
 
 export async function getProfile(supabaseClient?: any): Promise<ProfileRecord | null> {

@@ -68,10 +68,19 @@ export interface PaymentInstruction {
   updated_at: string;
 }
 
-export type PaymentInstructionFormData = Omit<
-  PaymentInstruction,
-  'id' | 'user_id' | 'created_at' | 'updated_at'
->;
+export interface PaymentInstructionFormData {
+  label: string;
+  beneficiary_name: string;
+  bank_name?: string | null;
+  bank_address?: string | null;
+  account_number?: string | null;
+  iban?: string | null;
+  swift_bic?: string | null;
+  ifsc?: string | null;
+  intermediary_bank?: string | null;
+  currency: string;
+  is_default?: boolean;
+}
 
 export type InvoiceStatusV2 = InvoiceStatus | 'partial' | 'cancelled';
 
