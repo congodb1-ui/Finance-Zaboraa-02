@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import type { RuleFormData, MatchField, MatchType } from '../../types/transactions';
 import type { Category } from '../../types/categories';
 import type { Workspace } from '../../types/workspaces';
@@ -23,8 +23,6 @@ export const AddRuleModal: React.FC<AddRuleModalProps> = ({
   workspaces,
   nextDefaultPriority = 10,
 }) => {
-  if (!isOpen) return null;
-
   const [name, setName] = useState('');
   const [priority, setPriority] = useState(nextDefaultPriority);
   const [matchField, setMatchField] = useState<MatchField>('description');
@@ -39,6 +37,56 @@ export const AddRuleModal: React.FC<AddRuleModalProps> = ({
   const [testResultCount, setTestResultCount] = useState<number | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [showUnsavedConfirm, setShowUnsavedConfirm] = useState(false);
+
+  useEffect(() => {
+    if (isOpen) {
+      setName('');
+      setPriority(nextDefaultPriority);
+      setMatchField('description');
+      setMatchType('contains');
+      setMatchValue('');
+      setSetCategory('');
+      setSetWorkspace('');
+      setSetTxnType('');
+      setSetTagsInput('');
+      setTestResultCount(null);
+      setErrorMsg(null);
+      setShowUnsavedConfirm(false);
+    }
+  }, [isOpen, nextDefaultPriority]);
+
+  const isDirty =
+    name !== '' ||
+    Number(priority) !== nextDefaultPriority ||
+    matchField !== 'description' ||
+    matchType !== 'contains' ||
+    matchValue !== '' ||
+    setCategory !== '' ||
+    setWorkspace !== '' ||
+    setTxnType !== '' ||
+    setTagsInput !== '';
+
+  useEffect(() => {
+    if (!isOpen || !isDirty) return;
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = '';
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [isOpen, isDirty]);
+
+  if (!isOpen) return null;
+
+  const handleRequestClose = () => {
+    if (isSubmitting) return;
+    if (isDirty) {
+      setShowUnsavedConfirm(true);
+      return;
+    }
+    onClose();
+  };
 
   // Match types dynamically adapted based on match_field
   const availableMatchTypes: { value: MatchType; label: string }[] =
@@ -151,7 +199,7 @@ export const AddRuleModal: React.FC<AddRuleModalProps> = ({
           </div>
           <button
             type="button"
-            onClick={onClose}
+            onClick={handleRequestClose}
             className="p-1 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
           >
             <X className="w-5 h-5" />
@@ -343,9 +391,38 @@ export const AddRuleModal: React.FC<AddRuleModalProps> = ({
             </div>
           </div>
 
+          {showUnsavedConfirm && (
+            <div className="p-3 rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/60 flex items-center justify-between gap-3 text-xs">
+              <span className="font-medium text-amber-900 dark:text-amber-200">
+                You have unsaved changes. Leave anyway?
+              </span>
+              <div className="flex items-center gap-2 shrink-0">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setShowUnsavedConfirm(false)}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  type="button"
+                  variant="destructive"
+                  size="sm"
+                  onClick={() => {
+                    setShowUnsavedConfirm(false);
+                    onClose();
+                  }}
+                >
+                  Confirm
+                </Button>
+              </div>
+            </div>
+          )}
+
           {/* Modal Actions */}
           <div className="pt-2 flex items-center justify-end gap-3 border-t border-slate-200 dark:border-slate-800">
-            <Button variant="ghost" size="sm" type="button" onClick={onClose} disabled={isSubmitting}>
+            <Button variant="ghost" size="sm" type="button" onClick={handleRequestClose} disabled={isSubmitting}>
               Cancel
             </Button>
             <Button variant="primary" size="sm" type="submit" isLoading={isSubmitting}>

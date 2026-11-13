@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import type { BudgetFormData, BudgetPeriod } from '../../types/budgets';
 import type { Category } from '../../types/categories';
 import type { Workspace } from '../../types/workspaces';
@@ -23,8 +23,7 @@ export const AddBudgetModal: React.FC<AddBudgetModalProps> = ({
   workspaces,
   defaultFY = '2026-27',
 }) => {
-  if (!isOpen) return null;
-
+  const [initialCategoryId, setInitialCategoryId] = useState(categories[0]?.id || '');
   const [categoryId, setCategoryId] = useState(categories[0]?.id || '');
   const [workspaceId, setWorkspaceId] = useState('');
   const [period, setPeriod] = useState<BudgetPeriod>('monthly');
@@ -32,6 +31,49 @@ export const AddBudgetModal: React.FC<AddBudgetModalProps> = ({
   const [amount, setAmount] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [showUnsavedConfirm, setShowUnsavedConfirm] = useState(false);
+
+  useEffect(() => {
+    if (isOpen) {
+      const nextDefaultCat = categories[0]?.id || '';
+      setInitialCategoryId(nextDefaultCat);
+      setCategoryId(nextDefaultCat);
+      setWorkspaceId('');
+      setPeriod('monthly');
+      setFyYear(defaultFY);
+      setAmount('');
+      setErrorMsg(null);
+      setShowUnsavedConfirm(false);
+    }
+  }, [isOpen, defaultFY, categories]);
+
+  const isDirty =
+    categoryId !== initialCategoryId ||
+    workspaceId !== '' ||
+    period !== 'monthly' ||
+    fyYear !== defaultFY ||
+    amount !== '';
+
+  useEffect(() => {
+    if (!isOpen || !isDirty) return;
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = '';
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [isOpen, isDirty]);
+
+  if (!isOpen) return null;
+
+  const handleRequestClose = () => {
+    if (isLoading) return;
+    if (isDirty) {
+      setShowUnsavedConfirm(true);
+      return;
+    }
+    onClose();
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -87,7 +129,7 @@ export const AddBudgetModal: React.FC<AddBudgetModalProps> = ({
           </div>
           <button
             type="button"
-            onClick={onClose}
+            onClick={handleRequestClose}
             className="p-2 min-w-[44px] min-h-[44px] flex items-center justify-center rounded-xl text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
           >
             <X className="w-5 h-5" />
@@ -188,8 +230,37 @@ export const AddBudgetModal: React.FC<AddBudgetModalProps> = ({
             </select>
           </div>
 
+          {showUnsavedConfirm && (
+            <div className="p-3 rounded-xl border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/60 flex items-center justify-between gap-3 text-xs">
+              <span className="font-medium text-amber-900 dark:text-amber-200">
+                You have unsaved changes. Leave anyway?
+              </span>
+              <div className="flex items-center gap-2 shrink-0">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setShowUnsavedConfirm(false)}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  type="button"
+                  variant="destructive"
+                  size="sm"
+                  onClick={() => {
+                    setShowUnsavedConfirm(false);
+                    onClose();
+                  }}
+                >
+                  Confirm
+                </Button>
+              </div>
+            </div>
+          )}
+
           <div className="pt-2 flex items-center justify-end gap-2.5">
-            <Button type="button" variant="ghost" size="md" onClick={onClose} disabled={isLoading}>
+            <Button type="button" variant="ghost" size="md" onClick={handleRequestClose} disabled={isLoading}>
               Cancel
             </Button>
             <Button type="submit" variant="primary" size="md" isLoading={isLoading}>

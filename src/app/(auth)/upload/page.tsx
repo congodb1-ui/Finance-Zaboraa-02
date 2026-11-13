@@ -11,12 +11,12 @@ import { Button } from '../../../components/ui/Button';
 import {
   processStatementUpload,
   confirmMappingAndStaging,
-  finalizeImport,
   cancelUpload,
   getUploads,
   getUploadDetails,
   checkDateOverlap,
 } from '../../../lib/actions/upload';
+import { apiPost } from '../../../lib/api-client';
 import { getAccounts } from '../../../lib/actions/accounts';
 import { useUserPreferences } from '../../../lib/contexts/UserPreferencesContext';
 import type { AccountWithBalance } from '../../../types/accounts';
@@ -206,26 +206,29 @@ export default function StatementUploadPage() {
 
     setIsProcessing(true);
     try {
-      const { upload: updated, result } = await finalizeImport(
-        activeUpload.id,
-        replacePreviousId,
-        undefined,
-        aiEnabled
-      );
+      const result = await apiPost('/api/upload/finalize', {
+        upload_id: activeUpload.id,
+        replace_previous_id: replacePreviousId,
+      });
+
+      const [details, freshHistory] = await Promise.all([
+        getUploadDetails(activeUpload.id),
+        getUploads(),
+      ]);
+
+      const updated = details.upload || activeUpload;
       setActiveUpload(updated);
       setCurrentStep('imported');
-
-      // Refresh upload history
-      const freshHistory = await getUploads();
       setUploadsHistory(freshHistory);
 
-      const msg = result
-        ? `Successfully imported ${result.imported_count} transactions into ledger (${result.duplicate_count} duplicates skipped, ${result.transfer_pairs_found} transfer pairs detected).`
-        : `Successfully imported ${updated.imported_count || updated.row_count} transactions into ledger!`;
+      const importedCount = result.imported ?? result.imported_count ?? updated.imported_count ?? updated.row_count ?? 0;
+      const duplicatesSkipped = result.duplicates_skipped ?? result.duplicate_count ?? 0;
+      const transferPairs = result.transfer_pairs_found ?? 0;
+      const replacedNote = result.replaced ? ' (replaced previous overlapping upload)' : '';
 
       setStatusMessage({
         type: 'success',
-        text: msg,
+        text: `Successfully imported ${importedCount} transactions into ledger (${duplicatesSkipped} duplicates skipped, ${transferPairs} transfer pairs detected)${replacedNote}.`,
       });
     } catch (err: any) {
       console.error('Finalize failed:', err);

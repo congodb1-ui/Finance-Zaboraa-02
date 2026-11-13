@@ -49,7 +49,7 @@ export default function DashboardPage() {
   const [filters, setFilters] = useState<DashboardFilters>(() => {
     if (typeof window !== 'undefined') {
       try {
-        const saved = localStorage.getItem('zaboraa_dashboard_filters');
+        const saved = localStorage.getItem('zaboraa_dashboard_filters'); // UI-ONLY, safe to keep local — not synced
         if (saved) return JSON.parse(saved);
       } catch {
         // Fallback
@@ -66,7 +66,7 @@ export default function DashboardPage() {
   useEffect(() => {
     if (typeof window !== 'undefined') {
       try {
-        localStorage.setItem('zaboraa_dashboard_filters', JSON.stringify(filters));
+        localStorage.setItem('zaboraa_dashboard_filters', JSON.stringify(filters)); // UI-ONLY, safe to keep local — not synced
       } catch {
         // Ignore
       }

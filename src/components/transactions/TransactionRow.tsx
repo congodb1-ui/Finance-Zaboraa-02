@@ -40,30 +40,64 @@ export const TransactionRow: React.FC<TransactionRowProps> = ({
   workspaces,
   accounts,
 }) => {
-  if (!isOpen || !transaction) return null;
-
-  const [categoryId, setCategoryId] = useState(transaction.category_id || '');
-  const [workspaceId, setWorkspaceId] = useState(transaction.workspace_id || '');
-  const [txnType, setTxnType] = useState(transaction.txn_type || 'expense');
-  const [notes, setNotes] = useState(transaction.notes || '');
-  const [tagsInput, setTagsInput] = useState((transaction.tags || []).join(', '));
-  const [isTransfer, setIsTransfer] = useState(transaction.is_transfer || false);
+  const [categoryId, setCategoryId] = useState(transaction?.category_id || '');
+  const [workspaceId, setWorkspaceId] = useState(transaction?.workspace_id || '');
+  const [txnType, setTxnType] = useState(transaction?.txn_type || 'expense');
+  const [notes, setNotes] = useState(transaction?.notes || '');
+  const [tagsInput, setTagsInput] = useState((transaction?.tags || []).join(', '));
+  const [isTransfer, setIsTransfer] = useState(transaction?.is_transfer || false);
   const [transferTargetAccountId, setTransferTargetAccountId] = useState('');
   const [isSaving, setIsSaving] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
+  const [showUnsavedConfirm, setShowUnsavedConfirm] = useState(false);
 
   // Sync state if transaction changes
   useEffect(() => {
+    if (!transaction) return;
     setCategoryId(transaction.category_id || '');
     setWorkspaceId(transaction.workspace_id || '');
     setTxnType(transaction.txn_type || 'expense');
     setNotes(transaction.notes || '');
     setTagsInput((transaction.tags || []).join(', '));
     setIsTransfer(transaction.is_transfer || false);
+    setTransferTargetAccountId('');
     setErrorMsg(null);
     setSuccessMsg(null);
+    setShowUnsavedConfirm(false);
   }, [transaction]);
+
+  const isDirty = Boolean(
+    transaction &&
+      (categoryId !== (transaction.category_id || '') ||
+        workspaceId !== (transaction.workspace_id || '') ||
+        txnType !== (transaction.txn_type || 'expense') ||
+        notes !== (transaction.notes || '') ||
+        tagsInput !== (transaction.tags || []).join(', ') ||
+        isTransfer !== Boolean(transaction.is_transfer) ||
+        transferTargetAccountId !== '')
+  );
+
+  useEffect(() => {
+    if (!isOpen || !isDirty) return;
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = '';
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [isOpen, isDirty]);
+
+  if (!isOpen || !transaction) return null;
+
+  const handleRequestClose = () => {
+    if (isSaving) return;
+    if (isDirty) {
+      setShowUnsavedConfirm(true);
+      return;
+    }
+    onClose();
+  };
 
   const handleSave = async () => {
     setIsSaving(true);
@@ -83,9 +117,14 @@ export const TransactionRow: React.FC<TransactionRowProps> = ({
         notes: notes.trim() || null,
         tags: parsedTags,
         is_transfer: isTransfer,
+        transfer_pair_id: isTransfer ? transaction.transfer_pair_id ?? undefined : null,
+        transfer_target_account_id:
+          isTransfer && transferTargetAccountId ? transferTargetAccountId : null,
       };
 
       await onSave(transaction.id, updates);
+      setShowUnsavedConfirm(false);
+      setTransferTargetAccountId('');
       setSuccessMsg('Changes saved and logged to immutable audit trail.');
       setTimeout(() => {
         setSuccessMsg(null);
@@ -120,7 +159,7 @@ export const TransactionRow: React.FC<TransactionRowProps> = ({
           </div>
           <button
             type="button"
-            onClick={onClose}
+            onClick={handleRequestClose}
             className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
             aria-label="Close drawer"
           >
@@ -413,9 +452,39 @@ export const TransactionRow: React.FC<TransactionRowProps> = ({
           </div>
         </div>
 
+        {/* Unsaved Changes Inline Confirmation */}
+        {showUnsavedConfirm && (
+          <div className="px-4 py-3 border-t border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/60 flex items-center justify-between gap-3 text-xs">
+            <span className="font-medium text-amber-900 dark:text-amber-200">
+              You have unsaved changes. Leave anyway?
+            </span>
+            <div className="flex items-center gap-2 shrink-0">
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={() => setShowUnsavedConfirm(false)}
+              >
+                Cancel
+              </Button>
+              <Button
+                type="button"
+                variant="destructive"
+                size="sm"
+                onClick={() => {
+                  setShowUnsavedConfirm(false);
+                  onClose();
+                }}
+              >
+                Confirm
+              </Button>
+            </div>
+          </div>
+        )}
+
         {/* Drawer Footer Actions */}
         <div className="p-4 border-t border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/90 flex items-center justify-end gap-3">
-          <Button variant="ghost" size="sm" onClick={onClose} disabled={isSaving}>
+          <Button variant="ghost" size="sm" onClick={handleRequestClose} disabled={isSaving}>
             Cancel
           </Button>
           <Button variant="primary" size="sm" onClick={handleSave} isLoading={isSaving}>

@@ -36,6 +36,7 @@ import { extractPDFRawData } from './lib/parsers/pdf';
 import { parsePDFHDFC, isHDFCStatement } from './lib/parsers/pdf-hdfc';
 import { parsePDFGeneric } from './lib/parsers/pdf-generic';
 import { getCurrentFY, getFYBounds } from './lib/fy-utils';
+import { writeAuditLog } from './lib/audit';
 import type { Transaction } from './types/transactions';
 import type { ColumnMapping, ParseResult } from './types/uploads';
 
@@ -57,6 +58,20 @@ const SUPABASE_ANON_KEY =
   process.env.VITE_SUPABASE_ANON_KEY ||
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
   'placeholder-anon-key';
+
+function getServiceSupabase() {
+  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!serviceRoleKey) {
+    console.error('[audit] SUPABASE_SERVICE_ROLE_KEY is not configured; audit log writes skipped.');
+    return null;
+  }
+  return createSupabaseClient(SUPABASE_URL, serviceRoleKey, {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+    },
+  });
+}
 
 async function requireAuth(
   req: AuthenticatedRequest,
@@ -374,7 +389,22 @@ export async function runServer() {
         const summary = await categorizeTransactionsWithAI(targetTxns, categories);
 
         if (summary.results.length > 0) {
-          await applyAICategorizations(summary.results, req.supabase);
+          const applyRes = await applyAICategorizations(summary.results, req.supabase);
+          const serviceSupabase = getServiceSupabase();
+          for (const item of applyRes.applied) {
+            await writeAuditLog(serviceSupabase, {
+              user_id: req.user!.id,
+              action: 'update',
+              entity: 'transactions',
+              entity_id: item.id,
+              before_json: { category_id: item.old_category_id },
+              after_json: {
+                category_id: item.new_category_id,
+                confidence: item.confidence,
+                score: item.score,
+              },
+            });
+          }
         }
 
         res.json({
@@ -771,6 +801,19 @@ export async function runServer() {
           }
         }
 
+        await writeAuditLog(getServiceSupabase(), {
+          user_id: user.id,
+          action: 'insert',
+          entity: 'statement_upload',
+          entity_id: newUploadRecord.id,
+          after_json: {
+            account_id: accountId,
+            file_name: file.originalname,
+            file_type: fileType,
+            row_count: parseResult.rows.length,
+          },
+        });
+
         res.json({
           upload_id: newUploadRecord.id,
           row_count: parseResult.rows.length,
@@ -806,6 +849,20 @@ export async function runServer() {
           replace_previous_id,
           req.supabase
         );
+
+        await writeAuditLog(getServiceSupabase(), {
+          user_id: req.user!.id,
+          action: 'import',
+          entity: 'statement_upload',
+          entity_id: upload_id,
+          after_json: {
+            imported: result.imported,
+            duplicates_skipped: result.duplicates_skipped,
+            replaced: result.replaced,
+            transfer_pairs_found: result.transfer_pairs_found,
+          },
+        });
+
         res.json(result);
       } catch (err) {
         console.error('Finalize upload error:', err);
@@ -836,6 +893,15 @@ export async function runServer() {
           });
         }
 
+        const { data: beforeTx } = await req.supabase
+          .from('transactions')
+          .select(
+            'category_id, workspace_id, tags, notes, txn_type, is_transfer, transfer_pair_id'
+          )
+          .eq('id', id)
+          .eq('user_id', req.user!.id)
+          .maybeSingle();
+
         const updated = await updateTransaction(
           id,
           {
@@ -846,9 +912,27 @@ export async function runServer() {
             txn_type: body.txn_type,
             is_transfer: body.is_transfer,
             transfer_pair_id: body.transfer_pair_id,
+            transfer_target_account_id: body.transfer_target_account_id,
           },
           req.supabase
         );
+
+        await writeAuditLog(getServiceSupabase(), {
+          user_id: req.user!.id,
+          action: 'update',
+          entity: 'transaction',
+          entity_id: id,
+          before_json: beforeTx || null,
+          after_json: {
+            category_id: updated.category_id,
+            workspace_id: updated.workspace_id,
+            tags: updated.tags,
+            notes: updated.notes,
+            txn_type: updated.txn_type,
+            is_transfer: updated.is_transfer,
+            transfer_pair_id: updated.transfer_pair_id,
+          },
+        });
 
         res.json(updated);
       } catch (err) {

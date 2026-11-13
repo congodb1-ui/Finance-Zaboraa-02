@@ -22,32 +22,26 @@ interface AnomalyBannerProps {
   aiEnabled?: boolean;
 }
 
-const DISMISSED_KEY = 'zaboraa_dismissed_anomalies';
-
 export const AnomalyBanner: React.FC<AnomalyBannerProps> = ({
   onViewTransaction,
   aiEnabled: aiEnabledProp,
 }) => {
-  const { aiEnabled: contextAiEnabled } = useUserPreferences();
+  const {
+    aiEnabled: contextAiEnabled,
+    aiSettings,
+    saveAiSettings,
+  } = useUserPreferences();
   const aiEnabled = aiEnabledProp ?? contextAiEnabled;
   const [anomalies, setAnomalies] = useState<DetectedAnomaly[]>([]);
-  const [dismissedIds, setDismissedIds] = useState<string[]>([]);
+  const [dismissedIds, setDismissedIds] = useState<string[]>(
+    aiSettings.dismissed_anomaly_ids || []
+  );
   const [isExpanded, setIsExpanded] = useState(true);
   const [isLoading, setIsLoading] = useState(true);
 
-  // Check localStorage for dismissed anomalies (migrated in 9C)
   useEffect(() => {
-    if (typeof window !== 'undefined') {
-      try {
-        const savedDismissed = localStorage.getItem(DISMISSED_KEY);
-        if (savedDismissed) {
-          setDismissedIds(JSON.parse(savedDismissed));
-        }
-      } catch {
-        // Fallback
-      }
-    }
-  }, []);
+    setDismissedIds(aiSettings.dismissed_anomaly_ids || []);
+  }, [aiSettings.dismissed_anomaly_ids]);
 
   // Fetch anomalies from backend
   useEffect(() => {
@@ -77,16 +71,14 @@ export const AnomalyBanner: React.FC<AnomalyBannerProps> = ({
     };
   }, [aiEnabled]);
 
-  const handleDismiss = (id: string, e: React.MouseEvent) => {
+  const handleDismiss = async (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    const updated = [...dismissedIds, id];
+    const updated = Array.from(new Set([...dismissedIds, id]));
     setDismissedIds(updated);
-    if (typeof window !== 'undefined') {
-      try {
-        localStorage.setItem(DISMISSED_KEY, JSON.stringify(updated));
-      } catch {
-        // Ignore
-      }
+    try {
+      await saveAiSettings({ dismissed_anomaly_ids: updated });
+    } catch (err) {
+      console.error('Failed to persist dismissed anomaly:', err);
     }
   };
 

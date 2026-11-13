@@ -67,63 +67,7 @@ export function getDedupKey(
 }
 
 /**
- * Append audit log entry (Append-only guarantee).
- * Uses service-role admin client when running server-side if configured,
- * and falls back cleanly if audit_log is SELECT-only for regular clients.
- */
-export async function writeAuditLog(
-  entry: {
-    table_name: string;
-    record_id: string;
-    action: 'insert' | 'update' | 'delete';
-    old_data?: any;
-    new_data?: any;
-  },
-  client?: any
-): Promise<AuditLogEntry | null> {
-  const supabase = client || createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
-  if (!user) {
-    throw new Error('Unauthorized');
-  }
-
-  let writerClient = supabase;
-  if (typeof window === 'undefined' && process.env.SUPABASE_SERVICE_ROLE_KEY) {
-    try {
-      const { createAdminClient } = await import('../supabase/server');
-      writerClient = createAdminClient();
-    } catch {
-      writerClient = supabase;
-    }
-  }
-
-  const { data, error } = await writerClient
-    .from('audit_log')
-    .insert({
-      user_id: user.id,
-      table_name: entry.table_name,
-      record_id: entry.record_id,
-      action: entry.action,
-      old_data: entry.old_data || null,
-      new_data: entry.new_data || null,
-    })
-    .select()
-    .maybeSingle();
-
-  if (error) {
-    // Do not fail parent ledger operations if audit_log enforces server-only inserts
-    console.warn('Audit log insert notice:', error.message);
-    return null;
-  }
-
-  return data as AuditLogEntry | null;
-}
-
-/**
- * Retrieve Audit Log for current user
+ * Retrieve Audit Log for current user (SELECT-only via RLS)
  */
 export async function getAuditLogs(client?: any): Promise<AuditLogEntry[]> {
   const supabase = client || createClient();
@@ -474,32 +418,6 @@ export async function commitUploadTransactions(
     throw new Error(`Failed to finalize upload record: ${uploadUpdateErr.message}`);
   }
 
-  // STEP 8 — Write audit log (one row per inserted transaction)
-  for (const insertedTx of newlyInsertedTransactions) {
-    await writeAuditLog(
-      {
-        table_name: 'transactions',
-        record_id: insertedTx.id,
-        action: 'insert',
-        new_data: {
-          id: insertedTx.id,
-          account_id: insertedTx.account_id,
-          upload_id: insertedTx.upload_id,
-          txn_date: insertedTx.txn_date,
-          description: insertedTx.description,
-          debit: insertedTx.debit,
-          credit: insertedTx.credit,
-          balance: insertedTx.balance,
-          reference_number: insertedTx.reference_number,
-          txn_type: insertedTx.txn_type,
-          is_transfer: insertedTx.is_transfer,
-          source_staged_id: insertedTx.source_staged_id,
-        },
-      },
-      supabase
-    );
-  }
-
   // STEP 9 — Optional post-import AI pipeline
   try {
     let isAiEnabled: boolean;
@@ -758,34 +676,12 @@ export async function createManualTransaction(
   }
 
   const createdTx = mapDbTransaction(inserted);
-
-  await writeAuditLog(
-    {
-      table_name: 'transactions',
-      record_id: createdTx.id,
-      action: 'insert',
-      new_data: {
-        id: createdTx.id,
-        is_manual: true,
-        txn_date: createdTx.txn_date,
-        description: createdTx.description,
-        amount: data.amount,
-        type: data.type,
-        account_id: createdTx.account_id,
-        category_id: createdTx.category_id,
-        workspace_id: createdTx.workspace_id,
-      },
-    },
-    supabase
-  );
-
   return createdTx;
 }
 
 /**
  * Updates editable transaction fields
  * Non-editable: amounts, date, description (Amounts are sacred — never editable after import)
- * Writes audit log on change!
  */
 export async function updateTransaction(
   id: string,
@@ -797,6 +693,7 @@ export async function updateTransaction(
     txn_type?: Transaction['txn_type'];
     is_transfer?: boolean;
     transfer_pair_id?: string | null;
+    transfer_target_account_id?: string | null;
   },
   client?: any
 ): Promise<Transaction> {
@@ -820,16 +717,6 @@ export async function updateTransaction(
     throw new Error('Transaction not found');
   }
 
-  const oldDataSnapshot = {
-    category_id: oldTx.category_id,
-    workspace_id: oldTx.workspace_id,
-    tags: oldTx.tags,
-    notes: oldTx.notes,
-    txn_type: oldTx.txn_type,
-    is_transfer: oldTx.is_transfer,
-    transfer_pair_id: oldTx.transfer_pair_id,
-  };
-
   const updatePayload: Record<string, any> = {
     updated_at: new Date().toISOString(),
   };
@@ -840,8 +727,64 @@ export async function updateTransaction(
   if (updates.notes !== undefined) updatePayload.notes = updates.notes;
   if (updates.txn_type !== undefined) updatePayload.txn_type = updates.txn_type;
   if (updates.is_transfer !== undefined) updatePayload.is_transfer = updates.is_transfer;
-  if (updates.transfer_pair_id !== undefined) {
+
+  if (updates.is_transfer === false) {
+    updatePayload.transfer_pair_id = null;
+    if (oldTx.transfer_pair_id) {
+      await supabase
+        .from('transactions')
+        .update({ transfer_pair_id: null, updated_at: new Date().toISOString() })
+        .eq('id', oldTx.transfer_pair_id)
+        .eq('user_id', user.id);
+    }
+  } else if (updates.transfer_pair_id !== undefined) {
     updatePayload.transfer_pair_id = updates.transfer_pair_id;
+  } else if (updates.is_transfer && updates.transfer_target_account_id) {
+    // Attempt to find a complementary opposite-leg transaction in the selected account within ±3 days
+    const txDebit = oldTx.debit !== null && oldTx.debit !== undefined ? Number(oldTx.debit) : null;
+    const txCredit =
+      oldTx.credit !== null && oldTx.credit !== undefined ? Number(oldTx.credit) : null;
+    const txAmt = txDebit ?? txCredit ?? 0;
+
+    if (txAmt > 0) {
+      const baseDate = new Date(oldTx.txn_date);
+      const minDate = new Date(baseDate);
+      minDate.setDate(minDate.getDate() - 3);
+      const maxDate = new Date(baseDate);
+      maxDate.setDate(maxDate.getDate() + 3);
+
+      const { data: candidates } = await supabase
+        .from('transactions')
+        .select('id, txn_date, debit, credit, transfer_pair_id')
+        .eq('user_id', user.id)
+        .eq('account_id', updates.transfer_target_account_id)
+        .neq('id', id)
+        .gte('txn_date', minDate.toISOString().split('T')[0])
+        .lte('txn_date', maxDate.toISOString().split('T')[0]);
+
+      const isSourceDebit = txDebit !== null;
+      const matched = (candidates || []).find((c: any) => {
+        const cDebit = c.debit !== null && c.debit !== undefined ? Number(c.debit) : null;
+        const cCredit = c.credit !== null && c.credit !== undefined ? Number(c.credit) : null;
+        const cAmt = isSourceDebit ? cCredit : cDebit;
+        return cAmt !== null && Math.abs(cAmt - txAmt) <= 0.01;
+      });
+
+      if (matched) {
+        updatePayload.transfer_pair_id = matched.id;
+        await supabase
+          .from('transactions')
+          .update({
+            is_transfer: true,
+            txn_type: 'transfer',
+            category_id: null,
+            transfer_pair_id: id,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', matched.id)
+          .eq('user_id', user.id);
+      }
+    }
   }
 
   const { data: updated, error: updateErr } = await supabase
@@ -856,28 +799,7 @@ export async function updateTransaction(
     throw new Error(updateErr?.message || 'Failed to update transaction.');
   }
 
-  const updatedTx = mapDbTransaction(updated);
-
-  await writeAuditLog(
-    {
-      table_name: 'transactions',
-      record_id: id,
-      action: 'update',
-      old_data: oldDataSnapshot,
-      new_data: {
-        category_id: updatedTx.category_id,
-        workspace_id: updatedTx.workspace_id,
-        tags: updatedTx.tags,
-        notes: updatedTx.notes,
-        txn_type: updatedTx.txn_type,
-        is_transfer: updatedTx.is_transfer,
-        transfer_pair_id: updatedTx.transfer_pair_id,
-      },
-    },
-    supabase
-  );
-
-  return updatedTx;
+  return mapDbTransaction(updated);
 }
 
 /**
@@ -1618,7 +1540,16 @@ export async function applyAICategorizations(
     reasoning?: string;
   }>,
   client?: any
-): Promise<{ updatedCount: number }> {
+): Promise<{
+  updatedCount: number;
+  applied: Array<{
+    id: string;
+    old_category_id: string | null;
+    new_category_id: string;
+    confidence: string;
+    score?: number;
+  }>;
+}> {
   const supabase = client || createClient();
   const {
     data: { user },
@@ -1629,7 +1560,7 @@ export async function applyAICategorizations(
   }
 
   if (!results || results.length === 0) {
-    return { updatedCount: 0 };
+    return { updatedCount: 0, applied: [] };
   }
 
   const targetIds = results.map((r) => r.transaction_id);
@@ -1661,6 +1592,13 @@ export async function applyAICategorizations(
   }
 
   let updatedCount = 0;
+  const applied: Array<{
+    id: string;
+    old_category_id: string | null;
+    new_category_id: string;
+    confidence: string;
+    score?: number;
+  }> = [];
 
   for (const res of results) {
     const tx = txMap.get(res.transaction_id);
@@ -1679,24 +1617,17 @@ export async function applyAICategorizations(
         .eq('user_id', user.id);
 
       if (!updateErr) {
-        await writeAuditLog(
-          {
-            table_name: 'transactions',
-            record_id: tx.id,
-            action: 'update',
-            old_data: { category_id: oldCat },
-            new_data: {
-              category_id: res.category_id,
-              confidence: res.confidence,
-              score: res.score,
-            },
-          },
-          supabase
-        );
+        applied.push({
+          id: tx.id,
+          old_category_id: oldCat ?? null,
+          new_category_id: res.category_id,
+          confidence: res.confidence,
+          score: res.score,
+        });
         updatedCount++;
       }
     }
   }
 
-  return { updatedCount };
+  return { updatedCount, applied };
 }

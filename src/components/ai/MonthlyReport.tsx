@@ -26,16 +26,13 @@ interface MonthlyReportProps {
   aiEnabled?: boolean;
 }
 
-const LAST_RUN_KEY = 'zaboraa_monthly_report_last_run';
-const CACHED_REPORT_KEY = 'zaboraa_cached_monthly_report';
-
 export const MonthlyReport: React.FC<MonthlyReportProps> = ({
   isOpen = true,
   onClose,
   defaultMonth,
   aiEnabled: aiEnabledProp,
 }) => {
-  const { aiEnabled: contextAiEnabled } = useUserPreferences();
+  const { aiEnabled: contextAiEnabled, aiSettings, saveAiSettings } = useUserPreferences();
   const aiEnabled = aiEnabledProp ?? contextAiEnabled;
   const [report, setReport] = useState<GeneratedMonthlyReport | null>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -44,26 +41,24 @@ export const MonthlyReport: React.FC<MonthlyReportProps> = ({
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   useEffect(() => {
-    if (typeof window !== 'undefined') {
-      // Check last run timestamp
-      const lastRunStr = localStorage.getItem(LAST_RUN_KEY);
-      if (lastRunStr) {
-        const lastRunTime = parseInt(lastRunStr, 10);
-        const mins = Math.floor((Date.now() - lastRunTime) / 60000);
+    if (aiSettings.monthly_report_last_run_at) {
+      const lastRunMs = new Date(aiSettings.monthly_report_last_run_at).getTime();
+      if (!Number.isNaN(lastRunMs)) {
+        const mins = Math.max(0, Math.floor((Date.now() - lastRunMs) / 60000));
         setLastRunMinutesAgo(mins);
       }
+    } else {
+      setLastRunMinutesAgo(null);
+    }
 
-      // Check cached report
-      const cached = localStorage.getItem(CACHED_REPORT_KEY);
-      if (cached) {
-        try {
-          setReport(JSON.parse(cached));
-        } catch {
-          // Ignore
-        }
+    const cache = aiSettings.monthly_report_cache as any;
+    if (cache) {
+      const cachedReport = cache.report ?? cache;
+      if (cachedReport && typeof cachedReport === 'object' && cachedReport.markdown) {
+        setReport(cachedReport as GeneratedMonthlyReport);
       }
     }
-  }, []);
+  }, [aiSettings.monthly_report_last_run_at, aiSettings.monthly_report_cache]);
 
   const handleGenerate = async (force: boolean = false) => {
     if (!aiEnabled) {
@@ -84,10 +79,14 @@ export const MonthlyReport: React.FC<MonthlyReportProps> = ({
       const data = await apiPost('/api/ai/monthly-report', { month: defaultMonth });
       if (data.success && data.report) {
         setReport(data.report);
-        const now = Date.now();
-        localStorage.setItem(LAST_RUN_KEY, String(now));
-        localStorage.setItem(CACHED_REPORT_KEY, JSON.stringify(data.report));
         setLastRunMinutesAgo(0);
+        await saveAiSettings({
+          monthly_report_last_run_at: new Date().toISOString(),
+          monthly_report_cache: {
+            report: data.report,
+            stats: data.stats ?? null,
+          },
+        });
       } else {
         setErrorMessage(data.error || 'Failed to generate report from Gemini 2.5 Pro.');
       }

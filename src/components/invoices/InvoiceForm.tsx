@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Card, CardHeader, CardTitle, CardContent, CardFooter } from '../ui/Card';
 import { Button } from '../ui/Button';
 import { Input } from '../ui/Input';
@@ -37,6 +37,53 @@ export const InvoiceForm: React.FC<InvoiceFormProps> = ({ onSave, onCancel, isLo
   ]);
 
   const [error, setError] = useState<string | null>(null);
+  const [showUnsavedConfirm, setShowUnsavedConfirm] = useState(false);
+
+  const initialSnapshotRef = useRef(
+    JSON.stringify({
+      invoiceNumber,
+      clientName: '',
+      clientEmail: '',
+      issueDate,
+      dueDate,
+      status: 'draft',
+      notes: '',
+      taxPercent: 18,
+      lineItems,
+    })
+  );
+
+  const isDirty =
+    JSON.stringify({
+      invoiceNumber,
+      clientName,
+      clientEmail,
+      issueDate,
+      dueDate,
+      status,
+      notes,
+      taxPercent,
+      lineItems,
+    }) !== initialSnapshotRef.current;
+
+  useEffect(() => {
+    if (!isDirty) return;
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = '';
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [isDirty]);
+
+  const handleRequestClose = () => {
+    if (isLoading) return;
+    if (isDirty) {
+      setShowUnsavedConfirm(true);
+      return;
+    }
+    onCancel();
+  };
 
   const handleLineItemChange = (index: number, field: keyof InvoiceLineItem, val: any) => {
     const updated = [...lineItems];
@@ -117,7 +164,7 @@ export const InvoiceForm: React.FC<InvoiceFormProps> = ({ onSave, onCancel, isLo
             </div>
             <button
               type="button"
-              onClick={onCancel}
+              onClick={handleRequestClose}
               className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 p-1.5 rounded-lg transition-colors cursor-pointer"
             >
               <X className="w-5 h-5" />
@@ -268,8 +315,37 @@ export const InvoiceForm: React.FC<InvoiceFormProps> = ({ onSave, onCancel, isLo
             />
           </CardContent>
 
+          {showUnsavedConfirm && (
+            <div className="mx-6 mb-3 p-3 rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/60 flex items-center justify-between gap-3 text-xs">
+              <span className="font-medium text-amber-900 dark:text-amber-200">
+                You have unsaved changes. Leave anyway?
+              </span>
+              <div className="flex items-center gap-2 shrink-0">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setShowUnsavedConfirm(false)}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  type="button"
+                  variant="destructive"
+                  size="sm"
+                  onClick={() => {
+                    setShowUnsavedConfirm(false);
+                    onCancel();
+                  }}
+                >
+                  Confirm
+                </Button>
+              </div>
+            </div>
+          )}
+
           <CardFooter className="pt-3 flex items-center justify-end gap-3 border-t border-slate-100 dark:border-slate-800">
-            <Button variant="ghost" size="md" onClick={onCancel} disabled={isLoading}>
+            <Button type="button" variant="ghost" size="md" onClick={handleRequestClose} disabled={isLoading}>
               Cancel
             </Button>
             <Button variant="primary" size="md" type="submit" isLoading={isLoading}>

@@ -12,9 +12,9 @@ import { formatINR } from '../../../types/design-system';
 import {
   getTransactions,
   createManualTransaction,
-  updateTransaction,
   bulkUpdateTransactions,
 } from '../../../lib/actions/transactions';
+import { apiPatch } from '../../../lib/api-client';
 import { getAccounts } from '../../../lib/actions/accounts';
 import { getCategories } from '../../../lib/actions/categories';
 import { getWorkspaces } from '../../../lib/actions/workspaces';
@@ -139,12 +139,10 @@ export default function TransactionsPage() {
 
   // Handle Drawer Save
   const handleSaveTransaction = async (id: string, updates: any) => {
-    await updateTransaction(id, updates);
+    const updatedTx = await apiPatch<Transaction>(`/api/transactions/${id}`, updates);
     await loadLedger();
-    // Update active drawer transaction
-    const updated = transactions.find((t) => t.id === id);
-    if (updated) {
-      setActiveTransactionForDrawer({ ...updated, ...updates });
+    if (updatedTx) {
+      setActiveTransactionForDrawer(updatedTx);
     }
   };
 

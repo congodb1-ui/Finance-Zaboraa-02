@@ -14,6 +14,7 @@ export async function getCategories(client?: any): Promise<Category[]> {
   const { data, error } = await supabase
     .from('categories')
     .select('*')
+    .or(`user_id.eq.${user.id},is_system.eq.true`)
     .order('is_income', { ascending: false })
     .order('name', { ascending: true });
 
@@ -78,6 +79,7 @@ export async function updateCategory(
     .from('categories')
     .select('*')
     .eq('id', id)
+    .eq('user_id', user.id)
     .single();
 
   if (fetchError || !existing) {
@@ -127,6 +129,7 @@ export async function deleteCategory(
     .from('categories')
     .select('id, is_system')
     .eq('id', id)
+    .eq('user_id', user.id)
     .maybeSingle();
 
   if (existing?.is_system) {

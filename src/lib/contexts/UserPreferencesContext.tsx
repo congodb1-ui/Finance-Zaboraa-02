@@ -32,6 +32,9 @@ interface UserPreferencesContextValue {
 const DEFAULT_AI_SETTINGS: AiSettingsRecord = {
   ai_enabled: true,
   feature_toggles: {},
+  monthly_report_last_run_at: null,
+  monthly_report_cache: null,
+  dismissed_anomaly_ids: [],
 };
 
 function getInitialFlashDark(): boolean {

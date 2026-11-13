@@ -73,6 +73,8 @@ export async function getAccounts(client?: any): Promise<AccountWithBalance[]> {
     const delta = balanceMap.get(acc.id) || 0;
     return {
       ...acc,
+      opening_balance: openBal,
+      opening_date: acc.opening_date ?? null,
       current_balance: Math.round((openBal + delta) * 100) / 100,
       last_import_date: lastImportMap.get(acc.id) || null,
     };
@@ -122,6 +124,8 @@ export async function createAccount(
       is_active: data.is_active ?? true,
       color_index: data.color_index ?? 0,
       notes: data.notes?.trim() || null,
+      opening_balance: data.opening_balance ?? 0,
+      opening_date: data.opening_date || null,
       credit_limit: data.credit_limit ?? null,
       billing_cycle_day: data.billing_cycle_day ?? null,
       payment_due_day: data.payment_due_day ?? null,
@@ -168,6 +172,12 @@ export async function updateAccount(
   if (data.is_active !== undefined) updatePayload.is_active = data.is_active;
   if (data.color_index !== undefined) updatePayload.color_index = data.color_index;
   if (data.notes !== undefined) updatePayload.notes = data.notes?.trim() || null;
+  if (data.opening_balance !== undefined) {
+    updatePayload.opening_balance = data.opening_balance ?? 0;
+  }
+  if (data.opening_date !== undefined) {
+    updatePayload.opening_date = data.opening_date || null;
+  }
   if (data.credit_limit !== undefined) updatePayload.credit_limit = data.credit_limit;
   if (data.billing_cycle_day !== undefined) updatePayload.billing_cycle_day = data.billing_cycle_day;
   if (data.payment_due_day !== undefined) updatePayload.payment_due_day = data.payment_due_day;
