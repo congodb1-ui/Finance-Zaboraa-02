@@ -315,7 +315,7 @@ test.describe('Zaboraa Finance — End-to-End Supabase Persistence', () => {
 
     try {
       await signInInBrowser(page, session, '#settings');
-      const nameInput = page.getByPlaceholder('e.g. Wasim Sayyed');
+      const nameInput = page.getByPlaceholder('e.g. Full Legal Name');
       await expect(nameInput).toBeEnabled({ timeout: 10000 });
 
       await nameInput.fill('Test Owner');
@@ -325,7 +325,7 @@ test.describe('Zaboraa Finance — End-to-End Supabase Persistence', () => {
       });
 
       await page.reload({ waitUntil: 'networkidle' });
-      await expect(page.getByPlaceholder('e.g. Wasim Sayyed')).toHaveValue('Test Owner', {
+      await expect(page.getByPlaceholder('e.g. Full Legal Name')).toHaveValue('Test Owner', {
         timeout: 10000,
       });
     } finally {

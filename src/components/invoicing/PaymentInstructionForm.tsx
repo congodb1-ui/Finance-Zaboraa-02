@@ -241,7 +241,7 @@ export const PaymentInstructionForm: React.FC<PaymentInstructionFormProps> = ({
                 {isEditing ? 'Edit Payment Instruction' : 'New Payment Instruction'}
               </h2>
               <p className="text-xs text-slate-500">
-                Account numbers and IBANs are encrypted client-side (AES-256-GCM) before storage.
+                Account numbers and IBANs are AES-256-GCM encrypted on the server before storage.
               </p>
             </div>
           </div>
@@ -323,7 +323,7 @@ export const PaymentInstructionForm: React.FC<PaymentInstructionFormProps> = ({
                 <span>
                   {isEditing && initialData?.account_number_encrypted
                     ? 'Leave blank to preserve existing encrypted number.'
-                    : 'Encrypted before leaving your browser; only last 4 digits stored unmasked.'}
+                    : 'Encrypted on the server (AES-256-GCM); only last 4 digits stored unmasked.'}
                 </span>
               </p>
             </div>

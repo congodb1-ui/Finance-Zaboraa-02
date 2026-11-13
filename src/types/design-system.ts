@@ -1,6 +1,6 @@
 /**
  * Zaboraa Finance — Design System Tokens & Types
- * Product Domain: https://zaboraa.com
+ * Product Domain: https://finance.zaboraa.com
  * Document Version: v2.1.0
  */
 

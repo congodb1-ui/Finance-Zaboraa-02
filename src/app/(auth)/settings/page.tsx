@@ -184,7 +184,7 @@ export default function SettingsPage() {
                 label="Full Legal Name (as per PAN)"
                 value={fullName}
                 onChange={(e) => setFullName(e.target.value)}
-                placeholder="e.g. Wasim Sayyed"
+                placeholder="e.g. Full Legal Name"
                 disabled={isLoadingProfile || isSavingProfile}
               />
 

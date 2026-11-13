@@ -33,25 +33,16 @@ function getCryptoApi(): Crypto {
 }
 
 function getEncryptionKeyFromEnv(): string {
-  const viteEnv =
-    typeof import.meta !== 'undefined' && (import.meta as any).env
-      ? (import.meta as any).env
-      : undefined;
-  const viteKey = viteEnv?.VITE_ENCRYPTION_KEY;
-  if (typeof viteKey === 'string' && viteKey.trim().length > 0) {
-    return viteKey.trim();
-  }
-
   const procKey =
     typeof process !== 'undefined' && process.env
-      ? process.env.VITE_ENCRYPTION_KEY
+      ? process.env.ENCRYPTION_KEY
       : undefined;
   if (typeof procKey === 'string' && procKey.trim().length > 0) {
     return procKey.trim();
   }
 
   throw new Error(
-    'Missing VITE_ENCRYPTION_KEY environment variable. Configure VITE_ENCRYPTION_KEY to encrypt or decrypt sensitive payment details.'
+    'Missing ENCRYPTION_KEY environment variable. Configure ENCRYPTION_KEY on the server to encrypt or decrypt sensitive payment details.'
   );
 }
 
@@ -131,7 +122,7 @@ export async function decryptWithSecret(ciphertextEnvelope: string, secret: stri
     );
     return new TextDecoder().decode(plaintextBuffer);
   } catch {
-    throw new Error('Failed to decrypt sensitive value. Check VITE_ENCRYPTION_KEY.');
+    throw new Error('Failed to decrypt sensitive value. Check ENCRYPTION_KEY.');
   }
 }
 

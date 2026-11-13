@@ -7,3 +7,5 @@ coverage/
 .env*
 !.env.example
 scripts/
+!scripts/rls-verify.ts
+public/assets/aistudio/

@@ -1,7 +1,7 @@
 # Zaboraa Finance — Row-Level Security (RLS) Isolation Test Log
 
 > **Product:** Zaboraa Finance  
-> **Domain:** https://zaboraa.com  
+> **Domain:** https://finance.zaboraa.com  
 > **PRD Version:** v2.1.0  
 > **Batch:** Batch 2 Checkpoint  
 
@@ -11,7 +11,7 @@
 
 - **Date of Test:** 2026-11-12
 - **Test Objective:** Verify complete multi-table tenant isolation under PostgreSQL Row-Level Security (RLS) for single-user accounts, categories, and workspaces.
-- **Tester:** Wasim Sayyed (`wasimssayyed@gmail.com`)
+- **Tester:** Owner Account (`owner@example.com`)
 - **Isolation Scope:** Owner User (`user_id_1`) vs. Unverified Second Google User (`user_id_2`)
 
 ---

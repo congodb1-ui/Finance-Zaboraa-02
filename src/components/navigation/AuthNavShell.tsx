@@ -75,7 +75,7 @@ export const AuthNavShell: React.FC<AuthNavShellProps> = ({
   };
 
   const displayName = user?.full_name || 'Owner';
-  const displayEmail = user?.email || 'wasimssayyed@gmail.com';
+  const displayEmail = user?.email || '';
   const avatarUrl = user?.avatar_url;
 
   return (

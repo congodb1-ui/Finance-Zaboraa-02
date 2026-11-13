@@ -1,12 +1,14 @@
 'use client';
 
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { LandingSkeleton } from '../../components/landing/LandingSkeleton';
-import { useAuth } from '../../lib/auth';
+import { GoogleSignInModal } from '../../components/auth/GoogleSignInModal';
+import { getGoogleClientId, useAuth } from '../../lib/auth';
 
 export default function PublicLandingPage() {
   const { isAuthenticated, isLoading, signInWithGoogle } = useAuth();
+  const [isSignInOpen, setIsSignInOpen] = useState(false);
   const router = useRouter();
 
   // If already authenticated: redirect to /dashboard immediately (no flash)
@@ -19,6 +21,10 @@ export default function PublicLandingPage() {
   }, [isAuthenticated, isLoading, router]);
 
   const handleLoginClick = async () => {
+    if (getGoogleClientId()) {
+      setIsSignInOpen(true);
+      return;
+    }
     try {
       await signInWithGoogle('/dashboard');
     } catch (err) {
@@ -34,5 +40,19 @@ export default function PublicLandingPage() {
     );
   }
 
-  return <LandingSkeleton onLoginClick={handleLoginClick} />;
+  return (
+    <>
+      <LandingSkeleton onLoginClick={handleLoginClick} />
+      <GoogleSignInModal
+        isOpen={isSignInOpen}
+        onClose={() => setIsSignInOpen(false)}
+        onSuccess={() => {
+          setIsSignInOpen(false);
+          if (typeof window !== 'undefined' && router?.push) {
+            router.push('/dashboard');
+          }
+        }}
+      />
+    </>
+  );
 }

@@ -38,3 +38,6 @@ UPDATE invoices SET currency = 'INR' WHERE currency IS NULL;
 
 CREATE INDEX IF NOT EXISTS idx_invoices_client_id ON invoices(client_id);
 CREATE INDEX IF NOT EXISTS idx_invoices_linked_transaction_id ON invoices(linked_transaction_id);
+
+-- Confirm RLS remains enabled after schema extension (idempotent)
+ALTER TABLE invoices ENABLE ROW LEVEL SECURITY;

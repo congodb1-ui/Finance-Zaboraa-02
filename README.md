@@ -1,135 +1,100 @@
 # Zaboraa Finance — Personal Finance & Accounting Portal
 
 > **Product:** Zaboraa Finance  
-> **Domain:** [https://zaboraa.com](https://zaboraa.com)  
-> **PRD Version:** `v2.1.0`  
-> **Current Status:** Batch 2 (Accounts Module, Categories Seed, Workspaces, Nav Shell) Completed
+> **Portal Domain:** [https://finance.zaboraa.com](https://finance.zaboraa.com) *(Public website remains on [https://zaboraa.com](https://zaboraa.com))*  
+> **Architecture:** Vite + React SPA + Express (`server.ts` / `src/server-app.ts`) + Supabase (Data & RLS)  
+> **Current Status:** Batch 11 (Direct Google Identity Services Auth, Debug Banner Removal, `finance.zaboraa.com` Domain Update)
 
 ---
 
-## 1. Project Structure (Next.js 14 App Router)
+## 1. Authentication & Security Flow (`finance.zaboraa.com`)
 
-```
-├── middleware.ts                      # Root Next.js middleware (session refresh & auth routing)
-├── rls-test-log.md                    # RLS re-test verification log (accounts, categories, workspaces)
-├── supabase/
-│   └── migrations/
-│       ├── 20240001000000_extensions.sql       # Core extensions (uuid-ossp, moddatetime, pgcrypto)
-│       ├── 20240002000000_accounts.sql         # Accounts table + constraints + moddatetime trigger
-│       ├── 20240002000001_categories.sql       # Categories table + is_system flag
-│       ├── 20240002000002_workspaces.sql       # Workspaces table (Personal / Business segregation)
-│       ├── 20240002000003_rls_accounts.sql     # 12 RLS policies for complete single-user isolation
-│       ├── 20240002000004_seed_categories.sql  # seed_default_categories(p_user_id) function
-│       └── 20240002000005_on_new_user_trigger.sql # Trigger on auth.users to auto-seed on 1st login
-├── src/
-│   ├── app/
-│   │   ├── (public)/
-│   │   │   └── page.tsx              # Public landing page (unauthenticated, zero financial data)
-│   │   ├── (auth)/
-│   │   │   ├── layout.tsx            # Server Component auth guard + AuthNavShell persistent nav
-│   │   │   ├── dashboard/
-│   │   │   │   └── page.tsx          # Authenticated dashboard shell & session profile
-│   │   │   ├── accounts/
-│   │   │   │   └── page.tsx          # Accounts page (Server/Client data fetching + CRUD)
-│   │   │   └── settings/
-│   │   │       └── page.tsx          # Settings page (Theme toggle, sign out, placeholders)
-│   │   └── api/
-│   │       └── auth/
-│   │           └── callback/
-│   │               └── route.ts      # Supabase OAuth callback handler
-│   ├── lib/
-│   │   ├── auth.ts                   # Google OAuth (signInWithGoogle, signOut, useAuth hook)
-│   │   ├── actions/
-│   │   │   ├── accounts.ts           # Server Actions: getAccounts, createAccount, updateAccount, deleteAccount
-│   │   │   ├── categories.ts         # Server Actions: getCategories, createCategory, updateCategory, deleteCategory
-│   │   │   └── workspaces.ts         # Server Actions: getWorkspaces, createWorkspace, updateWorkspace, deleteWorkspace
-│   │   └── supabase/
-│   │       ├── client.ts             # Browser client (createBrowserClient from @supabase/ssr)
-│   │       ├── server.ts             # Server client (createServerClient from @supabase/ssr with cookies)
-│   │       └── middleware.ts         # Session update & route guard middleware
-│   ├── types/
-│   │   ├── accounts.ts               # Account, AccountType, AccountFormData, AccountWithBalance
-│   │   ├── categories.ts             # Category, CategoryFormData
-│   │   ├── workspaces.ts             # Workspace, WorkspaceFormData
-│   │   ├── auth.ts                   # UserProfile & AuthState derived from Supabase auth.users
-│   │   └── design-system.ts          # Color tokens, 10-color categorical palette, formatINR
-│   ├── components/
-│   │   ├── accounts/
-│   │   │   ├── AccountList.tsx       # Account cards grid, balance summary, filter tabs
-│   │   │   ├── AccountCard.tsx       # Health dot, tabular INR balance, credit card utilization
-│   │   │   ├── AccountForm.tsx       # Create/Edit modal with conditional credit card inputs & color swatches
-│   │   │   └── AccountEmptyState.tsx # Zero-state onboarding card
-│   │   ├── navigation/
-│   │   │   └── AuthNavShell.tsx      # Desktop left sidebar (260px) + mobile bottom tab bar
-│   │   ├── landing/
-│   │   │   └── LandingSkeleton.tsx   # Public hero, 4 core pillars, zero-data promise
-│   │   ├── showcase/
-│   │   │   ├── DesignSystemPlayground.tsx # Batch 0 interactive component tester
-│   │   │   └── DashboardWireframePreview.tsx # Preview wireframe of finance workspace
-│   │   └── ui/                       # Locked Batch 0 UI primitives (Button, Card, Badge, KPI, etc.)
-│   ├── App.tsx                       # Live interactive runner & route simulator
-│   └── index.css                     # Tailwind v4 theme, font-tabular, dark mode tokens
-```
+1. **Direct Google Identity Services (GIS) Login**:
+   - Browser loads `https://accounts.google.com/gsi/client` using `VITE_GOOGLE_CLIENT_ID` (`Zaboraa Finance Portal - Web Client`).
+   - Authorized JavaScript origins: `http://localhost:3000`, `https://finance.zaboraa.com`, `https://zaboraa.com`.
+   - Google consent screen displays **"to continue to finance.zaboraa.com"** (no `supabase.co` OAuth redirect).
+2. **Express Token Verification & Allowlist Check (`POST /api/auth/google`)**:
+   - Express verifies the signed Google ID Token against Google's public JWKS (`https://www.googleapis.com/oauth2/v3/certs`), checks `aud`, `iss`, `exp`, and `email_verified`.
+   - Enforces `ALLOWED_EMAILS` before creating or issuing any session. Unallowlisted emails receive `403 Forbidden`.
+3. **Supabase Data & RLS Session**:
+   - Express creates/locates the user in Supabase Auth via `SUPABASE_SERVICE_ROLE_KEY` and exchanges a one-time verification token for a standard Supabase session (`access_token` + `refresh_token`).
+   - All PostgreSQL tables, storage buckets, and Row-Level Security (`auth.uid() = user_id`) isolate each user's financial vault.
 
 ---
 
-## 2. Batch 2 Deliverables Summary
+## 2. Environment Variables (`.env`)
 
-1. **Database Schema & Migrations (`supabase/migrations/`)**:
-   - `accounts`: UUID primary key, `account_type` check constraint, `account_number_last4` (last 4 digits only), `credit_limit`, `billing_cycle_day`, `payment_due_day`, `color_index` (0-9), and `moddatetime` trigger.
-   - `categories`: `is_income`, `is_system` (cannot be deleted if true), `color_index`, `icon`.
-   - `workspaces`: Personal and Business workspace segregation.
-   - `rls_accounts`: 12 strict RLS policies ensuring only `auth.uid() = user_id` can access records.
-   - `seed_default_categories`: SQL function inserting 20 default expense categories and 7 default income categories.
-   - `on_new_user_trigger`: PostgreSQL trigger on `auth.users` to automatically seed categories and workspaces upon first login.
-
-2. **Server Actions (`src/lib/actions/`)**:
-   - `accounts.ts`: `getAccounts`, `createAccount`, `updateAccount`, `deleteAccount` (blocks delete if transactions exist), `toggleAccountActive`.
-   - `categories.ts`: `getCategories`, `createCategory`, `updateCategory`, `deleteCategory` (blocks delete if `is_system = true`).
-   - `workspaces.ts`: `getWorkspaces`, `createWorkspace`, `updateWorkspace`, `deleteWorkspace`.
-   - All server actions authenticate `supabase.auth.getUser()`, enforce input validations, and never expose raw database errors.
-
-3. **Accounts UI & Components (`src/components/accounts/`)**:
-   - `AccountCard`: Displays bank name, nickname, masked account number (`•••• 4321`), `AccountHealthDot` (green `<7d`, yellow `7–30d`, red `>30d`, gray for never imported), tabular INR balance, credit limit utilization bar for credit cards, and status tags. Inactive accounts render at `opacity-50` with an "Inactive" badge.
-   - `AccountForm`: Full create & edit modal with validation for required fields, numeric 4-digit restriction for account numbers, conditional credit card fields, and 10 categorical color swatches.
-   - `AccountEmptyState`: Clean empty state guiding the user to register their first account.
-
-4. **Persistent Navigation Shell (`src/components/navigation/AuthNavShell.tsx`)**:
-   - Persistent 260px left sidebar on desktop; bottom navigation tab bar on mobile.
-   - Nav items: Dashboard, Accounts, Statements, Transactions, Reports, Settings.
-   - Indigo `#4F46E5` active state indicator.
-   - Displays user profile avatar, name, and email at sidebar bottom with a direct Sign out button.
-
-5. **Settings Page (`src/app/(auth)/settings/page.tsx`)**:
-   - Theme toggle wired to `ThemeToggle` (persisted in local storage).
-   - Sign out button wired to `signOut()`.
-   - Placeholder sections for future features (Account Security, Data & Encrypted Backups, Notifications).
-
----
-
-## 3. Batch 2 Test Checklist
-
-- [x] **/accounts page loads and shows empty state for a new user**: Verified via `AccountEmptyState`.
-- [x] **Create account form validates required fields and rejects invalid data**: Rejects missing name/bank, enforces 4 numeric digits for last4, and validates 1-31 billing/due days.
-- [x] **Created account appears in list with correct badge, health dot**: Correctly maps account type label and shows health status dot.
-- [x] **Credit card fields appear only when `account_type = 'credit_card'`**: Form conditionally toggles credit limit, billing cycle day, and payment due day.
-- [x] **Edit account pre-fills form with existing data**: Successfully updates existing account records.
-- [x] **Delete account blocked if transactions exist**: Graceful error handling in server action and UI banner.
-- [x] **Inactive account shows at reduced opacity with "Inactive" badge**: Verified in `AccountCard.tsx` (`opacity-50` and uppercase badge).
-- [x] **Navigation sidebar renders on desktop; bottom tabs on mobile**: Verified via responsive `AuthNavShell`.
-- [x] **Dark mode works on `/accounts` and `/settings`**: All cards and text tokens use `dark:` pairs.
-- [x] **RLS isolation tested**: Documented in `rls-test-log.md` (second `auth.uid()` returns 0 rows).
-- [x] **No TypeScript errors (`tsc --noEmit` clean)**: Verified clean.
-- [x] **No Build/Lint errors**: `vite build` and `npm run lint` pass.
-
----
-
-## 4. Ready for Next Batch
-
-Commit to GitHub:
 ```bash
-git add .
-git commit -m "feat(batch-2): accounts module, categories seed, workspaces, nav shell"
+ALLOWED_EMAILS=your-email@gmail.com
+GEMINI_API_KEY=your-gemini-api-key
+VITE_APP_URL=https://finance.zaboraa.com
+NEXT_PUBLIC_APP_URL=https://finance.zaboraa.com
+VITE_GOOGLE_CLIENT_ID=your-google-web-client-id.apps.googleusercontent.com
+GOOGLE_CLIENT_ID=your-google-web-client-id.apps.googleusercontent.com
+VITE_SUPABASE_URL=https://your-project-ref.supabase.co
+VITE_SUPABASE_ANON_KEY=your-supabase-anon-key
+NEXT_PUBLIC_SUPABASE_URL=https://your-project-ref.supabase.co
+NEXT_PUBLIC_SUPABASE_ANON_KEY=your-supabase-anon-key
+SUPABASE_SERVICE_ROLE_KEY=your-supabase-service-role-key
+# SERVER-ONLY — 32+ chars random string, never use VITE_ prefix
+ENCRYPTION_KEY=your-32-byte-encryption-key
 ```
 
-Next batch prompt: **Batch 3a: Statement Upload for CSV/XLSX only (Storage RLS, header extraction, account matching, hash dedup, review screen, generic CSV mapping wizard)**.
+---
+
+## 3. Domain & Deployment Checklist (`finance.zaboraa.com`)
+
+- **Vercel / Hosting**:
+  - Custom domain: `finance.zaboraa.com` (HTTPS enforced).
+  - Set `VITE_APP_URL=https://finance.zaboraa.com` and `NEXT_PUBLIC_APP_URL=https://finance.zaboraa.com` in production environment variables.
+  - Keep `zaboraa.com` pointed to the separate public website.
+- **Supabase Auth Settings**:
+  - Site URL: `https://finance.zaboraa.com`
+  - Redirect URLs: `https://finance.zaboraa.com/**`, `http://localhost:3000/**`
+- **Google Cloud Console (Web Client)**:
+  - Authorized JavaScript origins: `http://localhost:3000`, `https://finance.zaboraa.com`, `https://zaboraa.com`
+
+---
+
+## 4. Key Project Structure
+
+```text
+├── server.ts                         # Express + Vite runtime entrypoint (port 3000)
+├── index.html                        # SPA entry + Google Identity Services script
+├── .env.example                      # Environment variable template
+├── supabase/migrations/              # PostgreSQL schema, triggers, storage & RLS policies
+└── src/
+    ├── App.tsx                       # SPA router, Auth Guard, Idle Logout, GIS Sign-In Modal
+    ├── server-app.ts                 # Express API routes (/api/auth/google, /api/ai/*, /api/upload*, /api/export, /api/backup)
+    ├── lib/
+    │   ├── auth.ts                   # Direct GIS exchangeGoogleIdToken, signOut, useAuth hook
+    │   ├── google-gis.ts             # Browser Google Identity Services loader
+    │   ├── google-auth-server.ts     # Server-side Google ID Token JWKS RS256 verifier
+    │   ├── api-client.ts             # Authenticated fetch wrapper attaching Supabase Bearer JWT
+    │   ├── actions/                  # Supabase CRUD actions (accounts, transactions, invoicing v2, budgets, rules, etc.)
+    │   ├── ai/                       # PII masking + Gemini Flash/Pro AI features
+    │   └── parsers/                  # CSV, XLSX, HDFC PDF, Generic PDF parsers
+    ├── components/                   # AuthNavShell, GoogleSignInModal, Accounts, Invoices v2, Clients, Reports, UI primitives
+    └── app/(auth)/                   # Protected pages (Dashboard, Accounts, Transactions, Upload, Rules, Reports, AI, Settings)
+```
+
+---
+
+## 5. Build & Verification Commands
+
+```bash
+npm install
+npm run lint     # tsc --noEmit
+npm run build    # vite build
+npm run dev      # Express + Vite dev server on http://localhost:3000
+```
+
+---
+
+## 6. Testing
+
+Run cross-user Row-Level Security (RLS) isolation verification across all 13 Batch 3–10 tables using two Supabase user access tokens:
+
+```bash
+RLS_USER1_TOKEN=eyJ... RLS_USER2_TOKEN=eyJ... npx tsx scripts/rls-verify.ts
+```

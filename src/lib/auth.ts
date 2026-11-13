@@ -1,83 +1,102 @@
 import { useEffect, useState, useCallback } from 'react';
 import { supabase } from './supabase/client';
+import { disableGoogleAutoSelect } from './google-gis';
 import { mapSupabaseUserToProfile, type UserProfile, type AuthState } from '../types/auth';
 
-export const DEMO_USER_PROFILE: UserProfile = {
-  id: 'usr_01j7bf93a8e9_demo',
-  email: 'wasimssayyed@gmail.com',
-  full_name: 'Wasim Sayyed',
-  avatar_url: null,
-  created_at: '2024-01-01T00:00:00.000Z',
-};
+export function getGoogleClientId(): string {
+  const fromVite =
+    typeof import.meta !== 'undefined' ? (import.meta as any).env?.VITE_GOOGLE_CLIENT_ID : '';
+  const fromProcess =
+    typeof process !== 'undefined' ? process.env?.VITE_GOOGLE_CLIENT_ID : '';
+  return String(fromVite || fromProcess || '').trim();
+}
 
-const PREVIEW_SESSION_KEY = 'zaboraa_preview_session';
-
-/**
- * Initiates Google OAuth login via Supabase Auth
- * Falls back to demo session when Supabase credentials are placeholder/offline.
- */
-export async function signInWithGoogle(redirectTo?: string) {
+export function isSupabasePlaceholder(): boolean {
   const configuredUrl =
     (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_SUPABASE_URL) ||
     (typeof process !== 'undefined' ? process.env?.NEXT_PUBLIC_SUPABASE_URL : undefined);
+  return !configuredUrl || String(configuredUrl).includes('placeholder');
+}
 
-  const isPlaceholder = !configuredUrl || configuredUrl.includes('placeholder');
-
-  if (isPlaceholder) {
-    if (typeof window !== 'undefined') {
-      localStorage.setItem(PREVIEW_SESSION_KEY, 'true');
-      window.dispatchEvent(new Event('auth-state-change'));
-    }
-    return { provider: 'google', url: null };
+export function getAppBaseUrl(): string {
+  if (typeof window !== 'undefined') {
+    return window.location.origin;
   }
-
-  try {
-    const origin =
-      typeof window !== 'undefined'
-        ? window.location.origin
-        : (typeof process !== 'undefined' ? process.env?.NEXT_PUBLIC_APP_URL : undefined) ||
-          'https://zaboraa.com';
-
-    // Express SPA mode handles Supabase PKCE OAuth callbacks client-side via Supabase JS
-    const targetRedirect = redirectTo || `${origin}/#dashboard`;
-
-    const { data, error } = await supabase.auth.signInWithOAuth({
-      provider: 'google',
-      options: {
-        redirectTo: targetRedirect,
-        queryParams: {
-          access_type: 'offline',
-          prompt: 'consent',
-        },
-      },
-    });
-
-    if (error) {
-      console.warn('Supabase OAuth error, activating preview session:', error.message);
-      if (typeof window !== 'undefined') {
-        localStorage.setItem(PREVIEW_SESSION_KEY, 'true');
-        window.dispatchEvent(new Event('auth-state-change'));
-      }
-      return { provider: 'google', url: null };
-    }
-
-    return data;
-  } catch (err) {
-    console.warn('OAuth initialization failed, activating preview session:', err);
-    if (typeof window !== 'undefined') {
-      localStorage.setItem(PREVIEW_SESSION_KEY, 'true');
-      window.dispatchEvent(new Event('auth-state-change'));
-    }
-    return { provider: 'google', url: null };
-  }
+  const viteUrl =
+    typeof import.meta !== 'undefined' ? (import.meta as any).env?.VITE_APP_URL : '';
+  const procUrl =
+    typeof process !== 'undefined'
+      ? process.env?.VITE_APP_URL || process.env?.NEXT_PUBLIC_APP_URL
+      : '';
+  return String(viteUrl || procUrl || 'https://finance.zaboraa.com');
 }
 
 /**
- * Signs the user out, clears session, and redirects to landing page
+ * Exchanges a Google Identity Services ID token with Express (/api/auth/google).
+ * Express verifies the Google ID Token, checks ALLOWED_EMAILS, and returns a Supabase session.
+ */
+export async function exchangeGoogleIdToken(credential: string) {
+  const res = await fetch('/api/auth/google', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+    },
+    body: JSON.stringify({ credential }),
+  });
+
+  const payload = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    disableGoogleAutoSelect();
+    throw new Error(payload?.error || `Sign-in failed with status ${res.status}`);
+  }
+
+  const accessToken = payload?.session?.access_token;
+  const refreshToken = payload?.session?.refresh_token;
+  if (!accessToken || !refreshToken) {
+    throw new Error('Server did not return a valid Supabase session.');
+  }
+
+  const { data, error } = await supabase.auth.setSession({
+    access_token: accessToken,
+    refresh_token: refreshToken,
+  });
+
+  if (error) {
+    throw new Error(error.message || 'Failed to activate Supabase session.');
+  }
+
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new Event('auth-state-change'));
+  }
+
+  return data.user;
+}
+
+/**
+ * Direct Google login entry point.
+ * Always requires VITE_GOOGLE_CLIENT_ID — no preview bypass is permitted.
+ */
+export async function signInWithGoogle(_redirectTo?: string) {
+  const clientId = getGoogleClientId();
+
+  if (!clientId) {
+    throw new Error(
+      'VITE_GOOGLE_CLIENT_ID is not configured. Please add your Google OAuth Web Client ID.'
+    );
+  }
+
+  return { provider: 'google', mode: 'gis', clientId };
+}
+
+/**
+ * Signs the user out, clears Supabase + GIS state, and redirects to landing page
  */
 export async function signOut(redirectTo: string = '/') {
+  disableGoogleAutoSelect();
+
   if (typeof window !== 'undefined') {
-    localStorage.removeItem(PREVIEW_SESSION_KEY);
+    localStorage.removeItem('zaboraa_preview_session');
     window.dispatchEvent(new Event('auth-state-change'));
   }
 
@@ -103,15 +122,11 @@ export async function signOut(redirectTo: string = '/') {
  */
 export function useAuth(): AuthState & {
   signInWithGoogle: (redirectTo?: string) => Promise<any>;
+  exchangeGoogleIdToken: (credential: string) => Promise<any>;
   signOut: (redirectTo?: string) => Promise<void>;
   refreshSession: () => Promise<void>;
 } {
-  const [user, setUser] = useState<UserProfile | null>(() => {
-    if (typeof window !== 'undefined' && localStorage.getItem(PREVIEW_SESSION_KEY) === 'true') {
-      return DEMO_USER_PROFILE;
-    }
-    return null;
-  });
+  const [user, setUser] = useState<UserProfile | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
 
   const refreshSession = useCallback(async () => {
@@ -129,25 +144,18 @@ export function useAuth(): AuthState & {
       // Supabase is offline or unconfigured
     }
 
-    if (typeof window !== 'undefined' && localStorage.getItem(PREVIEW_SESSION_KEY) === 'true') {
-      setUser(DEMO_USER_PROFILE);
-    } else {
-      setUser(null);
-    }
+    setUser(null);
     setIsLoading(false);
   }, []);
 
   useEffect(() => {
     refreshSession();
 
-    // Listen to real-time auth changes (sign in, token refresh, sign out)
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((_event, session) => {
       if (session?.user) {
         setUser(mapSupabaseUserToProfile(session.user));
-      } else if (typeof window !== 'undefined' && localStorage.getItem(PREVIEW_SESSION_KEY) === 'true') {
-        setUser(DEMO_USER_PROFILE);
       } else {
         setUser(null);
       }
@@ -172,6 +180,7 @@ export function useAuth(): AuthState & {
     isLoading,
     isAuthenticated: !!user,
     signInWithGoogle,
+    exchangeGoogleIdToken,
     signOut,
     refreshSession,
   };

@@ -10,15 +10,11 @@ import { TaxProvisionCard } from '../../../components/dashboard/TaxProvisionCard
 import { ExportButtons } from '../../../components/reports/ExportButtons';
 import { getDashboardMetrics } from '../../../lib/actions/transactions';
 import { getAccounts } from '../../../lib/actions/accounts';
-import { getInvoicesV2 } from '../../../lib/actions/invoicesV2';
-import { createClient as createSupabaseClient } from '../../../lib/supabase/client';
 import type { AccountWithBalance } from '../../../types/accounts';
-import type { InvoiceV2 } from '../../../types/invoicing';
 import { AnomalyBanner } from '../../../components/ai/AnomalyBanner';
 import { MonthlyReport } from '../../../components/ai/MonthlyReport';
 import { BudgetHealthRow } from '../../../components/dashboard/BudgetHealthRow';
 import { UpcomingRecurringWidget } from '../../../components/dashboard/UpcomingRecurringWidget';
-import { PendingClientInvoicesCard } from '../../../components/dashboard/PendingClientInvoicesCard';
 import { Button } from '../../../components/ui/Button';
 import { useUserPreferences } from '../../../lib/contexts/UserPreferencesContext';
 import {
@@ -64,7 +60,6 @@ export default function DashboardPage() {
 
   const [metrics, setMetrics] = useState<any>(null);
   const [accounts, setAccounts] = useState<AccountWithBalance[]>([]);
-  const [invoices, setInvoices] = useState<InvoiceV2[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
   // Persist filter changes
@@ -89,15 +84,12 @@ export default function DashboardPage() {
     setIsLoading(true);
     try {
       const dates = getFYDates(filters.fy);
-      const supabase = createSupabaseClient();
-      const [m, accs, invs] = await Promise.all([
+      const [m, accs] = await Promise.all([
         getDashboardMetrics(dates, filters.workspace),
         getAccounts(),
-        getInvoicesV2(supabase).catch(() => [] as InvoiceV2[]),
       ]);
       setMetrics(m);
       setAccounts(accs);
-      setInvoices(invs);
     } catch (err) {
       console.error('Failed to load dashboard metrics:', err);
     } finally {
@@ -238,11 +230,8 @@ export default function DashboardPage() {
           />
         </div>
 
-        {/* Compact Budget Health Row (Batch 7) */}
+        {/* Compact Budget Health Row */}
         <BudgetHealthRow />
-
-        {/* Pending Client Invoices KPI Card (Batch 10H) */}
-        <PendingClientInvoicesCard invoices={invoices} isLoading={isLoading} />
 
         {/* Row 2: Cashflow Summary Card (Full width or Two Column) */}
         <CashflowSummaryCard
@@ -260,7 +249,7 @@ export default function DashboardPage() {
             onSelectCategory={handleNavigateToTransactionsWithCategory}
           />
 
-          {/* Upcoming Recurring Bills Widget (Batch 7) */}
+          {/* Upcoming Recurring Bills Widget */}
           <UpcomingRecurringWidget />
         </div>
 

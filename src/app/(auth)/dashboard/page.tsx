@@ -230,7 +230,7 @@ export default function DashboardPage() {
           />
         </div>
 
-        {/* Compact Budget Health Row (Batch 7) */}
+        {/* Compact Budget Health Row */}
         <BudgetHealthRow />
 
         {/* Row 2: Cashflow Summary Card (Full width or Two Column) */}
@@ -249,7 +249,7 @@ export default function DashboardPage() {
             onSelectCategory={handleNavigateToTransactionsWithCategory}
           />
 
-          {/* Upcoming Recurring Bills Widget (Batch 7) */}
+          {/* Upcoming Recurring Bills Widget */}
           <UpcomingRecurringWidget />
         </div>
 

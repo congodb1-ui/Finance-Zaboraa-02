@@ -11,7 +11,9 @@ export function isAIError(res: any): res is AIError {
 }
 
 export const GEMINI_MODELS = {
+  // TODO: Verify against https://ai.google.dev/gemini-api/docs/models before Go-Live
   FLASH: 'gemini-2.5-flash',
+  // TODO: Verify against https://ai.google.dev/gemini-api/docs/models before Go-Live
   PRO: 'gemini-2.5-pro',
 } as const;
 

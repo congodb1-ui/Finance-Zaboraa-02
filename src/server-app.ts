@@ -37,6 +37,13 @@ import { parsePDFHDFC, isHDFCStatement } from './lib/parsers/pdf-hdfc';
 import { parsePDFGeneric } from './lib/parsers/pdf-generic';
 import { getCurrentFY, getFYBounds } from './lib/fy-utils';
 import { writeAuditLog } from './lib/audit';
+import { verifyGoogleIdToken } from './lib/google-auth-server';
+import { getPaymentInstruction } from './lib/actions/paymentInstructions';
+import {
+  createPaymentInstructionServer,
+  updatePaymentInstructionServer,
+  decryptPaymentInstructionServer,
+} from './lib/actions/paymentInstructionsServer';
 import type { Transaction } from './types/transactions';
 import type { ColumnMapping, ParseResult } from './types/uploads';
 
@@ -208,10 +215,141 @@ export async function runServer() {
   app.use('/api', apiLimiter);
   app.use('/api/ai', aiLimiter);
 
-  // Note on GET /api/auth/callback:
-  // In Express SPA mode, Supabase OAuth (PKCE) callbacks are handled client-side by
-  // @supabase/ssr / supabase-js when redirected to `${window.location.origin}/#dashboard`.
-  // No server-side Next.js callback handler is needed here.
+  // --- Direct Google Identity Services Auth Endpoint (finance.zaboraa.com) ---
+  // Flow: Browser GIS ID token -> Express verifies token + ALLOWED_EMAILS -> creates Supabase session
+  app.post('/api/auth/google', async (req: Request, res: Response) => {
+    try {
+      const credential =
+        typeof req.body?.credential === 'string' ? req.body.credential.trim() : '';
+
+      if (!credential) {
+        return res.status(400).json({ error: 'Missing Google ID token credential.' });
+      }
+
+      const googleClientId = (
+        process.env.GOOGLE_CLIENT_ID ||
+        process.env.VITE_GOOGLE_CLIENT_ID ||
+        ''
+      ).trim();
+
+      if (!googleClientId) {
+        return res.status(500).json({
+          error: 'Google Client ID (VITE_GOOGLE_CLIENT_ID) is not configured on the server.',
+        });
+      }
+
+      if (
+        !SUPABASE_URL ||
+        SUPABASE_URL.includes('placeholder') ||
+        !SUPABASE_ANON_KEY ||
+        SUPABASE_ANON_KEY.includes('placeholder')
+      ) {
+        return res.status(500).json({
+          error: 'Supabase URL and anon key are not configured on the server.',
+        });
+      }
+
+      let verifiedUser;
+      try {
+        verifiedUser = await verifyGoogleIdToken(credential, googleClientId);
+      } catch (verifyErr: any) {
+        console.warn('Google ID token verification failed:', verifyErr?.message);
+        return res.status(401).json({
+          error: 'Invalid or expired Google sign-in token. Please try again.',
+        });
+      }
+
+      const allowedRaw = process.env.ALLOWED_EMAILS || '';
+      const allowedEmails = allowedRaw
+        .split(',')
+        .map((e) => e.trim().toLowerCase())
+        .filter(Boolean);
+
+      if (allowedEmails.length > 0 && !allowedEmails.includes(verifiedUser.email)) {
+        return res.status(403).json({
+          error: 'Your Google account is not on the allow list for this app.',
+        });
+      }
+
+      const serviceSupabase = getServiceSupabase();
+      if (!serviceSupabase) {
+        return res.status(500).json({
+          error: 'SUPABASE_SERVICE_ROLE_KEY is required on the server to issue sessions.',
+        });
+      }
+
+      const { data: linkData, error: linkError } = await serviceSupabase.auth.admin.generateLink({
+        type: 'magiclink',
+        email: verifiedUser.email,
+        options: {
+          data: {
+            full_name: verifiedUser.fullName || undefined,
+            avatar_url: verifiedUser.avatarUrl || undefined,
+            name: verifiedUser.fullName || undefined,
+            picture: verifiedUser.avatarUrl || undefined,
+          },
+        },
+      });
+
+      if (linkError || !linkData?.properties?.hashed_token) {
+        console.error('Supabase generateLink failed:', linkError?.message);
+        return res.status(500).json({ error: 'Failed to create Supabase user session.' });
+      }
+
+      if (linkData.user?.id && (verifiedUser.fullName || verifiedUser.avatarUrl)) {
+        const existingMeta = (linkData.user.user_metadata || {}) as Record<string, any>;
+        const needsUpdate =
+          (verifiedUser.fullName && existingMeta.full_name !== verifiedUser.fullName) ||
+          (verifiedUser.avatarUrl && existingMeta.avatar_url !== verifiedUser.avatarUrl);
+
+        if (needsUpdate) {
+          await serviceSupabase.auth.admin
+            .updateUserById(linkData.user.id, {
+              user_metadata: {
+                ...existingMeta,
+                full_name: verifiedUser.fullName || existingMeta.full_name,
+                avatar_url: verifiedUser.avatarUrl || existingMeta.avatar_url,
+                name: verifiedUser.fullName || existingMeta.name,
+                picture: verifiedUser.avatarUrl || existingMeta.picture,
+              },
+            })
+            .catch(() => {});
+        }
+      }
+
+      const anonClient = createSupabaseClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+        auth: {
+          persistSession: false,
+          autoRefreshToken: false,
+          detectSessionInUrl: false,
+        },
+      });
+
+      const { data: otpData, error: otpError } = await anonClient.auth.verifyOtp({
+        token_hash: linkData.properties.hashed_token,
+        type: 'magiclink',
+      });
+
+      if (otpError || !otpData?.session) {
+        console.error('Supabase verifyOtp failed:', otpError?.message);
+        return res.status(500).json({ error: 'Failed to exchange token for Supabase session.' });
+      }
+
+      return res.json({
+        session: {
+          access_token: otpData.session.access_token,
+          refresh_token: otpData.session.refresh_token,
+          expires_in: otpData.session.expires_in,
+          expires_at: otpData.session.expires_at,
+          token_type: otpData.session.token_type,
+        },
+        user: otpData.user,
+      });
+    } catch (err) {
+      console.error('Google auth route error:', err);
+      return res.status(500).json({ error: 'Authentication failed. Please try again.' });
+    }
+  });
 
   // --- Protected API Routes ---
 
@@ -1001,6 +1139,80 @@ export async function runServer() {
       res.status(500).json({ error: 'Failed to assemble backup data.' });
     }
   });
+
+  // 11. Bank & Payment Instructions (Server-Side AES-256-GCM Encryption via ENCRYPTION_KEY)
+  app.post(
+    '/api/payment-instructions',
+    requireAuth,
+    async (req: AuthenticatedRequest, res: Response) => {
+      try {
+        const created = await createPaymentInstructionServer(
+          req.supabase,
+          req.user!.id,
+          req.body || {}
+        );
+        return res.json(created);
+      } catch (err: any) {
+        const message = err?.message || 'Failed to create payment instruction.';
+        const isValidation =
+          message.includes('required') || message.includes('3-letter ISO code');
+        console.error('Create payment instruction error:', message);
+        return res.status(isValidation ? 400 : 500).json({ error: message });
+      }
+    }
+  );
+
+  app.patch(
+    '/api/payment-instructions/:id',
+    requireAuth,
+    async (req: AuthenticatedRequest, res: Response) => {
+      try {
+        const id = req.params.id;
+        if (!id) {
+          return res.status(400).json({ error: 'Payment instruction id is required.' });
+        }
+        const updated = await updatePaymentInstructionServer(
+          req.supabase,
+          req.user!.id,
+          id,
+          req.body || {}
+        );
+        return res.json(updated);
+      } catch (err: any) {
+        const message = err?.message || 'Failed to update payment instruction.';
+        const status = message.includes('not found')
+          ? 404
+          : message.includes('required') || message.includes('3-letter ISO code')
+          ? 400
+          : 500;
+        console.error('Update payment instruction error:', message);
+        return res.status(status).json({ error: message });
+      }
+    }
+  );
+
+  app.post(
+    '/api/payment-instructions/:id/reveal',
+    requireAuth,
+    async (req: AuthenticatedRequest, res: Response) => {
+      try {
+        const id = req.params.id;
+        if (!id) {
+          return res.status(400).json({ error: 'Payment instruction id is required.' });
+        }
+        const instruction = await getPaymentInstruction(req.supabase, id);
+        if (!instruction) {
+          return res.status(404).json({ error: 'Payment instruction not found.' });
+        }
+        const decrypted = await decryptPaymentInstructionServer(instruction);
+        return res.json(decrypted);
+      } catch (err: any) {
+        const message = err?.message || 'Failed to decrypt payment instruction.';
+        console.error('Reveal payment instruction error:', message);
+        return res.status(500).json({ error: message });
+      }
+    }
+  );
 
   // --- Frontend Serving (Vite dev middleware or Static dist) ---
   if (process.env.NODE_ENV === 'production') {

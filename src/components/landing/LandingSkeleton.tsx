@@ -38,7 +38,7 @@ export const LandingSkeleton: React.FC<LandingSkeletonProps> = ({ onLoginClick }
       <header className="sticky top-0 z-40 w-full bg-white/80 dark:bg-[#0B1120]/80 backdrop-blur-md border-b border-slate-200 dark:border-slate-800">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-8">
           {/* Zone 1: Brand Wordmark (Single text element) */}
-          <a href="https://zaboraa.com" className="focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 rounded-md">
+          <a href="https://finance.zaboraa.com" className="focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 rounded-md">
             <ZaboraaWordmark size="md" />
           </a>
 
@@ -99,10 +99,9 @@ export const LandingSkeleton: React.FC<LandingSkeletonProps> = ({ onLoginClick }
           <div className="flex items-start gap-3">
             <Lock className="w-5 h-5 text-indigo-400 mt-0.5 shrink-0" />
             <div className="text-xs">
-              <p className="font-semibold text-sm">Batch 0: Design System Preview</p>
+              <p className="font-semibold text-sm">Private Portal Authentication</p>
               <p className="text-slate-300 mt-1">
-                Supabase Google OAuth authentication and private routes will be wired in Batch 1.
-                The public portal shows zero financial data per PRD Section 2.
+                Configure VITE_GOOGLE_CLIENT_ID to enable direct Google Identity Services sign-in for finance.zaboraa.com.
               </p>
             </div>
           </div>
@@ -283,7 +282,7 @@ export const LandingSkeleton: React.FC<LandingSkeletonProps> = ({ onLoginClick }
                   </div>
                   <div>
                     <h4 className="text-sm font-semibold text-slate-900 dark:text-white">
-                      Google OAuth + Allowlist Enforcement
+                      Direct Google Identity + Allowlist Enforcement
                     </h4>
                     <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
                       Only allowlisted owner emails can view records. Strangers see an unauthorized rejection state.
@@ -325,7 +324,7 @@ export const LandingSkeleton: React.FC<LandingSkeletonProps> = ({ onLoginClick }
             <Card className="p-6 bg-slate-900 text-white border-slate-800">
               <div className="flex items-center justify-between pb-4 border-b border-slate-800 text-xs">
                 <span className="font-heading font-bold text-indigo-400">Zaboraa Finance Pipeline</span>
-                <span className="font-tabular text-slate-400">Domain: zaboraa.com</span>
+                <span className="font-tabular text-slate-400">Domain: finance.zaboraa.com</span>
               </div>
               <div className="mt-5 space-y-3 font-mono text-xs">
                 <div className="p-3 rounded-lg bg-slate-800/80 border border-slate-700">
@@ -364,7 +363,7 @@ export const LandingSkeleton: React.FC<LandingSkeletonProps> = ({ onLoginClick }
           <div className="flex items-center gap-3">
             <ZaboraaWordmark size="sm" />
             <span className="hidden sm:inline text-slate-300 dark:text-slate-700">|</span>
-            <span>https://zaboraa.com</span>
+            <span>https://finance.zaboraa.com</span>
           </div>
           <div className="flex items-center gap-6">
             <span>India FY: April–March</span>

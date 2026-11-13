@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { useAuth, signInWithGoogle, signOut } from './lib/auth';
+import { useAuth, signInWithGoogle, signOut, getGoogleClientId } from './lib/auth';
 import { LandingSkeleton } from './components/landing/LandingSkeleton';
 import DashboardPlaceholderPage from './app/(auth)/dashboard/page';
 import AccountsPage from './app/(auth)/accounts/page';
@@ -22,35 +22,14 @@ import { getInvoiceV2, updateInvoiceV2 } from './lib/actions/invoicesV2';
 import type { InvoiceV2, InvoiceV2FormData } from './types/invoicing';
 import { useIdleLogout } from './hooks/useIdleLogout';
 import { IdleWarningModal } from './components/auth/IdleWarningModal';
+import { GoogleSignInModal } from './components/auth/GoogleSignInModal';
 import { AuthNavShell } from './components/navigation/AuthNavShell';
 import { DesignSystemPlayground } from './components/showcase/DesignSystemPlayground';
-import { ThemeToggle } from './components/ui/ThemeToggle';
-import { ZaboraaLogoIcon } from './components/ui/ZaboraaLogoIcon';
 import { UserPreferencesProvider } from './lib/contexts/UserPreferencesContext';
-import {
-  ShieldCheck,
-  Lock,
-  LogOut,
-  UserCheck,
-  CheckCircle2,
-  ExternalLink,
-  Layers,
-  Building2,
-  LayoutDashboard,
-  Upload,
-  Receipt,
-  Repeat,
-  Target,
-  Sliders,
-  FileSpreadsheet,
-  Settings,
-  Sparkles,
-  FileText,
-  Users,
-} from 'lucide-react';
+import { ShieldCheck } from 'lucide-react';
 
 export default function App() {
-  const { user, isAuthenticated, isLoading } = useAuth();
+  const { isAuthenticated, isLoading } = useAuth();
   const [currentRoute, setCurrentRoute] = useState<
     '/' | '/dashboard' | '/accounts' | '/account-detail' | '/upload' | '/transactions' | '/invoices' | '/invoice-view' | '/invoice-edit' | '/clients' | '/recurring' | '/budgets' | '/rules' | '/reports' | '/ai' | '/settings' | '/settings/ai' | '/playground'
   >('/');
@@ -59,6 +38,7 @@ export default function App() {
   const [editDraftInvoice, setEditDraftInvoice] = useState<InvoiceV2 | null>(null);
   const [editSaving, setEditSaving] = useState(false);
   const [authNotice, setAuthNotice] = useState<string | null>(null);
+  const [isGoogleSignInOpen, setIsGoogleSignInOpen] = useState(false);
 
   // 30-min idle auto-logout with 25-min warning
   const {
@@ -247,260 +227,22 @@ export default function App() {
   };
 
   const handleLogin = async () => {
-    try {
-      await signInWithGoogle(`${window.location.origin}/dashboard`);
-      setCurrentRoute('/dashboard');
-      window.location.hash = 'dashboard';
-      setAuthNotice('Authenticated as vault owner (wasimssayyed@gmail.com)');
-      setTimeout(() => setAuthNotice(null), 4000);
-    } catch {
-      setAuthNotice('Authenticated session active for preview.');
-      setTimeout(() => setAuthNotice(null), 4000);
-      setCurrentRoute('/dashboard');
-      window.location.hash = 'dashboard';
+    if (getGoogleClientId()) {
+      setIsGoogleSignInOpen(true);
+      return;
     }
-  };
 
-  const handleSignOut = async () => {
-    await signOut('/');
-    setCurrentRoute('/');
-    window.location.hash = '';
-    setAuthNotice('Signed out. Session cleared and redirected to /');
-    setTimeout(() => setAuthNotice(null), 4000);
+    try {
+      await signInWithGoogle();
+    } catch (err: any) {
+      setAuthNotice(err?.message || 'Unable to initiate Google sign-in.');
+      setTimeout(() => setAuthNotice(null), 5000);
+    }
   };
 
   return (
     <UserPreferencesProvider isAuthenticated={isAuthenticated}>
       <div className="min-h-screen bg-slate-50 dark:bg-[#0B1120] text-slate-900 dark:text-slate-100 flex flex-col font-sans transition-colors">
-      {/* Batch 6 Navigation & Auth Status Bar (hidden on print-optimized /invoices/:id page) */}
-      {currentRoute !== '/invoice-view' && (
-      <div className="screen-only bg-slate-900 text-slate-200 border-b border-slate-800 text-xs py-2 px-4 sticky top-0 z-50">
-        <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-3">
-          {/* Brand & Batch Identifier */}
-          <div className="flex items-center gap-2.5">
-            <ZaboraaLogoIcon size={24} />
-            <span className="font-heading font-bold text-white tracking-tight">
-              Zaboraa Finance
-            </span>
-            <span className="text-slate-500">|</span>
-            <span className="inline-flex items-center gap-1 text-[11px] font-medium text-emerald-400 bg-emerald-950/60 px-2 py-0.5 rounded border border-emerald-800/60">
-              <CheckCircle2 className="w-3 h-3" />
-              Batch 7: Extras & Hardening Complete
-            </span>
-          </div>
-
-          {/* Active Route Simulator Tabs */}
-          <div className="flex items-center p-0.5 bg-slate-800 rounded-lg border border-slate-700 overflow-x-auto max-w-full">
-            <button
-              type="button"
-              onClick={() => navigateTo('/')}
-              className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium transition-colors cursor-pointer ${
-                currentRoute === '/'
-                  ? 'bg-indigo-600 text-white shadow-xs'
-                  : 'text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              <span>/</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => navigateTo('/dashboard')}
-              className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium transition-colors cursor-pointer ${
-                currentRoute === '/dashboard'
-                  ? 'bg-indigo-600 text-white shadow-xs'
-                  : 'text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              <LayoutDashboard className="w-3 h-3" />
-              <span>/dashboard</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => navigateTo('/accounts')}
-              className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium transition-colors cursor-pointer ${
-                currentRoute === '/accounts' || currentRoute === '/account-detail'
-                  ? 'bg-indigo-600 text-white shadow-xs'
-                  : 'text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              <Building2 className="w-3 h-3" />
-              <span>/accounts</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => navigateTo('/upload')}
-              className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium transition-colors cursor-pointer ${
-                currentRoute === '/upload'
-                  ? 'bg-indigo-600 text-white shadow-xs'
-                  : 'text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              <Upload className="w-3 h-3" />
-              <span>/upload</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => navigateTo('/transactions')}
-              className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium transition-colors cursor-pointer ${
-                currentRoute === '/transactions'
-                  ? 'bg-indigo-600 text-white shadow-xs'
-                  : 'text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              <Receipt className="w-3 h-3" />
-              <span>/transactions</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => navigateTo('/invoices')}
-              className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium transition-colors cursor-pointer ${
-                currentRoute === '/invoices'
-                  ? 'bg-indigo-600 text-white shadow-xs'
-                  : 'text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              <FileText className="w-3 h-3" />
-              <span>/invoices</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => navigateTo('/clients')}
-              className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium transition-colors cursor-pointer ${
-                currentRoute === '/clients'
-                  ? 'bg-indigo-600 text-white shadow-xs'
-                  : 'text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              <Users className="w-3 h-3" />
-              <span>/clients</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => navigateTo('/recurring')}
-              className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium transition-colors cursor-pointer ${
-                currentRoute === '/recurring'
-                  ? 'bg-indigo-600 text-white shadow-xs'
-                  : 'text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              <Repeat className="w-3 h-3" />
-              <span>/recurring</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => navigateTo('/budgets')}
-              className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium transition-colors cursor-pointer ${
-                currentRoute === '/budgets'
-                  ? 'bg-indigo-600 text-white shadow-xs'
-                  : 'text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              <Target className="w-3 h-3" />
-              <span>/budgets</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => navigateTo('/rules')}
-              className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium transition-colors cursor-pointer ${
-                currentRoute === '/rules'
-                  ? 'bg-indigo-600 text-white shadow-xs'
-                  : 'text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              <Sliders className="w-3 h-3" />
-              <span>/rules</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => navigateTo('/reports')}
-              className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium transition-colors cursor-pointer ${
-                currentRoute === '/reports'
-                  ? 'bg-indigo-600 text-white shadow-xs'
-                  : 'text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              <FileSpreadsheet className="w-3 h-3" />
-              <span>/reports</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => navigateTo('/ai')}
-              className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium transition-colors cursor-pointer ${
-                currentRoute === '/ai'
-                  ? 'bg-indigo-600 text-white shadow-xs'
-                  : 'text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              <Sparkles className="w-3 h-3 text-indigo-400" />
-              <span>/ai</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => navigateTo('/settings')}
-              className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium transition-colors cursor-pointer ${
-                currentRoute === '/settings' || currentRoute === '/settings/ai'
-                  ? 'bg-indigo-600 text-white shadow-xs'
-                  : 'text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              <Settings className="w-3 h-3" />
-              <span>/settings</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => navigateTo('/playground')}
-              className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium transition-colors cursor-pointer ${
-                currentRoute === '/playground'
-                  ? 'bg-indigo-600 text-white shadow-xs'
-                  : 'text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              <Layers className="w-3 h-3" />
-              <span>UI</span>
-            </button>
-          </div>
-
-          {/* Auth State & Controls */}
-          <div className="flex items-center gap-3">
-            <span className="hidden sm:inline-flex items-center gap-1.5 text-[11px] text-slate-400">
-              {isAuthenticated ? (
-                <span className="text-emerald-400 font-medium inline-flex items-center gap-1">
-                  <UserCheck className="w-3 h-3" />
-                  {user?.email || 'Authenticated'}
-                </span>
-              ) : (
-                <span className="text-slate-400 inline-flex items-center gap-1">
-                  <Lock className="w-3 h-3" />
-                  Unauthenticated
-                </span>
-              )}
-            </span>
-
-            {isAuthenticated ? (
-              <button
-                type="button"
-                onClick={handleSignOut}
-                className="inline-flex items-center gap-1 text-[11px] text-slate-300 hover:text-red-400 transition-colors cursor-pointer"
-              >
-                <LogOut className="w-3 h-3" />
-                <span>Sign out</span>
-              </button>
-            ) : (
-              <button
-                type="button"
-                onClick={handleLogin}
-                className="inline-flex items-center gap-1 text-[11px] text-indigo-400 hover:text-indigo-300 transition-colors cursor-pointer font-medium"
-              >
-                <span>Login with Google</span>
-              </button>
-            )}
-
-            <ThemeToggle showText={false} className="border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700" />
-          </div>
-        </div>
-      </div>
-      )}
-
       {/* Floating Notification Toast for Auth Guard & Events */}
       {authNotice && (
         <div className="screen-only fixed bottom-6 right-6 z-50 max-w-md p-4 bg-slate-900 text-white rounded-xl shadow-xl border border-slate-700 animate-in fade-in slide-in-from-bottom-2">
@@ -513,6 +255,17 @@ export default function App() {
           </div>
         </div>
       )}
+
+      {/* Direct Google Identity Services Sign-In Modal */}
+      <GoogleSignInModal
+        isOpen={isGoogleSignInOpen}
+        onClose={() => setIsGoogleSignInOpen(false)}
+        onSuccess={() => {
+          setIsGoogleSignInOpen(false);
+          setCurrentRoute('/dashboard');
+          window.location.hash = 'dashboard';
+        }}
+      />
 
       {/* 25-Minute Idle Logout Warning Modal with Countdown */}
       <IdleWarningModal
