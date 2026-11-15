@@ -63,7 +63,7 @@ export async function generateMonthlyReportWithAI(
   const catMap: Record<string, number> = {};
 
   for (const t of txns) {
-    if (t.is_transfer || t.txn_type === 'transfer') continue;
+    if (t.is_self_transfer || t.is_transfer || t.txn_type === 'transfer') continue;
 
     if (t.txn_type === 'income' || (t.credit && t.credit > 0)) {
       totalIncome += t.credit || 0;

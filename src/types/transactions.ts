@@ -16,7 +16,13 @@ export interface Transaction {
   workspace_id: string | null;
   txn_type: TransactionType | null;
   is_transfer: boolean;
+  is_self_transfer?: boolean;
   transfer_pair_id: string | null;
+  upi_ref_no?: string | null;
+  imps_ref_no?: string | null;
+  source?: 'manual_upload' | 'gmail_auto' | 'statement_import';
+  balance_after?: number | null;
+  status?: 'confirmed' | 'review';
   notes: string | null;
   tags: string[] | null;
   is_manual: boolean;
@@ -147,4 +153,14 @@ export interface FinalizeImportResult {
   duplicate_count: number;
   transfer_pairs_found: number;
   upload_id: string;
+}
+
+export interface SelfTransferPairRow {
+  id: string;
+  txn_date: string;
+  amount: number;
+  ref_no: string | null;
+  status: 'linked' | 'review' | 'pending_pair';
+  debitTx: Transaction | null;
+  creditTx: Transaction | null;
 }

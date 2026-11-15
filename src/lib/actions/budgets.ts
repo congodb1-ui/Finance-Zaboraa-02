@@ -118,9 +118,10 @@ export async function getBudgets(
 
   let txQuery = supabase
     .from('transactions')
-    .select('category_id, workspace_id, debit, txn_date, is_transfer, txn_type')
+    .select('category_id, workspace_id, debit, txn_date, is_transfer, is_self_transfer, txn_type')
     .eq('user_id', user.id)
-    .eq('is_transfer', false);
+    .eq('is_transfer', false)
+    .eq('is_self_transfer', false);
 
   if (minStart) txQuery = txQuery.gte('txn_date', minStart);
   if (maxEnd) txQuery = txQuery.lte('txn_date', maxEnd);
@@ -137,7 +138,7 @@ export async function getBudgets(
 
     let spent = 0;
     for (const tx of txns) {
-      if (tx.is_transfer || tx.txn_type === 'transfer') continue;
+      if (tx.is_self_transfer || tx.is_transfer || tx.txn_type === 'transfer') continue;
       if (tx.category_id !== b.category_id) continue;
       if (b.workspace_id && tx.workspace_id !== b.workspace_id) continue;
       if (tx.txn_date >= dateRange.startDate && tx.txn_date <= dateRange.endDate) {

@@ -135,25 +135,92 @@ export function parseMonetaryValue(raw: string | number | null | undefined): num
   return isNeg ? -val : val;
 }
 
-/**
- * Extracts a 12-digit IMPS reference number from narration or ref column.
- */
-export function extractImpsRef(text: string): string | null {
-  if (!text) return null;
-  const m =
-    text.match(/IMPS\/?[A-Z]*\/?(\d{12})/i) ||
-    text.match(/IMPS[\/\s-]+(\d{12})/i);
-  return m ? m[1] : null;
+function normalizeTwelveDigitRef(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  const digits = raw.replace(/\D/g, '');
+  if (/^\d{12}$/.test(digits)) return digits;
+  // Many Indian bank Ref No. columns left-pad 12-digit RRN/UTR numbers with leading zeros (e.g. 0000631803023475)
+  if (digits.length > 12 && digits.length <= 16 && /^0+/.test(digits)) {
+    const trimmed = digits.replace(/^0+/, '');
+    if (trimmed.length === 12) return trimmed;
+    if (trimmed.length < 12) return digits.slice(-12);
+  }
+  return null;
 }
 
 /**
- * Extracts a 12-digit UPI reference number from text.
+ * Extracts a 12-digit IMPS reference number from narration or ref column.
  */
-export function extractUpiRef(text: string): string | null {
-  if (!text) return null;
+export function extractImpsRef(text: string, refNo?: string | null): string | null {
+  const src = text || '';
   const m =
-    text.match(/UPI\s*Ref\s*No[:\s]+(\d{9,})/i) ||
-    text.match(/UPI\s*(?:Transaction\s*ID|Txn\s*ID)[:\s]+(\d{9,})/i) ||
-    text.match(/UPI\/\d+\/(\d{12})/i);
-  return m ? m[1] : null;
+    src.match(/IMPS\/?[A-Z]*\/?(\d{12})\b/i) ||
+    src.match(/IMPS[\/\s-]+(\d{12})\b/i) ||
+    (/\bIMPS\b/i.test(src) ? src.match(/\b(\d{12})\b/) : null);
+  if (m) return m[1];
+
+  if (/\bIMPS\b/i.test(src) && refNo) {
+    return normalizeTwelveDigitRef(refNo);
+  }
+  return null;
+}
+
+/**
+ * Extracts a UPI reference number (RRN / Transaction ID) from text or bank reference column.
+ */
+export function extractUpiRef(
+  text: string,
+  refNo?: string | null,
+  forceUpi: boolean = false
+): string | null {
+  const src = text || '';
+  const explicitMatch =
+    src.match(/UPI\s*Ref\s*No[:\s]+(\d{9,16})/i) ||
+    src.match(/UPI\s*(?:Transaction\s*ID|Txn\s*ID)[:\s]+(\d{9,16})/i) ||
+    src.match(/UPI\/[A-Za-z0-9@._-]+\/(\d{12})\b/i) ||
+    src.match(/UPI[\/\-][^\/\-\n]*?[\/\-](\d{12})\b/i);
+  if (explicitMatch) {
+    return normalizeTwelveDigitRef(explicitMatch[1]) || explicitMatch[1];
+  }
+
+  const hasUpiContext = forceUpi || /\bUPI\b/i.test(src);
+  if (hasUpiContext) {
+    // Look for a 12-digit numeric token inside a UPI narration (e.g., HDFC: UPI-SWIGGY-SWIGGY@ICICI-631803023475-...)
+    const tokenMatch = src.match(/(?:^|[\s\-\/,:])(\d{12})(?=$|[\s\-\/,:])/);
+    if (tokenMatch) return tokenMatch[1];
+
+    if (refNo) {
+      const normalizedRef = normalizeTwelveDigitRef(refNo);
+      if (normalizedRef) return normalizedRef;
+      const cleanRef = refNo.trim();
+      if (/^\d{9,16}$/.test(cleanRef)) return cleanRef;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Computes cross-source dedup keys (upi_ref_no, imps_ref_no) for a statement row.
+ */
+export function extractCrossSourceRefs(params: {
+  parserVersion?: string | null;
+  description?: string | null;
+  rawDescription?: string | null;
+  referenceNumber?: string | null;
+}): { upi_ref_no: string | null; imps_ref_no: string | null } {
+  const parser = (params.parserVersion || '').toLowerCase();
+  const isPaytmOrGPay = parser.startsWith('paytm-upi') || parser.startsWith('gpay');
+  const combinedText = `${params.description || ''} ${params.rawDescription || ''}`.trim();
+  const ref = params.referenceNumber?.trim() || null;
+
+  const imps_ref_no = extractImpsRef(combinedText, ref);
+  let upi_ref_no = extractUpiRef(combinedText, ref, isPaytmOrGPay);
+
+  // If IMPS ref already claimed the same 12-digit number and text does not mention UPI, don't double-classify as UPI
+  if (upi_ref_no && imps_ref_no && upi_ref_no === imps_ref_no && !/\bUPI\b/i.test(combinedText)) {
+    upi_ref_no = null;
+  }
+
+  return { upi_ref_no, imps_ref_no };
 }

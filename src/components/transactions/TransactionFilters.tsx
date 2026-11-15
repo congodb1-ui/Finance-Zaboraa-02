@@ -111,18 +111,24 @@ export const TransactionFilters: React.FC<TransactionFiltersProps> = ({
 
           {/* Transaction Type Filter Tabs */}
           <div className="flex items-center p-0.5 bg-slate-100 dark:bg-slate-800/80 rounded-lg text-xs font-medium">
-            {(['all', 'expense', 'income', 'transfer', 'refund'] as const).map((type) => (
+            {([
+              { key: 'all', label: 'All' },
+              { key: 'expense', label: 'Expense' },
+              { key: 'income', label: 'Income' },
+              { key: 'transfer', label: 'Transfers' },
+              { key: 'refund', label: 'Refund' },
+            ] as const).map(({ key, label }) => (
               <button
-                key={type}
+                key={key}
                 type="button"
-                onClick={() => onChange({ ...filters, txnType: type })}
-                className={`px-2.5 py-1 rounded-md capitalize transition-colors cursor-pointer ${
-                  filters.txnType === type
+                onClick={() => onChange({ ...filters, txnType: key })}
+                className={`px-2.5 py-1 rounded-md transition-colors cursor-pointer ${
+                  filters.txnType === key
                     ? 'bg-white dark:bg-slate-900 text-indigo-600 dark:text-indigo-400 font-semibold shadow-2xs'
                     : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
                 }`}
               >
-                {type}
+                {label}
               </button>
             ))}
           </div>

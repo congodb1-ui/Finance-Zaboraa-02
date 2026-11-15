@@ -5,6 +5,7 @@ import type {
   TransactionFiltersState,
   ManualTransactionFormData,
   FinalizeImportResult,
+  SelfTransferPairRow,
 } from '../../types/transactions';
 import { getRules } from './rules';
 import { findFirstMatchingRule } from '../rules-engine';
@@ -14,7 +15,8 @@ import { getWorkspaces } from './workspaces';
 import { getUploadDetails } from './upload';
 import { getAiSettings } from './aiSettings';
 import { resolvePaytmTagCategory } from '../parsers/paytm-upi';
-import { extractImpsRef, extractUpiRef } from '../parsers/utils';
+import { extractCrossSourceRefs } from '../parsers/utils';
+import { detectAndLinkSelfTransfers } from '../self-transfer';
 
 const TRANSACTION_SELECT =
   '*, accounts(id, name, bank_name, account_number_last4), categories(id, name, color_index, icon), workspaces(id, name, color_index), statement_uploads(id, file_name)';
@@ -25,6 +27,11 @@ function mapDbTransaction(row: any): Transaction {
     debit: row.debit !== null && row.debit !== undefined ? Number(row.debit) : null,
     credit: row.credit !== null && row.credit !== undefined ? Number(row.credit) : null,
     balance: row.balance !== null && row.balance !== undefined ? Number(row.balance) : null,
+    balance_after:
+      row.balance_after !== null && row.balance_after !== undefined
+        ? Number(row.balance_after)
+        : null,
+    is_self_transfer: Boolean(row.is_self_transfer),
     account: row.accounts || undefined,
     category: row.categories || undefined,
     workspace: row.workspaces || undefined,
@@ -161,24 +168,92 @@ export async function commitUploadTransactions(
     if (row.txn_date > maxDate) maxDate = row.txn_date;
   }
 
-  // STEP 3 — DB-backed Multiset duplicate detection (PRD §4.3 Layer 3)
-  // Query existing transactions for same account_id and date range of new batch
-  const { data: existingTxns, error: existingErr } = await supabase
-    .from('transactions')
-    .select('id, account_id, txn_date, description, debit, credit, reference_number')
-    .eq('user_id', user.id)
-    .eq('account_id', upload.account_id)
-    .neq('upload_id', uploadId)
-    .gte('txn_date', minDate)
-    .lte('txn_date', maxDate);
+  // Pre-compute cross-source refs (upi_ref_no, imps_ref_no) for incoming staged rows
+  const stagedRefMap = new Map<string, { upi_ref_no: string | null; imps_ref_no: string | null }>();
+  const incomingUpiRefs = new Set<string>();
+  const incomingImpsRefs = new Set<string>();
 
-  if (existingErr) {
-    throw new Error(`Failed to query existing transactions for deduplication: ${existingErr.message}`);
+  for (const staged of stagedRows) {
+    const extracted = extractCrossSourceRefs({
+      parserVersion: upload.parser_version,
+      description: staged.description,
+      rawDescription: staged.raw_description,
+      referenceNumber: staged.reference_number,
+    });
+    const upiRef = staged.upi_ref_no || extracted.upi_ref_no || null;
+    const impsRef = staged.imps_ref_no || extracted.imps_ref_no || null;
+    stagedRefMap.set(staged.id, { upi_ref_no: upiRef, imps_ref_no: impsRef });
+    if (upiRef) incomingUpiRefs.add(upiRef);
+    if (impsRef) incomingImpsRefs.add(impsRef);
   }
 
-  // Count occurrences per dedup key in DB
+  // STEP 3A — Batch 4b LAYER 4 (UPI Ref) & LAYER 5 (IMPS Ref) cross-source dedup BEFORE Layer 3
+  const [upiMatchesRes, impsMatchesRes, existingTxnsRes] = await Promise.all([
+    incomingUpiRefs.size > 0
+      ? supabase
+          .from('transactions')
+          .select('id, account_id, upi_ref_no, debit, credit')
+          .eq('user_id', user.id)
+          .in('upi_ref_no', Array.from(incomingUpiRefs))
+      : Promise.resolve({ data: [], error: null }),
+    incomingImpsRefs.size > 0
+      ? supabase
+          .from('transactions')
+          .select('id, account_id, imps_ref_no, debit, credit')
+          .eq('user_id', user.id)
+          .in('imps_ref_no', Array.from(incomingImpsRefs))
+      : Promise.resolve({ data: [], error: null }),
+    supabase
+      .from('transactions')
+      .select('id, account_id, txn_date, description, debit, credit, reference_number')
+      .eq('user_id', user.id)
+      .eq('account_id', upload.account_id)
+      .neq('upload_id', uploadId)
+      .gte('txn_date', minDate)
+      .lte('txn_date', maxDate),
+  ]);
+
+  if (existingTxnsRes.error) {
+    throw new Error(
+      `Failed to query existing transactions for deduplication: ${existingTxnsRes.error.message}`
+    );
+  }
+
+  const existingByUpi = new Map<
+    string,
+    Array<{ id: string; account_id: string; debit: number | null; credit: number | null }>
+  >();
+  for (const row of upiMatchesRes.data || []) {
+    if (!row.upi_ref_no) continue;
+    const list = existingByUpi.get(row.upi_ref_no) || [];
+    list.push({
+      id: row.id,
+      account_id: row.account_id,
+      debit: row.debit !== null ? Number(row.debit) : null,
+      credit: row.credit !== null ? Number(row.credit) : null,
+    });
+    existingByUpi.set(row.upi_ref_no, list);
+  }
+
+  const existingByImps = new Map<
+    string,
+    Array<{ id: string; account_id: string; debit: number | null; credit: number | null }>
+  >();
+  for (const row of impsMatchesRes.data || []) {
+    if (!row.imps_ref_no) continue;
+    const list = existingByImps.get(row.imps_ref_no) || [];
+    list.push({
+      id: row.id,
+      account_id: row.account_id,
+      debit: row.debit !== null ? Number(row.debit) : null,
+      credit: row.credit !== null ? Number(row.credit) : null,
+    });
+    existingByImps.set(row.imps_ref_no, list);
+  }
+
+  // STEP 3B — DB-backed Multiset pool (PRD §4.3 Layer 3)
   const existingPool = new Map<string, string[]>();
-  for (const t of existingTxns || []) {
+  for (const t of existingTxnsRes.data || []) {
     const key = getDedupKey(
       t.txn_date,
       t.description,
@@ -197,6 +272,41 @@ export async function commitUploadTransactions(
   const duplicateUpdates: Array<{ id: string; duplicate_of_id: string }> = [];
 
   for (const staged of stagedRows) {
+    const refs = stagedRefMap.get(staged.id) || { upi_ref_no: null, imps_ref_no: null };
+    const stagedIsDebit = staged.debit !== null && staged.debit !== undefined && Number(staged.debit) > 0;
+    const stagedIsCredit = staged.credit !== null && staged.credit !== undefined && Number(staged.credit) > 0;
+
+    // LAYER 4: UPI Ref cross-source dedup (same account OR same debit/credit direction across sources)
+    if (refs.upi_ref_no) {
+      const upiCandidates = existingByUpi.get(refs.upi_ref_no) || [];
+      const matchedUpi = upiCandidates.find((e) => {
+        const eIsDebit = e.debit !== null && e.debit > 0;
+        const eIsCredit = e.credit !== null && e.credit > 0;
+        return e.account_id === upload.account_id || (eIsDebit === stagedIsDebit && eIsCredit === stagedIsCredit);
+      });
+      if (matchedUpi) {
+        duplicateCount++;
+        duplicateUpdates.push({ id: staged.id, duplicate_of_id: matchedUpi.id });
+        continue;
+      }
+    }
+
+    // LAYER 5: IMPS Ref cross-source dedup (same account OR same debit/credit direction; opposite leg across accounts is self-transfer)
+    if (refs.imps_ref_no) {
+      const impsCandidates = existingByImps.get(refs.imps_ref_no) || [];
+      const matchedImps = impsCandidates.find((e) => {
+        const eIsDebit = e.debit !== null && e.debit > 0;
+        const eIsCredit = e.credit !== null && e.credit > 0;
+        return e.account_id === upload.account_id || (eIsDebit === stagedIsDebit && eIsCredit === stagedIsCredit);
+      });
+      if (matchedImps) {
+        duplicateCount++;
+        duplicateUpdates.push({ id: staged.id, duplicate_of_id: matchedImps.id });
+        continue;
+      }
+    }
+
+    // LAYER 3: Multiset dedup
     const key = getDedupKey(
       staged.txn_date,
       staged.description,
@@ -208,7 +318,6 @@ export async function commitUploadTransactions(
     const existingList = existingPool.get(key);
 
     if (existingList && existingList.length > 0) {
-      // Consume one DB occurrence; only excess rows beyond DB count are imported
       const matchedTxId = existingList.shift()!;
       duplicateCount++;
       duplicateUpdates.push({ id: staged.id, duplicate_of_id: matchedTxId });
@@ -237,13 +346,9 @@ export async function commitUploadTransactions(
     (w) => w.name.trim().toLowerCase() === 'personal'
   );
   const isPaytmUpload = Boolean(upload.parser_version?.startsWith('paytm-upi'));
-  const isGPayUpload = Boolean(upload.parser_version?.startsWith('gpay'));
-  const isBomOrBoiUpload = Boolean(
-    upload.parser_version?.startsWith('bom') || upload.parser_version?.startsWith('boi')
-  );
   const skipAiStagedIds = new Set<string>();
 
-  const insertPayloads = nonDuplicateStaged.map((row) => {
+  const finalInsertPayloads = nonDuplicateStaged.map((row) => {
     let determinedType: Transaction['txn_type'] = row.debit ? 'expense' : 'income';
     let assignedCategoryId: string | null = null;
     let assignedWorkspaceId: string | null = null;
@@ -289,6 +394,8 @@ export async function commitUploadTransactions(
       }
     }
 
+    const refs = stagedRefMap.get(row.id) || { upi_ref_no: null, imps_ref_no: null };
+
     return {
       user_id: user.id,
       account_id: upload.account_id,
@@ -299,56 +406,24 @@ export async function commitUploadTransactions(
       debit: row.debit,
       credit: row.credit,
       balance: row.balance,
+      balance_after: row.balance ?? null,
       reference_number: row.reference_number,
+      upi_ref_no: refs.upi_ref_no,
+      imps_ref_no: refs.imps_ref_no,
+      source: 'statement_import' as const,
       category_id: assignedCategoryId,
       workspace_id: assignedWorkspaceId,
       txn_type: determinedType,
       is_transfer: false,
+      is_self_transfer: false,
       transfer_pair_id: null,
+      status: 'confirmed' as const,
       notes: null,
       tags: assignedTags,
       is_manual: false,
       source_staged_id: row.id,
     };
   });
-
-  // Batch 3c §6: Cross-source dedup preparation (populate upi_ref_no / imps_ref_no / source if columns exist post-Batch 4b)
-  let hasCrossSourceCols = false;
-  try {
-    const { error: colProbeErr } = await supabase
-      .from('transactions')
-      .select('upi_ref_no, imps_ref_no, source')
-      .limit(0);
-    hasCrossSourceCols = !colProbeErr;
-  } catch {
-    hasCrossSourceCols = false;
-  }
-
-  const finalInsertPayloads = hasCrossSourceCols
-    ? insertPayloads.map((payload, idx) => {
-        const row = nonDuplicateStaged[idx];
-        const rawText = `${row.raw_description || ''} ${row.description || ''}`;
-        const upiRef =
-          isPaytmUpload || isGPayUpload
-            ? row.reference_number || extractUpiRef(rawText)
-            : extractUpiRef(rawText);
-        const impsRef =
-          extractImpsRef(rawText) ||
-          (isBomOrBoiUpload &&
-          row.reference_number &&
-          /^\d{12}$/.test(row.reference_number.trim()) &&
-          /IMPS/i.test(rawText)
-            ? row.reference_number.trim()
-            : null);
-
-        return {
-          ...payload,
-          upi_ref_no: upiRef || null,
-          imps_ref_no: impsRef || null,
-          source: 'statement_import' as const,
-        };
-      })
-    : insertPayloads;
 
   // STEP 5 — Batch insert into transactions
   const newlyInsertedTransactions: Transaction[] = [];
@@ -394,101 +469,33 @@ export async function commitUploadTransactions(
     console.warn('Recurring match notice:', recErr);
   }
 
-  // STEP 6 — Detect self-transfers across other owner-operated accounts within ±1.5 days
-  // Both Account A and Account B must have operated_by_owner = true (accounts with operated_by_owner = false
-  // belong to family members and represent family transfers / expenses, not self-transfers).
+  // STEP 6 — Detect & link self-transfers (IMPS ref, UPI ref, NEFT/RTGS name-match, amount+date fallback)
   let transferPairsFound = 0;
   if (newlyInsertedTransactions.length > 0) {
-    const { data: userAccounts } = await supabase
-      .from('accounts')
-      .select('id, operated_by_owner')
-      .eq('user_id', user.id);
+    const newIds = newlyInsertedTransactions.map((t) => t.id);
+    const detection = await detectAndLinkSelfTransfers(supabase, user.id, newIds);
+    transferPairsFound = detection.pairsLinked;
 
-    const operatedByOwnerMap = new Map<string, boolean>();
-    for (const acc of userAccounts || []) {
-      operatedByOwnerMap.set(acc.id, acc.operated_by_owner !== false);
-    }
-
-    const isSourceOperatedByOwner = operatedByOwnerMap.get(upload.account_id) ?? true;
-
-    if (isSourceOperatedByOwner) {
-      const minWindow = new Date(minDate);
-      minWindow.setDate(minWindow.getDate() - 2);
-      const maxWindow = new Date(maxDate);
-      maxWindow.setDate(maxWindow.getDate() + 2);
-
-      const { data: candidateTxns } = await supabase
+    if (transferPairsFound > 0) {
+      const { data: refreshedLinks } = await supabase
         .from('transactions')
-        .select('*')
+        .select('id, is_transfer, is_self_transfer, transfer_pair_id, category_id, txn_type, status')
         .eq('user_id', user.id)
-        .neq('account_id', upload.account_id)
-        .eq('is_transfer', false)
-        .gte('txn_date', minWindow.toISOString().split('T')[0])
-        .lte('txn_date', maxWindow.toISOString().split('T')[0]);
+        .in('id', newIds);
 
-      const otherCandidates = (candidateTxns || []).map((r: any) => mapDbTransaction(r));
-      const pairedOtherIds = new Set<string>();
-
-      for (const newTx of newlyInsertedTransactions) {
-        if (newTx.is_transfer) continue;
-
-        const newAmt = newTx.debit ?? newTx.credit;
-        if (!newAmt) continue;
-        const isNewDebit = newTx.debit !== null && newTx.debit !== undefined;
-        const newDateMs = new Date(newTx.txn_date).getTime();
-
-        for (const otherTx of otherCandidates) {
-          if (otherTx.id === newTx.id || pairedOtherIds.has(otherTx.id)) continue;
-          if (otherTx.is_transfer && otherTx.transfer_pair_id) continue;
-          if (otherTx.account_id === newTx.account_id) continue;
-
-          // Require operated_by_owner = true on both legs
-          const isOtherOperatedByOwner = operatedByOwnerMap.get(otherTx.account_id) ?? true;
-          if (!isOtherOperatedByOwner) continue;
-
-          const otherAmt = otherTx.debit ?? otherTx.credit;
-          if (!otherAmt || Math.abs(newAmt - otherAmt) > 0.01) continue;
-
-          const isOtherDebit = otherTx.debit !== null && otherTx.debit !== undefined;
-          if (isNewDebit === isOtherDebit) continue;
-
-          const otherDateMs = new Date(otherTx.txn_date).getTime();
-          const diffMs = Math.abs(newDateMs - otherDateMs);
-          if (diffMs <= 86400000 * 1.5) {
-            const pairId = crypto.randomUUID();
-            pairedOtherIds.add(otherTx.id);
-
-            await Promise.all([
-              supabase
-                .from('transactions')
-                .update({
-                  is_transfer: true,
-                  transfer_pair_id: pairId,
-                  txn_type: 'transfer',
-                  category_id: null,
-                })
-                .eq('id', newTx.id)
-                .eq('user_id', user.id),
-              supabase
-                .from('transactions')
-                .update({
-                  is_transfer: true,
-                  transfer_pair_id: pairId,
-                  txn_type: 'transfer',
-                  category_id: null,
-                })
-                .eq('id', otherTx.id)
-                .eq('user_id', user.id),
-            ]);
-
-            newTx.is_transfer = true;
-            newTx.transfer_pair_id = pairId;
-            newTx.txn_type = 'transfer';
-            newTx.category_id = null;
-            newTx.category = undefined;
-            transferPairsFound++;
-            break;
-          }
+      const linkMap = new Map<string, any>();
+      for (const r of refreshedLinks || []) {
+        linkMap.set(r.id, r);
+      }
+      for (const tx of newlyInsertedTransactions) {
+        const updated = linkMap.get(tx.id);
+        if (updated) {
+          tx.is_transfer = Boolean(updated.is_transfer);
+          tx.is_self_transfer = Boolean(updated.is_self_transfer);
+          tx.transfer_pair_id = updated.transfer_pair_id || null;
+          tx.category_id = updated.category_id || null;
+          tx.txn_type = updated.txn_type || tx.txn_type;
+          tx.status = updated.status || tx.status;
         }
       }
     }
@@ -594,8 +601,13 @@ function applyTransactionFiltersToQuery(
   if (filters.workspaceId && filters.workspaceId !== 'all') {
     q = q.eq('workspace_id', filters.workspaceId);
   }
-  if (filters.txnType && filters.txnType !== 'all') {
-    q = q.eq('txn_type', filters.txnType);
+  if (filters.txnType === 'transfer') {
+    q = q.eq('is_self_transfer', true);
+  } else {
+    q = q.eq('is_self_transfer', false);
+    if (filters.txnType && filters.txnType !== 'all') {
+      q = q.eq('txn_type', filters.txnType);
+    }
   }
   if (filters.search && filters.search.trim()) {
     const safeTerm = filters.search.trim().replace(/[(),%]/g, '');
@@ -701,6 +713,131 @@ export async function getTransactions(
 }
 
 /**
+ * Queries self-transfer rows (`is_self_transfer = true`) and merges linked pairs
+ * onto one row (`debitTx` + `creditTx`) for the Transactions "Transfers" tab.
+ */
+export async function getSelfTransferPairs(
+  filters?: Partial<TransactionFiltersState>,
+  client?: any
+): Promise<{
+  pairs: SelfTransferPairRow[];
+  totalTransferred: number;
+}> {
+  const supabase = client || createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) {
+    return { pairs: [], totalTransferred: 0 };
+  }
+
+  let query = supabase
+    .from('transactions')
+    .select(TRANSACTION_SELECT)
+    .eq('user_id', user.id)
+    .eq('is_self_transfer', true)
+    .order('txn_date', { ascending: false })
+    .order('created_at', { ascending: false });
+
+  if (filters?.startDate) query = query.gte('txn_date', filters.startDate);
+  if (filters?.endDate) query = query.lte('txn_date', filters.endDate);
+  if (filters?.accountIds && filters.accountIds.length > 0) {
+    query = query.in('account_id', filters.accountIds);
+  }
+  if (filters?.search && filters.search.trim()) {
+    const safeTerm = filters.search.trim().replace(/[(),%]/g, '');
+    if (safeTerm) {
+      query = query.or(
+        `description.ilike.%${safeTerm}%,reference_number.ilike.%${safeTerm}%,imps_ref_no.ilike.%${safeTerm}%,upi_ref_no.ilike.%${safeTerm}%`
+      );
+    }
+  }
+
+  const { data, error } = await query;
+  if (error || !data) {
+    console.error('Error querying self-transfer pairs:', error?.message);
+    return { pairs: [], totalTransferred: 0 };
+  }
+
+  const txList: Transaction[] = data.map(mapDbTransaction);
+  const byId = new Map<string, Transaction>();
+  for (const tx of txList) {
+    byId.set(tx.id, tx);
+  }
+
+  // Fetch any paired counterparts outside the current filter slice so pairs render complete
+  const missingPairIds = Array.from(
+    new Set(
+      txList
+        .map((t) => t.transfer_pair_id)
+        .filter((pid): pid is string => Boolean(pid && !byId.has(pid)))
+    )
+  );
+  if (missingPairIds.length > 0) {
+    const { data: counterparts } = await supabase
+      .from('transactions')
+      .select(TRANSACTION_SELECT)
+      .eq('user_id', user.id)
+      .in('id', missingPairIds);
+    for (const c of counterparts || []) {
+      byId.set(c.id, mapDbTransaction(c));
+    }
+  }
+
+  const consumedIds = new Set<string>();
+  const pairs: SelfTransferPairRow[] = [];
+  let totalTransferred = 0;
+
+  for (const tx of txList) {
+    if (consumedIds.has(tx.id)) continue;
+    consumedIds.add(tx.id);
+
+    const partner = tx.transfer_pair_id ? byId.get(tx.transfer_pair_id) || null : null;
+    if (partner) {
+      consumedIds.add(partner.id);
+    }
+
+    const txIsDebit = tx.debit !== null && tx.debit !== undefined && tx.debit > 0;
+    const debitTx = txIsDebit ? tx : partner && partner.debit ? partner : null;
+    const creditTx = !txIsDebit ? tx : partner && partner.credit ? partner : null;
+
+    const amount = debitTx?.debit ?? creditTx?.credit ?? tx.debit ?? tx.credit ?? 0;
+    const refNo =
+      tx.imps_ref_no ||
+      partner?.imps_ref_no ||
+      tx.upi_ref_no ||
+      partner?.upi_ref_no ||
+      tx.reference_number ||
+      partner?.reference_number ||
+      null;
+
+    let status: SelfTransferPairRow['status'] = 'pending_pair';
+    if (debitTx && creditTx) {
+      status = tx.status === 'review' || partner?.status === 'review' ? 'review' : 'linked';
+    } else if (tx.status === 'review') {
+      status = 'review';
+    }
+
+    totalTransferred += amount;
+    pairs.push({
+      id: debitTx?.id || tx.id,
+      txn_date: debitTx?.txn_date || tx.txn_date,
+      amount,
+      ref_no: refNo,
+      status,
+      debitTx,
+      creditTx,
+    });
+  }
+
+  return {
+    pairs,
+    totalTransferred: Math.round(totalTransferred * 100) / 100,
+  };
+}
+
+/**
  * Manual Transaction Entry
  * Validates: date not in future, amount > 0, account must exist
  * Sets is_manual = true and writes audit log on insert
@@ -789,6 +926,8 @@ export async function updateTransaction(
     notes?: string | null;
     txn_type?: Transaction['txn_type'];
     is_transfer?: boolean;
+    is_self_transfer?: boolean;
+    status?: 'confirmed' | 'review';
     transfer_pair_id?: string | null;
     transfer_target_account_id?: string | null;
   },
@@ -824,13 +963,38 @@ export async function updateTransaction(
   if (updates.notes !== undefined) updatePayload.notes = updates.notes;
   if (updates.txn_type !== undefined) updatePayload.txn_type = updates.txn_type;
   if (updates.is_transfer !== undefined) updatePayload.is_transfer = updates.is_transfer;
+  if (updates.is_self_transfer !== undefined) {
+    updatePayload.is_self_transfer = updates.is_self_transfer;
+  }
+  if (updates.status !== undefined) {
+    updatePayload.status = updates.status;
+    if (updates.status === 'confirmed' && oldTx.transfer_pair_id) {
+      await supabase
+        .from('transactions')
+        .update({ status: 'confirmed', updated_at: new Date().toISOString() })
+        .eq('id', oldTx.transfer_pair_id)
+        .eq('user_id', user.id);
+    }
+  }
 
-  if (updates.is_transfer === false) {
+  if (updates.is_transfer === false || updates.is_self_transfer === false) {
+    updatePayload.is_transfer = false;
+    updatePayload.is_self_transfer = false;
     updatePayload.transfer_pair_id = null;
+    updatePayload.status = 'confirmed';
+    if (updates.txn_type === undefined && oldTx.txn_type === 'transfer') {
+      updatePayload.txn_type = oldTx.debit ? 'expense' : 'income';
+    }
     if (oldTx.transfer_pair_id) {
       await supabase
         .from('transactions')
-        .update({ transfer_pair_id: null, updated_at: new Date().toISOString() })
+        .update({
+          is_transfer: false,
+          is_self_transfer: false,
+          transfer_pair_id: null,
+          status: 'confirmed',
+          updated_at: new Date().toISOString(),
+        })
         .eq('id', oldTx.transfer_pair_id)
         .eq('user_id', user.id);
     }
@@ -1192,6 +1356,7 @@ export async function getDashboardMetrics(
       .from('transactions')
       .select(TRANSACTION_SELECT)
       .eq('user_id', user.id)
+      .eq('is_self_transfer', false)
       .gte('txn_date', fyRange.startDate)
       .lte('txn_date', fyRange.endDate)
       .order('txn_date', { ascending: false }),
@@ -1270,7 +1435,7 @@ export async function getDashboardMetrics(
   );
 
   for (const tx of periodTxns) {
-    if (tx.is_transfer || tx.txn_type === 'transfer') continue;
+    if (tx.is_self_transfer || tx.is_transfer || tx.txn_type === 'transfer') continue;
 
     const isBusiness =
       (tx.workspace_id ? businessWsIds.has(tx.workspace_id) : false) ||
@@ -1461,6 +1626,7 @@ export async function getITRSummaryData(
       .gte('txn_date', fyRange.startDate)
       .lte('txn_date', fyRange.endDate)
       .eq('is_transfer', false)
+      .eq('is_self_transfer', false)
       .neq('txn_type', 'transfer'),
   ]);
 
@@ -1497,7 +1663,7 @@ export async function getITRSummaryData(
   };
 
   for (const t of txns) {
-    if (t.is_transfer || t.txn_type === 'transfer') continue;
+    if (t.is_self_transfer || t.is_transfer || t.txn_type === 'transfer') continue;
 
     const isBusiness =
       (t.workspace_id ? businessWsIds.has(t.workspace_id) : false) ||

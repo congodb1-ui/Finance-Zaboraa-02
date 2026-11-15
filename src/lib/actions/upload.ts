@@ -9,6 +9,7 @@ import type {
 } from '../../types/uploads';
 import { parseStatementCSV, parseStatementPDF } from '../parsers';
 import { parseXLSX } from '../parsers/xlsx';
+import { extractCrossSourceRefs } from '../parsers/utils';
 
 /**
  * Runs reconciliation check:
@@ -239,16 +240,31 @@ export async function processStatementUpload(
   const columnMapping = parseResult.suggested_mapping || null;
   const stagedPayload = parseResult.rows.map((row) => {
     const rawDate = columnMapping?.date_col ? row[columnMapping.date_col] : null;
+    const desc =
+      (columnMapping?.description_col ? row[columnMapping.description_col] : null)?.trim() ||
+      'Pending Mapping';
+    const refNo = columnMapping?.reference_col
+      ? row[columnMapping.reference_col]?.trim() || null
+      : null;
+    const rawJson = JSON.stringify(row);
+    const { upi_ref_no, imps_ref_no } = extractCrossSourceRefs({
+      parserVersion: parseResult.parser_version,
+      description: desc,
+      rawDescription: rawJson,
+      referenceNumber: refNo,
+    });
+
     return {
       user_id: user.id,
       upload_id: newUploadRecord.id,
       account_id: accountId,
       raw_date: rawDate,
       txn_date: normalizeDate(rawDate || ''),
-      description:
-        (columnMapping?.description_col ? row[columnMapping.description_col] : null)?.trim() ||
-        'Pending Mapping',
-      raw_description: JSON.stringify(row),
+      description: desc,
+      raw_description: rawJson,
+      upi_ref_no,
+      imps_ref_no,
+      source: 'statement_import' as const,
       is_duplicate: false,
     };
   });
@@ -332,6 +348,9 @@ export async function confirmMappingAndStaging(
     credit: number | null;
     balance: number | null;
     reference_number: string | null;
+    upi_ref_no: string | null;
+    imps_ref_no: string | null;
+    source: 'statement_import';
     is_duplicate: boolean;
     duplicate_of_id: null;
   }> = [];
@@ -359,6 +378,14 @@ export async function confirmMappingAndStaging(
         if (!minDate || txnDate < minDate) minDate = txnDate;
         if (!maxDate || txnDate > maxDate) maxDate = txnDate;
       }
+      const existingRef = existing.reference_number || null;
+      const { upi_ref_no, imps_ref_no } = extractCrossSourceRefs({
+        parserVersion: upload.parser_version,
+        description: existing.description || 'Transaction',
+        rawDescription: existing.raw_description || existing.description,
+        referenceNumber: existingRef,
+      });
+
       mappedRows.push({
         user_id: user.id,
         upload_id: upload.id,
@@ -370,7 +397,10 @@ export async function confirmMappingAndStaging(
         debit: existing.debit !== null ? Number(existing.debit) : null,
         credit: existing.credit !== null ? Number(existing.credit) : null,
         balance: skipBalance ? null : existing.balance !== null ? Number(existing.balance) : null,
-        reference_number: existing.reference_number || null,
+        reference_number: existingRef,
+        upi_ref_no: existing.upi_ref_no || upi_ref_no,
+        imps_ref_no: existing.imps_ref_no || imps_ref_no,
+        source: 'statement_import',
         is_duplicate: false,
         duplicate_of_id: null,
       });
@@ -412,6 +442,14 @@ export async function confirmMappingAndStaging(
         ? `${baseRawDesc} | ${paytmNotes}`
         : baseRawDesc;
 
+    const cleanRef = reference?.trim() || null;
+    const { upi_ref_no, imps_ref_no } = extractCrossSourceRefs({
+      parserVersion: upload.parser_version,
+      description,
+      rawDescription: `${preservedRawDesc} ${JSON.stringify(rawRow)}`,
+      referenceNumber: cleanRef,
+    });
+
     mappedRows.push({
       user_id: user.id,
       upload_id: upload.id,
@@ -423,7 +461,10 @@ export async function confirmMappingAndStaging(
       debit,
       credit,
       balance,
-      reference_number: reference?.trim() || null,
+      reference_number: cleanRef,
+      upi_ref_no: existing.upi_ref_no || upi_ref_no,
+      imps_ref_no: existing.imps_ref_no || imps_ref_no,
+      source: 'statement_import',
       is_duplicate: false,
       duplicate_of_id: null,
     });

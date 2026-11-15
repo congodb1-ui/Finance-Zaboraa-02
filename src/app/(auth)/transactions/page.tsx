@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { TransactionTable } from '../../../components/transactions/TransactionTable';
+import { TransfersTable } from '../../../components/transactions/TransfersTable';
 import { TransactionFilters } from '../../../components/transactions/TransactionFilters';
 import { TransactionRow } from '../../../components/transactions/TransactionRow';
 import { AddTransactionModal } from '../../../components/transactions/AddTransactionModal';
@@ -11,6 +12,7 @@ import { Card } from '../../../components/ui/Card';
 import { formatINR } from '../../../types/design-system';
 import {
   getTransactions,
+  getSelfTransferPairs,
   createManualTransaction,
   bulkUpdateTransactions,
 } from '../../../lib/actions/transactions';
@@ -22,6 +24,7 @@ import type {
   Transaction,
   TransactionFiltersState,
   ManualTransactionFormData,
+  SelfTransferPairRow,
 } from '../../../types/transactions';
 import type { AccountWithBalance } from '../../../types/accounts';
 import type { Category } from '../../../types/categories';
@@ -42,6 +45,8 @@ import {
 export default function TransactionsPage() {
   // Ledger data state
   const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const [transferPairs, setTransferPairs] = useState<SelfTransferPairRow[]>([]);
+  const [totalTransferred, setTotalTransferred] = useState(0);
   const [totalCount, setTotalCount] = useState(0);
   const [totalPages, setTotalPages] = useState(1);
   const [currentPage, setCurrentPage] = useState(1);
@@ -59,6 +64,7 @@ export default function TransactionsPage() {
     txnType: 'all',
     search: '',
   });
+  const isTransfersTab = filters.txnType === 'transfer';
 
   // Entity metadata
   const [accounts, setAccounts] = useState<AccountWithBalance[]>([]);
@@ -90,20 +96,33 @@ export default function TransactionsPage() {
     loadMetadata();
   }, []);
 
-  // Fetch transactions on page or filter changes
+  // Fetch transactions (or grouped self-transfer pairs on Transfers tab)
   const loadLedger = useCallback(async () => {
     setIsLoading(true);
     try {
-      const res = await getTransactions({
-        page: currentPage,
-        pageSize: 50,
-        filters,
-      });
-      setTransactions(res.transactions);
-      setTotalCount(res.totalCount);
-      setTotalPages(res.totalPages);
-      setTotalDebits(res.totalDebits);
-      setTotalCredits(res.totalCredits);
+      if (filters.txnType === 'transfer') {
+        const res = await getSelfTransferPairs(filters);
+        setTransferPairs(res.pairs);
+        setTotalTransferred(res.totalTransferred);
+        setTransactions([]);
+        setTotalCount(res.pairs.length);
+        setTotalPages(1);
+        setTotalDebits(0);
+        setTotalCredits(0);
+      } else {
+        const res = await getTransactions({
+          page: currentPage,
+          pageSize: 50,
+          filters,
+        });
+        setTransactions(res.transactions);
+        setTransferPairs([]);
+        setTotalTransferred(0);
+        setTotalCount(res.totalCount);
+        setTotalPages(res.totalPages);
+        setTotalDebits(res.totalDebits);
+        setTotalCredits(res.totalCredits);
+      }
     } catch (err) {
       console.error('Failed to load transactions:', err);
     } finally {
@@ -173,6 +192,37 @@ export default function TransactionsPage() {
     await loadLedger();
   };
 
+  // Handle Confirm / Unlink on flagged NEFT/RTGS self-transfer pairs
+  const handleReviewTransferPair = async (
+    pair: SelfTransferPairRow,
+    approve: boolean
+  ) => {
+    const targetTx = pair.debitTx || pair.creditTx;
+    if (!targetTx) return;
+    try {
+      await apiPatch<Transaction>(
+        `/api/transactions/${targetTx.id}`,
+        approve
+          ? { status: 'confirmed', is_self_transfer: true, is_transfer: true }
+          : { is_transfer: false, is_self_transfer: false }
+      );
+      setBannerMessage({
+        type: 'success',
+        text: approve
+          ? 'Self-transfer pair confirmed.'
+          : 'Unlinked transfer — transactions restored to standard ledger.',
+      });
+      setTimeout(() => setBannerMessage(null), 4000);
+      await loadLedger();
+    } catch (err) {
+      console.error('Failed to update self-transfer pair:', err);
+      setBannerMessage({
+        type: 'error',
+        text: 'Failed to update transfer pair status.',
+      });
+    }
+  };
+
   return (
     <div className="min-h-screen pb-24">
       {/* Page Header */}
@@ -237,13 +287,13 @@ export default function TransactionsPage() {
           <Card className="p-4 flex items-center justify-between">
             <div>
               <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400 block">
-                Total Ledger Records
+                {isTransfersTab ? 'Self-Transfer Pairs' : 'Total Ledger Records'}
               </span>
               <span className="font-heading font-bold text-2xl text-slate-900 dark:text-white font-tabular mt-0.5 block">
                 {totalCount}
               </span>
               <span className="text-[11px] text-slate-500 mt-0.5 block">
-                Showing 50 rows per page
+                {isTransfersTab ? 'Excluded from income & expense' : 'Showing 50 rows per page'}
               </span>
             </div>
             <div className="w-10 h-10 rounded-lg bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400 flex items-center justify-center">
@@ -254,13 +304,13 @@ export default function TransactionsPage() {
           <Card className="p-4 flex items-center justify-between">
             <div>
               <span className="text-[11px] font-semibold uppercase tracking-wider text-red-600 dark:text-red-400 block">
-                Filtered Debits (Outflows)
+                {isTransfersTab ? 'Total Transferred Volume' : 'Filtered Debits (Outflows)'}
               </span>
               <span className="font-heading font-bold text-2xl text-red-600 dark:text-red-400 font-tabular mt-0.5 block">
-                −{formatINR(totalDebits)}
+                {isTransfersTab ? formatINR(totalTransferred) : `−${formatINR(totalDebits)}`}
               </span>
               <span className="text-[11px] text-slate-500 mt-0.5 block">
-                Sum of matching debit entries
+                {isTransfersTab ? 'Internal movement across own accounts' : 'Sum of matching debit entries'}
               </span>
             </div>
             <div className="w-10 h-10 rounded-lg bg-red-50 dark:bg-red-950/60 text-red-600 dark:text-red-400 flex items-center justify-center">
@@ -271,13 +321,15 @@ export default function TransactionsPage() {
           <Card className="p-4 flex items-center justify-between">
             <div>
               <span className="text-[11px] font-semibold uppercase tracking-wider text-green-600 dark:text-green-400 block">
-                Filtered Credits (Inflows)
+                {isTransfersTab ? 'Pending Pairs' : 'Filtered Credits (Inflows)'}
               </span>
               <span className="font-heading font-bold text-2xl text-green-600 dark:text-green-400 font-tabular mt-0.5 block">
-                +{formatINR(totalCredits)}
+                {isTransfersTab
+                  ? transferPairs.filter((p) => p.status === 'pending_pair').length
+                  : `+${formatINR(totalCredits)}`}
               </span>
               <span className="text-[11px] text-slate-500 mt-0.5 block">
-                Sum of matching credit entries
+                {isTransfersTab ? 'Awaiting counterpart statement' : 'Sum of matching credit entries'}
               </span>
             </div>
             <div className="w-10 h-10 rounded-lg bg-green-50 dark:bg-green-950/60 text-green-600 dark:text-green-400 flex items-center justify-center">
@@ -299,18 +351,26 @@ export default function TransactionsPage() {
 
       {/* Main Table Area */}
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mt-6">
-        <TransactionTable
-          transactions={transactions}
-          currentPage={currentPage}
-          totalPages={totalPages}
-          totalCount={totalCount}
-          pageSize={50}
-          onPageChange={setCurrentPage}
-          selectedIds={selectedIds}
-          onToggleSelect={handleToggleSelect}
-          onToggleSelectAll={handleToggleSelectAll}
-          onRowClick={(tx) => setActiveTransactionForDrawer(tx)}
-        />
+        {isTransfersTab ? (
+          <TransfersTable
+            pairs={transferPairs}
+            onSelectTransaction={(tx) => setActiveTransactionForDrawer(tx)}
+            onReviewPair={handleReviewTransferPair}
+          />
+        ) : (
+          <TransactionTable
+            transactions={transactions}
+            currentPage={currentPage}
+            totalPages={totalPages}
+            totalCount={totalCount}
+            pageSize={50}
+            onPageChange={setCurrentPage}
+            selectedIds={selectedIds}
+            onToggleSelect={handleToggleSelect}
+            onToggleSelectAll={handleToggleSelectAll}
+            onRowClick={(tx) => setActiveTransactionForDrawer(tx)}
+          />
+        )}
       </div>
 
       {/* Detail Slide-in Drawer */}

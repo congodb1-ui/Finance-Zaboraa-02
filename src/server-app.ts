@@ -32,6 +32,7 @@ import { getBudgets } from './lib/actions/budgets';
 import { getUploads, checkReconciliation, normalizeDate, parseAmount } from './lib/actions/upload';
 import { parseStatementCSV, parseStatementPDF } from './lib/parsers';
 import { parseXLSX } from './lib/parsers/xlsx';
+import { extractCrossSourceRefs } from './lib/parsers/utils';
 import { getCurrentFY, getFYBounds } from './lib/fy-utils';
 import { writeAuditLog } from './lib/audit';
 import { verifyGoogleIdToken } from './lib/google-auth-server';
@@ -965,24 +966,37 @@ export async function runServer() {
             if (columnMapping?.credit_col) credit = parseAmount(row[columnMapping.credit_col]);
           }
 
+          const desc =
+            (columnMapping?.description_col ? row[columnMapping.description_col] : null) ||
+            'Pending Mapping';
+          const refNo = columnMapping?.reference_col
+            ? row[columnMapping.reference_col]?.trim() || null
+            : null;
+          const rawJson = JSON.stringify(row);
+          const { upi_ref_no, imps_ref_no } = extractCrossSourceRefs({
+            parserVersion: parseResult.parser_version,
+            description: desc,
+            rawDescription: rawJson,
+            referenceNumber: refNo,
+          });
+
           return {
             user_id: user.id,
             upload_id: newUploadRecord.id,
             account_id: accountId,
             raw_date: rawDate,
             txn_date: normalizeDate(rawDate || ''),
-            description:
-              (columnMapping?.description_col ? row[columnMapping.description_col] : null) ||
-              'Pending Mapping',
-            raw_description: JSON.stringify(row),
+            description: desc,
+            raw_description: rawJson,
             debit,
             credit,
             balance: columnMapping?.balance_col
               ? parseAmount(row[columnMapping.balance_col])
               : null,
-            reference_number: columnMapping?.reference_col
-              ? row[columnMapping.reference_col]?.trim() || null
-              : null,
+            reference_number: refNo,
+            upi_ref_no,
+            imps_ref_no,
+            source: 'statement_import' as const,
             is_duplicate: false,
           };
         });
@@ -1109,6 +1123,8 @@ export async function runServer() {
             notes: body.notes,
             txn_type: body.txn_type,
             is_transfer: body.is_transfer,
+            is_self_transfer: body.is_self_transfer,
+            status: body.status,
             transfer_pair_id: body.transfer_pair_id,
             transfer_target_account_id: body.transfer_target_account_id,
           },
