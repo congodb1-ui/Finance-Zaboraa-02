@@ -1,7 +1,19 @@
 {
   "rewrites": [
     {
-      "source": "/(.*)",
+      "source": "/api/payment-instructions/:id/reveal",
+      "destination": "/api/payment-instructions/[id]/reveal"
+    },
+    {
+      "source": "/api/payment-instructions/:id",
+      "destination": "/api/payment-instructions/[id]"
+    },
+    {
+      "source": "/api/transactions/:id",
+      "destination": "/api/transactions/[id]"
+    },
+    {
+      "source": "/((?!api/).*)",
       "destination": "/index.html"
     }
   ]
