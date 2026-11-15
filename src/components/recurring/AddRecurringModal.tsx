@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import type { RecurringFormData, RecurringFrequency } from '../../types/recurring';
+import type { RecurringTransaction, RecurringFormData, RecurringFrequency } from '../../types/recurring';
 import type { AccountWithBalance } from '../../types/accounts';
 import type { Category } from '../../types/categories';
 import type { Workspace } from '../../types/workspaces';
@@ -15,6 +15,7 @@ interface AddRecurringModalProps {
   accounts: AccountWithBalance[];
   categories: Category[];
   workspaces: Workspace[];
+  editingItem?: RecurringTransaction | null;
 }
 
 export const AddRecurringModal: React.FC<AddRecurringModalProps> = ({
@@ -24,6 +25,7 @@ export const AddRecurringModal: React.FC<AddRecurringModalProps> = ({
   accounts,
   categories,
   workspaces,
+  editingItem,
 }) => {
   const todayStr = new Date().toISOString().split('T')[0];
 
@@ -44,23 +46,37 @@ export const AddRecurringModal: React.FC<AddRecurringModalProps> = ({
 
   useEffect(() => {
     if (isOpen) {
-      const nextDefaultAcc = accounts[0]?.id || '';
-      const nextDefaultWs = workspaces[0]?.id || '';
-      setInitialAccountId(nextDefaultAcc);
-      setInitialWorkspaceId(nextDefaultWs);
-      setAccountId(nextDefaultAcc);
-      setDescription('');
-      setAmount('');
-      setTxnType('expense');
-      setCategoryId('');
-      setWorkspaceId(nextDefaultWs);
-      setFrequency('monthly');
-      setNextDueDate(todayStr);
-      setNotes('');
+      if (editingItem) {
+        setInitialAccountId(editingItem.account_id);
+        setInitialWorkspaceId(editingItem.workspace_id || workspaces[0]?.id || '');
+        setAccountId(editingItem.account_id);
+        setDescription(editingItem.description || '');
+        setAmount(String(editingItem.amount || ''));
+        setTxnType(editingItem.txn_type || 'expense');
+        setCategoryId(editingItem.category_id || '');
+        setWorkspaceId(editingItem.workspace_id || workspaces[0]?.id || '');
+        setFrequency(editingItem.frequency || 'monthly');
+        setNextDueDate(editingItem.next_due_date || todayStr);
+        setNotes(editingItem.notes || '');
+      } else {
+        const nextDefaultAcc = accounts[0]?.id || '';
+        const nextDefaultWs = workspaces[0]?.id || '';
+        setInitialAccountId(nextDefaultAcc);
+        setInitialWorkspaceId(nextDefaultWs);
+        setAccountId(nextDefaultAcc);
+        setDescription('');
+        setAmount('');
+        setTxnType('expense');
+        setCategoryId('');
+        setWorkspaceId(nextDefaultWs);
+        setFrequency('monthly');
+        setNextDueDate(todayStr);
+        setNotes('');
+      }
       setErrorMsg(null);
       setShowUnsavedConfirm(false);
     }
-  }, [isOpen, accounts, workspaces]);
+  }, [isOpen, editingItem, accounts, workspaces]);
 
   const isDirty =
     accountId !== initialAccountId ||

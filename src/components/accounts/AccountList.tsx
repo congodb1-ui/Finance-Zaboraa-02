@@ -29,6 +29,12 @@ export const AccountList: React.FC<AccountListProps> = ({
   const [typeFilter, setTypeFilter] = useState<'all' | AccountType | 'inactive'>('all');
   const [actionError, setActionError] = useState<string | null>(null);
 
+  const [confirmModal, setConfirmModal] = useState<{
+    type: 'clear' | 'delete_all';
+    account: AccountWithBalance;
+    inputName: string;
+  } | null>(null);
+
   const activeAccounts = accounts.filter((a) => a.is_active);
   const totalBalance = activeAccounts.reduce((acc, a) => acc + a.current_balance, 0);
 
@@ -203,6 +209,8 @@ export const AccountList: React.FC<AccountListProps> = ({
               onEdit={handleOpenEdit}
               onDelete={handleDelete}
               onToggleActive={handleToggle}
+              onClearTransactions={(acc) => setConfirmModal({ type: 'clear', account: acc, inputName: '' })}
+              onDeleteWithTransactions={(acc) => setConfirmModal({ type: 'delete_all', account: acc, inputName: '' })}
             />
           ))}
         </div>
@@ -215,6 +223,61 @@ export const AccountList: React.FC<AccountListProps> = ({
           onSubmit={handleFormSubmit}
           onCancel={handleCloseForm}
         />
+      )}
+
+      {/* Clear/Delete Confirmation Modal with Typed Name Verification */}
+      {confirmModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-xs animate-in fade-in">
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-4">
+            <h3 className="font-heading font-bold text-base text-slate-900 dark:text-white">
+              {confirmModal.type === 'clear'
+                ? `Clear Transactions for ${confirmModal.account.name}`
+                : `Delete Account "${confirmModal.account.name}" & All Transactions`}
+            </h3>
+            <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+              {confirmModal.type === 'clear'
+                ? `This action will permanently delete all transactions associated with ${confirmModal.account.name}.`
+                : `This action will permanently delete the account ${confirmModal.account.name}, its uploads, and all associated transactions.`}
+              {' '}Please type <strong className="font-mono text-red-600 dark:text-red-400 font-bold">{confirmModal.account.name}</strong> to confirm:
+            </p>
+            <input
+              type="text"
+              value={confirmModal.inputName}
+              onChange={(e) => setConfirmModal({ ...confirmModal, inputName: e.target.value })}
+              placeholder={confirmModal.account.name}
+              className="w-full text-xs font-mono py-2 px-3 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-white focus:outline-hidden focus:ring-2 focus:ring-red-500"
+              autoFocus
+            />
+            <div className="flex items-center justify-end gap-3 pt-2">
+              <Button variant="ghost" size="sm" onClick={() => setConfirmModal(null)}>
+                Cancel
+              </Button>
+              <Button
+                variant="destructive"
+                size="sm"
+                disabled={confirmModal.inputName !== confirmModal.account.name}
+                onClick={async () => {
+                  const targetAcc = confirmModal.account;
+                  const isClear = confirmModal.type === 'clear';
+                  setConfirmModal(null);
+                  try {
+                    const { clearAccountTransactions, deleteAccountWithTransactions } = await import('../../lib/actions/upload');
+                    if (isClear) {
+                      await clearAccountTransactions(targetAcc.id);
+                    } else {
+                      await deleteAccountWithTransactions(targetAcc.id);
+                      setAccounts((prev) => prev.filter((a) => a.id !== targetAcc.id));
+                    }
+                  } catch (err: any) {
+                    setActionError(err.message || 'Action failed.');
+                  }
+                }}
+              >
+                {confirmModal.type === 'clear' ? 'Clear Transactions' : 'Delete Account'}
+              </Button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

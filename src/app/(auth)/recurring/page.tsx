@@ -6,6 +6,7 @@ import { AddRecurringModal } from '../../../components/recurring/AddRecurringMod
 import {
   getRecurringTransactions,
   createRecurringTransaction,
+  updateRecurringTransaction,
   toggleRecurringActive,
   deleteRecurringTransaction,
 } from '../../../lib/actions/recurring';
@@ -24,7 +25,8 @@ export default function RecurringPage() {
   const [categories, setCategories] = useState<Category[]>([]);
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [editingItem, setEditingItem] = useState<RecurringTransaction | null>(null);
 
   const loadData = async () => {
     setIsLoading(true);
@@ -50,9 +52,15 @@ export default function RecurringPage() {
     loadData();
   }, []);
 
-  const handleCreate = async (data: RecurringFormData) => {
-    await createRecurringTransaction(data);
+  const handleSave = async (data: RecurringFormData) => {
+    if (editingItem) {
+      await updateRecurringTransaction(editingItem.id, data);
+    } else {
+      await createRecurringTransaction(data);
+    }
     await loadData();
+    setIsModalOpen(false);
+    setEditingItem(null);
   };
 
   const handleToggle = async (id: string, active: boolean) => {
@@ -79,16 +87,27 @@ export default function RecurringPage() {
         items={items}
         onToggleActive={handleToggle}
         onDelete={handleDelete}
-        onOpenAddModal={() => setIsAddModalOpen(true)}
+        onOpenAddModal={() => {
+          setEditingItem(null);
+          setIsModalOpen(true);
+        }}
+        onEdit={(item) => {
+          setEditingItem(item);
+          setIsModalOpen(true);
+        }}
       />
 
       <AddRecurringModal
-        isOpen={isAddModalOpen}
-        onClose={() => setIsAddModalOpen(false)}
-        onSubmit={handleCreate}
+        isOpen={isModalOpen}
+        onClose={() => {
+          setIsModalOpen(false);
+          setEditingItem(null);
+        }}
+        onSubmit={handleSave}
         accounts={accounts}
         categories={categories}
         workspaces={workspaces}
+        editingItem={editingItem}
       />
     </div>
   );

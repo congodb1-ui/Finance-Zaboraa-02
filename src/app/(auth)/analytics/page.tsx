@@ -18,7 +18,17 @@ import {
   Sparkles,
 } from 'lucide-react';
 
+import { PageErrorBoundary } from '../../../components/ui/PageErrorBoundary';
+
 export default function AnalyticsPage() {
+  return (
+    <PageErrorBoundary fallbackTitle="Analytics View Error">
+      <AnalyticsPageContent />
+    </PageErrorBoundary>
+  );
+}
+
+function AnalyticsPageContent() {
   const [reports, setReports] = useState<AnalyticsReportRecord[]>([]);
   const [activeReport, setActiveReport] = useState<AnalyticsReportRecord | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);

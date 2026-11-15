@@ -6,7 +6,17 @@ import { getITRSummaryData } from '../../../../lib/actions/transactions';
 import { FileText, Calendar, Loader2, Sparkles, AlertCircle } from 'lucide-react';
 import { Select } from '../../../../components/ui/Select';
 
+import { PageErrorBoundary } from '../../../../components/ui/PageErrorBoundary';
+
 export default function ITRReportPage() {
+  return (
+    <PageErrorBoundary fallbackTitle="ITR Report Error">
+      <ITRReportContent />
+    </PageErrorBoundary>
+  );
+}
+
+function ITRReportContent() {
   const [selectedFY, setSelectedFY] = useState<string>('FY2025-26');
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [reportData, setReportData] = useState<{

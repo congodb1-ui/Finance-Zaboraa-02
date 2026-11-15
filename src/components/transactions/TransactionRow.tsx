@@ -52,6 +52,13 @@ export const TransactionRow: React.FC<TransactionRowProps> = ({
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const [showUnsavedConfirm, setShowUnsavedConfirm] = useState(false);
 
+  // Editable fields
+  const [dateInput, setDateInput] = useState(transaction?.txn_date || '');
+  const [descriptionInput, setDescriptionInput] = useState(transaction?.description || '');
+  const [amountInput, setAmountInput] = useState(
+    transaction?.debit ? String(transaction.debit) : transaction?.credit ? String(transaction.credit) : '0'
+  );
+
   // Sync state if transaction changes
   useEffect(() => {
     if (!transaction) return;
@@ -110,7 +117,16 @@ export const TransactionRow: React.FC<TransactionRowProps> = ({
         .map((t) => t.trim())
         .filter(Boolean);
 
+      const amtVal = parseFloat(amountInput);
+      const isOutflow = txnType === 'expense' || transaction.debit !== null;
+
       const updates = {
+        txn_date: dateInput,
+        date: dateInput,
+        description: descriptionInput.trim(),
+        amount: isNaN(amtVal) ? 0 : amtVal,
+        debit: isOutflow ? (isNaN(amtVal) ? 0 : amtVal) : null,
+        credit: !isOutflow ? (isNaN(amtVal) ? 0 : amtVal) : null,
         category_id: isTransfer ? null : categoryId || null,
         workspace_id: workspaceId || null,
         txn_type: isTransfer ? 'transfer' : txnType,
@@ -183,54 +199,69 @@ export const TransactionRow: React.FC<TransactionRowProps> = ({
             </div>
           )}
 
-          {/* 1. Sacred Financial Data Card (Non-Editable) */}
+          {/* 1. Core Financial Ledger Fields (Editable) */}
           <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-900/80 border border-slate-200 dark:border-slate-800 space-y-3">
             <div className="flex items-center justify-between text-[11px] font-semibold uppercase tracking-wider text-slate-400">
               <span className="flex items-center gap-1.5">
-                <Lock className="w-3.5 h-3.5 text-slate-400" />
-                Immutable Ledger Data (Sacred)
+                <Edit3 className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
+                Ledger Entry Fields
               </span>
-              <span className="text-[10px] text-slate-500 font-mono">Protected</span>
+              <span className="text-[10px] text-slate-500 font-mono">Editable</span>
             </div>
 
-            <div className="grid grid-cols-2 gap-3 pt-1">
+            <div className="space-y-3 pt-1">
               <div>
-                <span className="text-[11px] text-slate-500 block">Date</span>
-                <span className="font-medium font-tabular text-slate-900 dark:text-white text-xs">
-                  {transaction.txn_date}
-                </span>
+                <label className="text-slate-700 dark:text-slate-300 font-medium block text-xs mb-1">
+                  Description
+                </label>
+                <input
+                  type="text"
+                  value={descriptionInput}
+                  onChange={(e) => setDescriptionInput(e.target.value)}
+                  className="w-full text-xs py-2 px-3 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-white"
+                />
               </div>
-              <div>
-                <span className="text-[11px] text-slate-500 block">Account</span>
-                <span className="font-medium text-slate-900 dark:text-white text-xs truncate block">
-                  {transaction.account?.name || 'Bank Account'}
-                </span>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-slate-700 dark:text-slate-300 font-medium block text-xs mb-1">
+                    Date
+                  </label>
+                  <input
+                    type="date"
+                    value={dateInput}
+                    onChange={(e) => setDateInput(e.target.value)}
+                    className="w-full text-xs py-1.5 px-2.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-white"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-slate-700 dark:text-slate-300 font-medium block text-xs mb-1">
+                    Amount (₹)
+                  </label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={amountInput}
+                    onChange={(e) => setAmountInput(e.target.value)}
+                    className="w-full text-xs py-1.5 px-2.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-white font-tabular font-semibold"
+                  />
+                </div>
               </div>
-              <div>
-                <span className="text-[11px] text-slate-500 block">Debit Outflow (−)</span>
-                <span className="font-semibold font-tabular text-red-600 dark:text-red-400 text-sm">
-                  {transaction.debit ? `−${formatINR(transaction.debit)}` : '—'}
-                </span>
-              </div>
-              <div>
-                <span className="text-[11px] text-slate-500 block">Credit Inflow (+)</span>
-                <span className="font-semibold font-tabular text-green-600 dark:text-green-400 text-sm">
-                  {transaction.credit ? `+${formatINR(transaction.credit)}` : '—'}
-                </span>
-              </div>
-              <div>
-                <span className="text-[11px] text-slate-500 block">Account Balance</span>
-                <span className="font-medium font-tabular text-slate-800 dark:text-slate-200 text-xs">
-                  {transaction.balance !== null && transaction.balance !== undefined
-                    ? formatINR(transaction.balance)
-                    : '—'}
-                </span>
-              </div>
-              <div>
-                <span className="text-[11px] text-slate-500 block">Reference / UTR</span>
-                <span className="font-mono text-slate-700 dark:text-slate-300 text-xs">
-                  {transaction.reference_number || '—'}
-                </span>
+
+              <div className="grid grid-cols-2 gap-3 pt-1 text-[11px]">
+                <div>
+                  <span className="text-slate-500 block">Account</span>
+                  <span className="font-medium text-slate-900 dark:text-white truncate block">
+                    {transaction.account?.name || 'Bank Account'}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-slate-500 block">Reference / UTR</span>
+                  <span className="font-mono text-slate-700 dark:text-slate-300">
+                    {transaction.reference_number || '—'}
+                  </span>
+                </div>
               </div>
             </div>
 

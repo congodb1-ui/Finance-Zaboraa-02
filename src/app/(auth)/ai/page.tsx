@@ -5,7 +5,17 @@ import { ChatInterface } from '../../../components/ai/ChatInterface';
 import { useUserPreferences } from '../../../lib/contexts/UserPreferencesContext';
 import { Sparkles, ShieldCheck } from 'lucide-react';
 
+import { PageErrorBoundary } from '../../../components/ui/PageErrorBoundary';
+
 export default function AskYourDataPage() {
+  return (
+    <PageErrorBoundary fallbackTitle="Ask Your Data Error">
+      <AskYourDataContent />
+    </PageErrorBoundary>
+  );
+}
+
+function AskYourDataContent() {
   const { aiEnabled } = useUserPreferences();
 
   return (

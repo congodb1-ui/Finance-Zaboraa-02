@@ -47,7 +47,8 @@ function getScoreMeta(score: number): {
 }
 
 export const HealthScoreGauge: React.FC<HealthScoreGaugeProps> = ({ score }) => {
-  const clamped = Math.max(1, Math.min(10, Math.round(score || 5)));
+  const safeScore = typeof score === 'number' && Number.isFinite(score) ? score : 5;
+  const clamped = Math.max(1, Math.min(10, Math.round(safeScore)));
   const meta = getScoreMeta(clamped);
 
   const size = 132;

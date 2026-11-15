@@ -6,8 +6,6 @@ interface UploadDropzoneProps {
   selectedFile: File | null;
   onClearFile: () => void;
   isUploading?: boolean;
-  pdfPassword?: string;
-  onPasswordChange?: (password: string) => void;
 }
 
 export const UploadDropzone: React.FC<UploadDropzoneProps> = ({
@@ -15,8 +13,6 @@ export const UploadDropzone: React.FC<UploadDropzoneProps> = ({
   selectedFile,
   onClearFile,
   isUploading = false,
-  pdfPassword = '',
-  onPasswordChange,
 }) => {
   const [isDragging, setIsDragging] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -133,72 +129,52 @@ export const UploadDropzone: React.FC<UploadDropzoneProps> = ({
           </div>
         </div>
       ) : (
-        <div className="space-y-3">
-          <div className="p-4 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-xs flex items-center justify-between gap-4">
-            <div className="flex items-center gap-3.5 min-w-0">
-              <div
-                className={`w-10 h-10 rounded-lg flex items-center justify-center shrink-0 ${
-                  isPDF
-                    ? 'bg-rose-100 dark:bg-rose-950/80 text-rose-600 dark:text-rose-400'
-                    : 'bg-indigo-100 dark:bg-indigo-950/80 text-indigo-600 dark:text-indigo-400'
-                }`}
-              >
-                {isPDF ? <FileText className="w-5 h-5" /> : <FileSpreadsheet className="w-5 h-5" />}
-              </div>
-              <div className="min-w-0">
-                <div className="text-xs sm:text-sm font-semibold text-slate-900 dark:text-white truncate">
-                  {selectedFile.name}
-                </div>
-                <div className="text-[11px] text-slate-500 font-mono mt-0.5 flex items-center gap-2">
-                  <span>{formatFileSize(selectedFile.size)}</span>
-                  <span>•</span>
-                  <span
-                    className={`uppercase text-[10px] font-semibold ${
-                      isPDF
-                        ? 'text-rose-600 dark:text-rose-400'
-                        : 'text-indigo-600 dark:text-indigo-400'
-                    }`}
-                  >
-                    {isPDF
-                      ? 'PDF Document'
-                      : selectedFile.name.endsWith('.csv')
-                      ? 'CSV File'
-                      : 'Excel Spreadsheet'}
-                  </span>
-                </div>
-              </div>
+        <div className="p-4 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-xs flex items-center justify-between gap-4">
+          <div className="flex items-center gap-3.5 min-w-0">
+            <div
+              className={`w-10 h-10 rounded-lg flex items-center justify-center shrink-0 ${
+                isPDF
+                  ? 'bg-rose-100 dark:bg-rose-950/80 text-rose-600 dark:text-rose-400'
+                  : 'bg-indigo-100 dark:bg-indigo-950/80 text-indigo-600 dark:text-indigo-400'
+              }`}
+            >
+              {isPDF ? <FileText className="w-5 h-5" /> : <FileSpreadsheet className="w-5 h-5" />}
             </div>
-
-            <div className="flex items-center gap-2 shrink-0">
-              <button
-                type="button"
-                onClick={onClearFile}
-                disabled={isUploading}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-slate-600 dark:text-slate-400 hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors cursor-pointer disabled:opacity-50"
-              >
-                <Trash2 className="w-3.5 h-3.5" />
-                <span>Remove</span>
-              </button>
+            <div className="min-w-0">
+              <div className="text-xs sm:text-sm font-semibold text-slate-900 dark:text-white truncate">
+                {selectedFile.name}
+              </div>
+              <div className="text-[11px] text-slate-500 font-mono mt-0.5 flex items-center gap-2">
+                <span>{formatFileSize(selectedFile.size)}</span>
+                <span>•</span>
+                <span
+                  className={`uppercase text-[10px] font-semibold ${
+                    isPDF
+                      ? 'text-rose-600 dark:text-rose-400'
+                      : 'text-indigo-600 dark:text-indigo-400'
+                  }`}
+                >
+                  {isPDF
+                    ? 'PDF Document'
+                    : selectedFile.name.endsWith('.csv')
+                    ? 'CSV File'
+                    : 'Excel Spreadsheet'}
+                </span>
+              </div>
             </div>
           </div>
 
-          {/* Password field for PDF statements */}
-          {isPDF && onPasswordChange && (
-            <div className="p-3.5 rounded-xl bg-amber-50/60 dark:bg-amber-950/30 border border-amber-200/80 dark:border-amber-800/50 space-y-1.5">
-              <label htmlFor="pdf-password-input" className="block text-xs font-medium text-amber-900 dark:text-amber-200">
-                PDF password (if your bank statement is password-protected, e.g. HDFC)
-              </label>
-              <input
-                id="pdf-password-input"
-                type="password"
-                value={pdfPassword}
-                onChange={(e) => onPasswordChange(e.target.value)}
-                placeholder="Leave blank if no password"
-                disabled={isUploading}
-                className="w-full px-3 py-2 text-xs rounded-lg border border-amber-300 dark:border-amber-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-hidden focus:ring-2 focus:ring-indigo-500 disabled:opacity-50"
-              />
-            </div>
-          )}
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={onClearFile}
+              disabled={isUploading}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-slate-600 dark:text-slate-400 hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors cursor-pointer disabled:opacity-50"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              <span>Remove</span>
+            </button>
+          </div>
         </div>
       )}
     </div>

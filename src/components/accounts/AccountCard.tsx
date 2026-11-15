@@ -26,6 +26,8 @@ interface AccountCardProps {
   onEdit: (account: AccountWithBalance) => void;
   onDelete: (id: string) => void;
   onToggleActive: (id: string) => void;
+  onClearTransactions?: (account: AccountWithBalance) => void;
+  onDeleteWithTransactions?: (account: AccountWithBalance) => void;
 }
 
 export const AccountCard: React.FC<AccountCardProps> = ({
@@ -33,6 +35,8 @@ export const AccountCard: React.FC<AccountCardProps> = ({
   onEdit,
   onDelete,
   onToggleActive,
+  onClearTransactions,
+  onDeleteWithTransactions,
 }) => {
   const isCreditCard = account.account_type === 'credit_card';
   const colorHex = CATEGORY_PALETTE[account.color_index ?? 0] || '#6366F1';
@@ -219,7 +223,7 @@ export const AccountCard: React.FC<AccountCardProps> = ({
           )}
         </button>
 
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-1 flex-wrap justify-end">
           <Button
             variant="outline"
             size="sm"
@@ -230,6 +234,16 @@ export const AccountCard: React.FC<AccountCardProps> = ({
           >
             Ledger
           </Button>
+          {onClearTransactions && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => onClearTransactions(account)}
+              aria-label={`Clear transactions for ${account.name}`}
+            >
+              Clear Txns
+            </Button>
+          )}
           <Button
             variant="ghost"
             size="sm"
@@ -239,14 +253,25 @@ export const AccountCard: React.FC<AccountCardProps> = ({
             <Pencil className="w-3.5 h-3.5 mr-1" />
             Edit
           </Button>
-          <Button
-            variant="destructive"
-            size="sm"
-            onClick={() => onDelete(account.id)}
-            aria-label={`Delete ${account.name}`}
-          >
-            <Trash2 className="w-3.5 h-3.5" />
-          </Button>
+          {onDeleteWithTransactions ? (
+            <Button
+              variant="destructive"
+              size="sm"
+              onClick={() => onDeleteWithTransactions(account)}
+              aria-label={`Delete ${account.name} and transactions`}
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+            </Button>
+          ) : (
+            <Button
+              variant="destructive"
+              size="sm"
+              onClick={() => onDelete(account.id)}
+              aria-label={`Delete ${account.name}`}
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+            </Button>
+          )}
         </div>
       </div>
     </Card>

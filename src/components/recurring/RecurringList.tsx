@@ -16,6 +16,7 @@ import {
   ArrowRight,
   TrendingDown,
   TrendingUp,
+  Pencil,
 } from 'lucide-react';
 
 interface RecurringListProps {
@@ -23,6 +24,7 @@ interface RecurringListProps {
   onToggleActive: (id: string, active: boolean) => Promise<void>;
   onDelete: (id: string) => Promise<void>;
   onOpenAddModal: () => void;
+  onEdit?: (item: RecurringTransaction) => void;
 }
 
 export const RecurringList: React.FC<RecurringListProps> = ({
@@ -30,6 +32,7 @@ export const RecurringList: React.FC<RecurringListProps> = ({
   onToggleActive,
   onDelete,
   onOpenAddModal,
+  onEdit,
 }) => {
   const [filterActiveOnly, setFilterActiveOnly] = useState(true);
   const todayStr = new Date().toISOString().split('T')[0];
@@ -217,8 +220,20 @@ export const RecurringList: React.FC<RecurringListProps> = ({
                       )}
                     </div>
 
-                    {/* Toggle and Delete Actions */}
+                    {/* Toggle, Edit, and Delete Actions */}
                     <div className="flex items-center gap-2">
+                      {onEdit && (
+                        <button
+                          type="button"
+                          aria-label="Edit"
+                          onClick={() => onEdit(item)}
+                          className="p-2 min-w-[44px] min-h-[44px] flex items-center justify-center rounded-xl text-slate-500 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 transition-colors cursor-pointer"
+                          title="Edit recurring rule"
+                        >
+                          <Pencil className="w-4 h-4" />
+                        </button>
+                      )}
+
                       <button
                         type="button"
                         onClick={() => onToggleActive(item.id, !item.is_active)}

@@ -35,11 +35,10 @@ export {
  */
 export async function parseStatementPDF(
   buffer: ArrayBuffer | Uint8Array,
-  options?: { password?: string; preExtracted?: PDFExtractionResult } | PDFExtractionResult
+  options?: { preExtracted?: PDFExtractionResult } | PDFExtractionResult
 ): Promise<ParseResult> {
   const preExtracted = options && 'pages' in options ? options : options?.preExtracted;
-  const password = options && 'password' in options ? options.password : undefined;
-  const pdfData = preExtracted || (await extractPDFRawData(buffer, password));
+  const pdfData = preExtracted || (await extractPDFRawData(buffer));
   const firstPageText = pdfData.pages[0]?.fullText || pdfData.fullDocumentText;
   const fullText = pdfData.fullDocumentText;
 

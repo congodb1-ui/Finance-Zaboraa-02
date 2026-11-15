@@ -24,6 +24,8 @@ interface ReviewScreenProps {
   overlapInfo?: OverlapCheckResult | null;
   onConfirmImport: (replacePreviousId?: string) => Promise<void>;
   onCancelUpload: () => Promise<void>;
+  onDeleteUpload?: (uploadId: string) => Promise<void>;
+  onUploadAgain?: () => void;
   isReadOnly?: boolean;
   onUpdateStagedRow?: (stagedId: string, updates: any) => Promise<void>;
 }
@@ -34,6 +36,8 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
   overlapInfo,
   onConfirmImport,
   onCancelUpload,
+  onDeleteUpload,
+  onUploadAgain,
   isReadOnly = false,
   onUpdateStagedRow,
 }) => {
@@ -158,10 +162,37 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
 
         {/* Read-only status or active buttons */}
         {isReadOnly ? (
-          <span className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-800 shrink-0">
-            <CheckCircle2 className="w-3.5 h-3.5" />
-            Imported Record
-          </span>
+          <div className="flex items-center gap-3 shrink-0">
+            <span className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-800">
+              <CheckCircle2 className="w-3.5 h-3.5" />
+              Imported Record
+            </span>
+            {onUploadAgain && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={onUploadAgain}
+              >
+                Upload Again
+              </Button>
+            )}
+            {onDeleteUpload && (
+              <Button
+                type="button"
+                variant="destructive"
+                size="sm"
+                onClick={() => {
+                  if (window.confirm(`Delete this upload and its ${transactions.length} transactions?`)) {
+                    onDeleteUpload(upload.id);
+                  }
+                }}
+                leftIcon={<Trash2 className="w-3.5 h-3.5" />}
+              >
+                Delete This Import
+              </Button>
+            )}
+          </div>
         ) : (
           <div className="flex items-center gap-3 shrink-0">
             <Button

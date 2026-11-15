@@ -245,6 +245,40 @@ export default function TransactionsPage() {
 
           {/* Action buttons */}
           <div className="flex items-center gap-2.5 shrink-0">
+            {filters.accountIds.length === 1 && (
+              <Button
+                variant="destructive"
+                size="sm"
+                onClick={async () => {
+                  const targetAccId = filters.accountIds[0];
+                  const accObj = accounts.find((a) => a.id === targetAccId);
+                  const accName = accObj?.name || 'this account';
+                  if (
+                    window.confirm(
+                      `Delete ALL transactions and uploads for ${accName}? This cannot be undone.`
+                    )
+                  ) {
+                    try {
+                      const { clearAccountTransactions } = await import('../../../lib/actions/upload');
+                      await clearAccountTransactions(targetAccId);
+                      setBannerMessage({
+                        type: 'success',
+                        text: `All transactions for ${accName} cleared successfully.`,
+                      });
+                      setTimeout(() => setBannerMessage(null), 4000);
+                      await loadLedger();
+                    } catch (err: any) {
+                      setBannerMessage({
+                        type: 'error',
+                        text: err.message || 'Failed to clear account transactions.',
+                      });
+                    }
+                  }
+                }}
+              >
+                Delete All for This Account
+              </Button>
+            )}
             <Button
               variant="outline"
               size="sm"

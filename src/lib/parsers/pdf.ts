@@ -36,8 +36,7 @@ export interface PDFExtractionResult {
  * Extracts text items with their (x, y) coordinates from PDF ArrayBuffer
  */
 export async function extractPDFRawData(
-  buffer: ArrayBuffer | Uint8Array,
-  password?: string
+  buffer: ArrayBuffer | Uint8Array
 ): Promise<PDFExtractionResult> {
   const data = buffer instanceof ArrayBuffer ? new Uint8Array(buffer) : buffer;
 
@@ -45,7 +44,6 @@ export async function extractPDFRawData(
   try {
     const loadingTask = pdfjsLib.getDocument({
       data,
-      password: password || undefined,
       useSystemFonts: true,
       disableFontFace: false,
     });
@@ -54,9 +52,12 @@ export async function extractPDFRawData(
     if (
       err?.name === 'PasswordException' ||
       err?.message?.toLowerCase().includes('password') ||
-      err?.code === 1
+      err?.code === 1 ||
+      err?.code === 2
     ) {
-      throw new Error('This PDF is password-protected. Enter the PDF password and try again.');
+      throw new Error(
+        'This PDF is password-protected. Please unlock it in your bank app / PDF reader (File → Export as unlocked PDF) and upload the unlocked PDF. Zaboraa never asks for your PDF password.'
+      );
     }
     throw err;
   }

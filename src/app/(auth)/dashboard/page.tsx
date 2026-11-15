@@ -43,7 +43,17 @@ const FY_OPTIONS = [
   { value: 'FY2024-25', label: 'FY 2024-25 (Apr 2024 – Mar 2025)' },
 ];
 
+import { PageErrorBoundary } from '../../../components/ui/PageErrorBoundary';
+
 export default function DashboardPage() {
+  return (
+    <PageErrorBoundary fallbackTitle="Dashboard Error">
+      <DashboardContent />
+    </PageErrorBoundary>
+  );
+}
+
+function DashboardContent() {
   const { aiEnabled } = useUserPreferences();
   const [isMonthlyReportOpen, setIsMonthlyReportOpen] = useState(false);
   // Load persisted filters or defaults

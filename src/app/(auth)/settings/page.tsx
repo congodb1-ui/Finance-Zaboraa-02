@@ -28,7 +28,17 @@ import {
 
 const PAN_REGEX = /^[A-Z]{5}[0-9]{4}[A-Z]$/;
 
+import { PageErrorBoundary } from '../../../components/ui/PageErrorBoundary';
+
 export default function SettingsPage() {
+  return (
+    <PageErrorBoundary fallbackTitle="Settings Error">
+      <SettingsContent />
+    </PageErrorBoundary>
+  );
+}
+
+function SettingsContent() {
   const { user } = useAuth();
   const { profile, saveProfile } = useUserPreferences();
 

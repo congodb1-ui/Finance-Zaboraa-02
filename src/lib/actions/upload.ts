@@ -187,15 +187,21 @@ export async function processStatementUpload(
     console.warn('Storage upload notice:', storageError.message);
   }
 
-  // STEP 5 — Detect file type and run parser
+  // STEP 5 — Detect file type and run parser BEFORE creating any statement_uploads DB record
   let parseResult: ParseResult;
-  if (fileType === 'csv') {
-    const text = new TextDecoder('utf-8').decode(arrayBuffer);
-    parseResult = await parseStatementCSV(text);
-  } else if (fileType === 'xlsx') {
-    parseResult = parseXLSX(arrayBuffer);
-  } else {
-    parseResult = await parseStatementPDF(arrayBuffer);
+  try {
+    if (fileType === 'csv') {
+      const text = new TextDecoder('utf-8').decode(arrayBuffer);
+      parseResult = await parseStatementCSV(text);
+    } else if (fileType === 'xlsx') {
+      parseResult = parseXLSX(arrayBuffer);
+    } else {
+      parseResult = await parseStatementPDF(arrayBuffer);
+    }
+  } catch (err: any) {
+    // If storage upload occurred, attempt clean cleanup
+    await supabase.storage.from('statements').remove([storagePath]).catch(() => {});
+    throw err;
   }
 
   if (parseResult.rows.length === 0) {
@@ -274,6 +280,9 @@ export async function processStatementUpload(
     const chunk = stagedPayload.slice(i, i + CHUNK_SIZE);
     const { error: stageError } = await supabase.from('staged_transactions').insert(chunk);
     if (stageError) {
+      // Delete upload record on staging error so no stuck import row is left
+      await supabase.from('statement_uploads').delete().eq('id', newUploadRecord.id).catch(() => {});
+      await supabase.storage.from('statements').remove([storagePath]).catch(() => {});
       throw new Error(`Failed to stage parsed transactions: ${stageError.message}`);
     }
   }
@@ -736,6 +745,223 @@ export async function cancelUpload(
       updated_at: new Date().toISOString(),
     })
     .eq('id', uploadId)
+    .eq('user_id', user.id);
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  return { success: true };
+}
+/**
+ * Completely deletes an upload and all associated records.
+ * Order & Scope:
+ * 1. Delete transactions tied to upload_id (for current user)
+ * 2. Delete staged_transactions tied to upload_id (for current user)
+ * 3. Remove storage file if storage_path exists
+ * 4. Delete statement_uploads record (removes SHA-256 dedup entry)
+ * 5. Insert audit_log entry
+ */
+export async function deleteUpload(
+  uploadId: string,
+  client?: any
+): Promise<{ success: boolean; deletedTxnCount: number }> {
+  const supabase = client || createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) {
+    throw new Error('Unauthorized');
+  }
+
+  // Fetch upload info first
+  const { data: upload } = await supabase
+    .from('statement_uploads')
+    .select('id, file_name, row_count, storage_path')
+    .eq('id', uploadId)
+    .eq('user_id', user.id)
+    .maybeSingle();
+
+  if (!upload) {
+    return { success: true, deletedTxnCount: 0 };
+  }
+
+  // 1. Count and delete transactions
+  const { data: txns } = await supabase
+    .from('transactions')
+    .select('id')
+    .eq('upload_id', uploadId)
+    .eq('user_id', user.id);
+
+  const deletedTxnCount = txns?.length || 0;
+
+  const { error: txErr } = await supabase
+    .from('transactions')
+    .delete()
+    .eq('upload_id', uploadId)
+    .eq('user_id', user.id);
+
+  if (txErr) {
+    throw new Error(`Failed to delete transactions: ${txErr.message}`);
+  }
+
+  // 2. Delete staged transactions
+  const { error: stagedErr } = await supabase
+    .from('staged_transactions')
+    .delete()
+    .eq('upload_id', uploadId)
+    .eq('user_id', user.id);
+
+  if (stagedErr) {
+    throw new Error(`Failed to delete staged transactions: ${stagedErr.message}`);
+  }
+
+  // 3. Delete storage file if path present
+  if (upload.storage_path) {
+    await supabase.storage
+      .from('statements')
+      .remove([upload.storage_path])
+      .catch(() => {});
+  }
+
+  // 4. Delete statement_uploads record (clears SHA-256 dedup)
+  const { error: uploadErr } = await supabase
+    .from('statement_uploads')
+    .delete()
+    .eq('id', uploadId)
+    .eq('user_id', user.id);
+
+  if (uploadErr) {
+    throw new Error(`Failed to delete upload record: ${uploadErr.message}`);
+  }
+
+  // 5. Audit log entry
+  await supabase.from('audit_logs').insert({
+    user_id: user.id,
+    action: 'DELETE',
+    entity_type: 'statement_upload',
+    entity_id: uploadId,
+    details: {
+      file_name: upload.file_name,
+      deleted_transactions: deletedTxnCount,
+    },
+  }).catch(() => {});
+
+  return { success: true, deletedTxnCount };
+}
+
+/**
+ * Clear all transactions and statement uploads for a specific account
+ */
+export async function clearAccountTransactions(
+  accountId: string,
+  client?: any
+): Promise<{ success: boolean; clearedUploads: number; clearedTransactions: number }> {
+  const supabase = client || createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) {
+    throw new Error('Unauthorized');
+  }
+
+  const { data: uploads } = await supabase
+    .from('statement_uploads')
+    .select('id')
+    .eq('account_id', accountId)
+    .eq('user_id', user.id);
+
+  let clearedUploads = 0;
+  let clearedTransactions = 0;
+
+  if (uploads && uploads.length > 0) {
+    for (const u of uploads) {
+      const res = await deleteUpload(u.id, supabase);
+      clearedUploads++;
+      clearedTransactions += res.deletedTxnCount;
+    }
+  }
+
+  // Also clean up any manual or non-upload transactions on this account
+  const { data: remainingTxns } = await supabase
+    .from('transactions')
+    .select('id')
+    .eq('account_id', accountId)
+    .eq('user_id', user.id);
+
+  if (remainingTxns && remainingTxns.length > 0) {
+    clearedTransactions += remainingTxns.length;
+    await supabase
+      .from('transactions')
+      .delete()
+      .eq('account_id', accountId)
+      .eq('user_id', user.id);
+  }
+
+  return { success: true, clearedUploads, clearedTransactions };
+}
+
+/**
+ * Delete account along with all its transactions and uploads
+ */
+export async function deleteAccountWithTransactions(
+  accountId: string,
+  client?: any
+): Promise<{ success: boolean }> {
+  const supabase = client || createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) {
+    throw new Error('Unauthorized');
+  }
+
+  // 1. Clear account transactions & uploads
+  await clearAccountTransactions(accountId, supabase);
+
+  // 2. Delete the account row
+  const { error } = await supabase
+    .from('accounts')
+    .delete()
+    .eq('id', accountId)
+    .eq('user_id', user.id);
+
+  if (error) {
+    throw new Error(`Failed to delete account: ${error.message}`);
+  }
+
+  return { success: true };
+}
+export async function updateStagedTransaction(
+  stagedId: string,
+  updates: {
+    txn_date?: string;
+    description?: string;
+    debit?: number | null;
+    credit?: number | null;
+    reference_number?: string | null;
+  },
+  client?: any
+): Promise<{ success: boolean }> {
+  const supabase = client || createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) {
+    throw new Error('Unauthorized');
+  }
+
+  const { error } = await supabase
+    .from('staged_transactions')
+    .update({
+      ...updates,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', stagedId)
     .eq('user_id', user.id);
 
   if (error) {
