@@ -48,7 +48,10 @@ export async function exchangeGoogleIdToken(credential: string) {
   const payload = await res.json().catch(() => ({}));
   if (!res.ok) {
     disableGoogleAutoSelect();
-    throw new Error(payload?.error || `Sign-in failed with status ${res.status}`);
+    const errorMessage =
+      payload?.error ||
+      `Sign-in failed with status ${res.status}`;
+    throw new Error(typeof errorMessage === 'string' ? errorMessage : 'Sign-in failed.');
   }
 
   const accessToken = payload?.session?.access_token;
