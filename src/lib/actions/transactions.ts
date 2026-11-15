@@ -13,6 +13,8 @@ import { getCategories } from './categories';
 import { getWorkspaces } from './workspaces';
 import { getUploadDetails } from './upload';
 import { getAiSettings } from './aiSettings';
+import { resolvePaytmTagCategory } from '../parsers/paytm-upi';
+import { extractImpsRef, extractUpiRef } from '../parsers/utils';
 
 const TRANSACTION_SELECT =
   '*, accounts(id, name, bank_name, account_number_last4), categories(id, name, color_index, icon), workspaces(id, name, color_index), statement_uploads(id, file_name)';
@@ -224,11 +226,22 @@ export async function commitUploadTransactions(
       .eq('user_id', user.id);
   }
 
-  // STEP 4 — Apply transaction rules in priority order
-  const [activeRules, categories] = await Promise.all([
+  // STEP 4 — Apply transaction rules in priority order (+ Paytm tag fallback)
+  const [activeRules, categories, workspaces] = await Promise.all([
     getRules(supabase),
     getCategories(supabase),
+    getWorkspaces(supabase),
   ]);
+
+  const personalWorkspace = workspaces.find(
+    (w) => w.name.trim().toLowerCase() === 'personal'
+  );
+  const isPaytmUpload = Boolean(upload.parser_version?.startsWith('paytm-upi'));
+  const isGPayUpload = Boolean(upload.parser_version?.startsWith('gpay'));
+  const isBomOrBoiUpload = Boolean(
+    upload.parser_version?.startsWith('bom') || upload.parser_version?.startsWith('boi')
+  );
+  const skipAiStagedIds = new Set<string>();
 
   const insertPayloads = nonDuplicateStaged.map((row) => {
     let determinedType: Transaction['txn_type'] = row.debit ? 'expense' : 'income';
@@ -250,6 +263,29 @@ export async function commitUploadTransactions(
       if (matchedRule.set_txn_type) determinedType = matchedRule.set_txn_type;
       if (matchedRule.set_tags && matchedRule.set_tags.length > 0) {
         assignedTags = [...matchedRule.set_tags];
+      }
+    }
+
+    if (isPaytmUpload && !assignedCategoryId) {
+      const tagMatch = resolvePaytmTagCategory(row.raw_description || row.description);
+      if (tagMatch) {
+        skipAiStagedIds.add(row.id);
+        const matchedCat = categories.find((c) =>
+          tagMatch.aliases.some(
+            (alias) => c.name.trim().toLowerCase() === alias.toLowerCase()
+          )
+        );
+        if (matchedCat) {
+          assignedCategoryId = matchedCat.id;
+        }
+        if (!assignedWorkspaceId && personalWorkspace) {
+          assignedWorkspaceId = personalWorkspace.id;
+        }
+        const existingTags = assignedTags ? [...assignedTags] : [];
+        if (!existingTags.includes(tagMatch.tag)) {
+          existingTags.push(tagMatch.tag);
+        }
+        assignedTags = existingTags;
       }
     }
 
@@ -276,12 +312,50 @@ export async function commitUploadTransactions(
     };
   });
 
+  // Batch 3c §6: Cross-source dedup preparation (populate upi_ref_no / imps_ref_no / source if columns exist post-Batch 4b)
+  let hasCrossSourceCols = false;
+  try {
+    const { error: colProbeErr } = await supabase
+      .from('transactions')
+      .select('upi_ref_no, imps_ref_no, source')
+      .limit(0);
+    hasCrossSourceCols = !colProbeErr;
+  } catch {
+    hasCrossSourceCols = false;
+  }
+
+  const finalInsertPayloads = hasCrossSourceCols
+    ? insertPayloads.map((payload, idx) => {
+        const row = nonDuplicateStaged[idx];
+        const rawText = `${row.raw_description || ''} ${row.description || ''}`;
+        const upiRef =
+          isPaytmUpload || isGPayUpload
+            ? row.reference_number || extractUpiRef(rawText)
+            : extractUpiRef(rawText);
+        const impsRef =
+          extractImpsRef(rawText) ||
+          (isBomOrBoiUpload &&
+          row.reference_number &&
+          /^\d{12}$/.test(row.reference_number.trim()) &&
+          /IMPS/i.test(rawText)
+            ? row.reference_number.trim()
+            : null);
+
+        return {
+          ...payload,
+          upi_ref_no: upiRef || null,
+          imps_ref_no: impsRef || null,
+          source: 'statement_import' as const,
+        };
+      })
+    : insertPayloads;
+
   // STEP 5 — Batch insert into transactions
   const newlyInsertedTransactions: Transaction[] = [];
   const CHUNK_SIZE = 500;
 
-  for (let i = 0; i < insertPayloads.length; i += CHUNK_SIZE) {
-    const chunk = insertPayloads.slice(i, i + CHUNK_SIZE);
+  for (let i = 0; i < finalInsertPayloads.length; i += CHUNK_SIZE) {
+    const chunk = finalInsertPayloads.slice(i, i + CHUNK_SIZE);
     const { data: insertedRows, error: insertErr } = await supabase
       .from('transactions')
       .insert(chunk)
@@ -467,7 +541,10 @@ export async function commitUploadTransactions(
       }
 
       const uncategorized = newlyInsertedTransactions.filter(
-        (t) => !t.category_id && !t.is_transfer
+        (t) =>
+          !t.category_id &&
+          !t.is_transfer &&
+          !(t.source_staged_id && skipAiStagedIds.has(t.source_staged_id))
       );
       if (uncategorized.length > 0) {
         const { categorizeTransactionsWithAI } = await import('../ai/categorize');

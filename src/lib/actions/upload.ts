@@ -7,11 +7,8 @@ import type {
   UploadApiResponse,
   OverlapCheckResult,
 } from '../../types/uploads';
-import { parseCSV } from '../parsers/csv';
+import { parseStatementCSV, parseStatementPDF } from '../parsers';
 import { parseXLSX } from '../parsers/xlsx';
-import { extractPDFRawData } from '../parsers/pdf';
-import { parsePDFHDFC, isHDFCStatement } from '../parsers/pdf-hdfc';
-import { parsePDFGeneric } from '../parsers/pdf-generic';
 
 /**
  * Runs reconciliation check:
@@ -193,22 +190,15 @@ export async function processStatementUpload(
   let parseResult: ParseResult;
   if (fileType === 'csv') {
     const text = new TextDecoder('utf-8').decode(arrayBuffer);
-    parseResult = parseCSV(text);
+    parseResult = await parseStatementCSV(text);
   } else if (fileType === 'xlsx') {
     parseResult = parseXLSX(arrayBuffer);
   } else {
-    const pdfData = await extractPDFRawData(arrayBuffer);
-    const firstPageText = pdfData.pages[0]?.fullText || pdfData.fullDocumentText;
-
-    if (isHDFCStatement(firstPageText)) {
-      parseResult = await parsePDFHDFC(arrayBuffer, pdfData);
-    } else {
-      parseResult = await parsePDFGeneric(arrayBuffer, pdfData);
-    }
+    parseResult = await parseStatementPDF(arrayBuffer);
   }
 
   if (parseResult.rows.length === 0) {
-    throw new Error('No transaction rows could be parsed from this file.');
+    throw new Error(parseResult.parseError || 'No transaction rows could be parsed from this file.');
   }
 
   // STEP 6 — Reconciliation check (tolerance: ±1 INR)
@@ -415,6 +405,13 @@ export async function confirmMappingAndStaging(
       if (!maxDate || txnDate > maxDate) maxDate = txnDate;
     }
 
+    const baseRawDesc = rawDescStr.trim() || description;
+    const paytmNotes = typeof rawRow['Notes & Tags'] === 'string' ? rawRow['Notes & Tags'].trim() : '';
+    const preservedRawDesc =
+      paytmNotes && !baseRawDesc.includes(paytmNotes)
+        ? `${baseRawDesc} | ${paytmNotes}`
+        : baseRawDesc;
+
     mappedRows.push({
       user_id: user.id,
       upload_id: upload.id,
@@ -422,7 +419,7 @@ export async function confirmMappingAndStaging(
       raw_date: rawDate,
       txn_date: txnDate,
       description,
-      raw_description: rawDescStr.trim() || description,
+      raw_description: preservedRawDesc,
       debit,
       credit,
       balance,

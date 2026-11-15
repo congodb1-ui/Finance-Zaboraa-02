@@ -75,6 +75,26 @@ export interface ColumnMapping {
 
 export type MappingConfidence = 'high' | 'medium' | 'low' | 'none';
 
+export interface ParsedTransaction {
+  txn_date: string;
+  description: string;
+  debit: number | null;
+  credit: number | null;
+  balance?: number | null;
+  balance_after?: number | null;
+  reference_number?: string | null;
+  upi_ref_no?: string | null;
+  imps_ref_no?: string | null;
+  source?: 'statement_import' | 'gmail_auto' | 'manual_upload';
+  ai_category_skip?: boolean;
+  category_name?: string | null;
+  workspace?: string | null;
+  paytm_tag?: string | null;
+  account_hint?: string | null;
+  timestamp?: string | null;
+  raw_notes?: string | null;
+}
+
 export interface ParseResult {
   headers: string[];
   rows: Array<Record<string, string>>;
@@ -87,6 +107,8 @@ export interface ParseResult {
   reconciliation_warning?: boolean;
   reconciliation_diff?: number;
   raw_text?: string;
+  transactions?: ParsedTransaction[];
+  parseError?: string;
 }
 
 export interface UploadApiResponse {

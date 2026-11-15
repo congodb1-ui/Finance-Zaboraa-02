@@ -30,11 +30,8 @@ import { getRules } from './lib/actions/rules';
 import { getRecurringTransactions } from './lib/actions/recurring';
 import { getBudgets } from './lib/actions/budgets';
 import { getUploads, checkReconciliation, normalizeDate, parseAmount } from './lib/actions/upload';
-import { parseCSV } from './lib/parsers/csv';
+import { parseStatementCSV, parseStatementPDF } from './lib/parsers';
 import { parseXLSX } from './lib/parsers/xlsx';
-import { extractPDFRawData } from './lib/parsers/pdf';
-import { parsePDFHDFC, isHDFCStatement } from './lib/parsers/pdf-hdfc';
-import { parsePDFGeneric } from './lib/parsers/pdf-generic';
 import { getCurrentFY, getFYBounds } from './lib/fy-utils';
 import { writeAuditLog } from './lib/audit';
 import { verifyGoogleIdToken } from './lib/google-auth-server';
@@ -900,22 +897,16 @@ export async function runServer() {
         let parseResult: ParseResult;
         if (fileType === 'csv') {
           const text = file.buffer.toString('utf-8');
-          parseResult = parseCSV(text);
+          parseResult = await parseStatementCSV(text);
         } else if (fileType === 'xlsx') {
           parseResult = parseXLSX(arrayBuffer);
         } else {
-          const pdfData = await extractPDFRawData(arrayBuffer);
-          const firstPageText = pdfData.pages[0]?.fullText || pdfData.fullDocumentText;
-          if (isHDFCStatement(firstPageText)) {
-            parseResult = await parsePDFHDFC(arrayBuffer, pdfData);
-          } else {
-            parseResult = await parsePDFGeneric(arrayBuffer, pdfData);
-          }
+          parseResult = await parseStatementPDF(arrayBuffer);
         }
 
         if (parseResult.rows.length === 0) {
           return res.status(422).json({
-            error: 'Parsed file contains no transaction rows.',
+            error: parseResult.parseError || 'Parsed file contains no transaction rows.',
           });
         }
 
