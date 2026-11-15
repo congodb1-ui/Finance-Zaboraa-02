@@ -97,16 +97,17 @@ export function getAccountHealth(daysAgo: number): AccountHealthInfo {
  * Handles Indian Numbering system: ₹1,23,456.78
  */
 export function formatINR(
-  amount: number,
+  amount: number | null | undefined,
   options?: {
     showSign?: boolean;
     showDecimals?: boolean;
     compact?: boolean;
   }
 ): string {
+  const safeAmount = amount !== null && amount !== undefined && !isNaN(amount) ? Number(amount) : 0;
   const { showSign = false, showDecimals = true, compact = false } = options || {};
-  const isNegative = amount < 0;
-  const absAmount = Math.abs(amount);
+  const isNegative = safeAmount < 0;
+  const absAmount = Math.abs(safeAmount);
 
   let formattedNumber = '';
 
@@ -122,6 +123,6 @@ export function formatINR(
     }).format(absAmount);
   }
 
-  const sign = isNegative ? '− ' : showSign && amount > 0 ? '+ ' : '';
+  const sign = isNegative ? '− ' : showSign && safeAmount > 0 ? '+ ' : '';
   return `${sign}₹${formattedNumber}`;
 }

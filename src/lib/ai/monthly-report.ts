@@ -129,14 +129,14 @@ Avoid generic fluff. Reference the actual category figures from the data.`;
   let markdownReport = `## Monthly Financial Review — ${month}
 
 ### Executive Summary
-During ${month}, total income stood at ₹${payload.totalIncome.toLocaleString('en-IN')}, against total disbursements of ₹${payload.totalExpense.toLocaleString('en-IN')}, resulting in a net cash flow of ₹${payload.netSavings.toLocaleString('en-IN')}.
+During ${month}, total income stood at ₹${(payload?.totalIncome ?? 0).toLocaleString('en-IN')}, against total disbursements of ₹${(payload?.totalExpense ?? 0).toLocaleString('en-IN')}, resulting in a net cash flow of ₹${(payload?.netSavings ?? 0).toLocaleString('en-IN')}.
 
 ### Spending Patterns
-Your largest expense categories were ${payload.categoryTotals.slice(0, 3).map((c) => `${c.category} (₹${c.amount.toLocaleString('en-IN')})`).join(', ')}.
+Your largest expense categories were ${(payload?.categoryTotals || []).slice(0, 3).map((c) => `${c.category} (₹${(c.amount ?? 0).toLocaleString('en-IN')})`).join(', ')}.
 
 ### Workspace Allocation
-- **Personal Living Expenses:** ₹${payload.workspaceSplit.personal.toLocaleString('en-IN')}
-- **Business Operations:** ₹${payload.workspaceSplit.business.toLocaleString('en-IN')}
+- **Personal Living Expenses:** ₹${(payload?.workspaceSplit?.personal ?? 0).toLocaleString('en-IN')}
+- **Business Operations:** ₹${(payload?.workspaceSplit?.business ?? 0).toLocaleString('en-IN')}
 
 ### Actionable Takeaways
 1. Monitor recurring software and dining subscriptions to reduce discretionary outflow.

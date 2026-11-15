@@ -25,6 +25,7 @@ interface ReviewScreenProps {
   onConfirmImport: (replacePreviousId?: string) => Promise<void>;
   onCancelUpload: () => Promise<void>;
   isReadOnly?: boolean;
+  onUpdateStagedRow?: (stagedId: string, updates: any) => Promise<void>;
 }
 
 export const ReviewScreen: React.FC<ReviewScreenProps> = ({
@@ -34,11 +35,20 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
   onConfirmImport,
   onCancelUpload,
   isReadOnly = false,
+  onUpdateStagedRow,
 }) => {
   const [currentPage, setCurrentPage] = useState(1);
   const [replaceDecision, setReplaceDecision] = useState<'keep_both' | 'replace' | null>(null);
   const [showReconWarning, setShowReconWarning] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [editingRowId, setEditingRowId] = useState<string | null>(null);
+  const [editForm, setEditForm] = useState<{
+    txn_date: string;
+    description: string;
+    debit: string;
+    credit: string;
+    reference_number: string;
+  }>({ txn_date: '', description: '', debit: '', credit: '', reference_number: '' });
 
   // Batch 3b: Modal state for replacing PDF imports
   const [showReplaceModal, setShowReplaceModal] = useState(false);
@@ -437,10 +447,112 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800/80">
               {paginatedTransactions.map((tx, idx) => {
                 const rowNum = (currentPage - 1) * pageSize + idx + 1;
+                const isEditing = editingRowId === tx.id;
+
+                const startEditing = () => {
+                  if (isReadOnly || !onUpdateStagedRow) return;
+                  setEditingRowId(tx.id);
+                  setEditForm({
+                    txn_date: tx.txn_date || '',
+                    description: tx.description || '',
+                    debit: tx.debit ? String(tx.debit) : '',
+                    credit: tx.credit ? String(tx.credit) : '',
+                    reference_number: tx.reference_number || '',
+                  });
+                };
+
+                const saveEditing = async () => {
+                  if (!onUpdateStagedRow) return;
+                  const dVal = editForm.debit.trim() !== '' ? parseFloat(editForm.debit) : null;
+                  const cVal = editForm.credit.trim() !== '' ? parseFloat(editForm.credit) : null;
+
+                  await onUpdateStagedRow(tx.id, {
+                    txn_date: editForm.txn_date,
+                    description: editForm.description,
+                    debit: isNaN(dVal as number) ? null : dVal,
+                    credit: isNaN(cVal as number) ? null : cVal,
+                    reference_number: editForm.reference_number || null,
+                  });
+                  setEditingRowId(null);
+                };
+
+                if (isEditing) {
+                  return (
+                    <tr key={tx.id} className="bg-indigo-50/40 dark:bg-indigo-950/20">
+                      <td className="py-2 px-2 text-center font-mono text-[11px] text-slate-400">{rowNum}</td>
+                      <td className="py-2 px-2">
+                        <input
+                          type="date"
+                          value={editForm.txn_date}
+                          onChange={(e) => setEditForm({ ...editForm, txn_date: e.target.value })}
+                          className="px-2 py-1 text-xs rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900"
+                        />
+                      </td>
+                      <td className="py-2 px-2">
+                        <input
+                          type="text"
+                          value={editForm.description}
+                          onChange={(e) => setEditForm({ ...editForm, description: e.target.value })}
+                          className="w-full px-2 py-1 text-xs rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900"
+                        />
+                      </td>
+                      <td className="py-2 px-2">
+                        <input
+                          type="text"
+                          value={editForm.reference_number}
+                          onChange={(e) => setEditForm({ ...editForm, reference_number: e.target.value })}
+                          className="w-full px-2 py-1 text-xs rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 font-mono"
+                        />
+                      </td>
+                      <td className="py-2 px-2">
+                        <input
+                          type="number"
+                          step="0.01"
+                          placeholder="Debit"
+                          value={editForm.debit}
+                          onChange={(e) => setEditForm({ ...editForm, debit: e.target.value })}
+                          className="w-24 px-2 py-1 text-xs text-right rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-red-600 dark:text-red-400"
+                        />
+                      </td>
+                      <td className="py-2 px-2">
+                        <input
+                          type="number"
+                          step="0.01"
+                          placeholder="Credit"
+                          value={editForm.credit}
+                          onChange={(e) => setEditForm({ ...editForm, credit: e.target.value })}
+                          className="w-24 px-2 py-1 text-xs text-right rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-green-600 dark:text-green-400"
+                        />
+                      </td>
+                      <td className="py-2 px-2 text-right">
+                        <div className="flex items-center justify-end gap-1">
+                          <button
+                            type="button"
+                            onClick={saveEditing}
+                            className="px-2 py-1 text-xs rounded-md bg-indigo-600 text-white hover:bg-indigo-700 font-medium"
+                          >
+                            Save
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setEditingRowId(null)}
+                            className="px-2 py-1 text-xs rounded-md bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                }
+
                 return (
                   <tr
                     key={tx.id}
-                    className="hover:bg-slate-50/60 dark:hover:bg-slate-800/40 transition-colors"
+                    onClick={startEditing}
+                    className={`hover:bg-slate-50/60 dark:hover:bg-slate-800/40 transition-colors ${
+                      !isReadOnly && onUpdateStagedRow ? 'cursor-pointer' : ''
+                    }`}
                   >
                     <td className="py-3 px-4 text-center font-mono text-slate-400 text-[11px]">
                       {rowNum}

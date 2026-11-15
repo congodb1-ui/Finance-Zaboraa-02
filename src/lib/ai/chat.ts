@@ -299,7 +299,7 @@ ${
 Respond in clean, friendly plain text.`;
 
   let finalAnswer = `Based on your records, the calculated total is ₹${(
-    querySummary.metricCalculated || 0
+    querySummary.metricCalculated ?? 0
   ).toLocaleString('en-IN')}.`;
 
   try {

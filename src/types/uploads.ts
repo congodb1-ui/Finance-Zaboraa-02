@@ -6,7 +6,9 @@
 export type UploadStatus =
   | 'pending'
   | 'processing'
+  | 'staged'
   | 'review'
+  | 'completed'
   | 'imported'
   | 'failed'
   | 'replaced';

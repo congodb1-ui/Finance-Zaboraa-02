@@ -37,7 +37,6 @@ function isHDFCHeaderOrFooter(cells: string[]): boolean {
   if (cells.length === 0) return true;
   const rowText = cells.join(' ').toLowerCase();
 
-  // Repeating page headers / footers
   if (
     rowText.includes('hdfc bank limited') ||
     rowText.includes('registered office') ||
@@ -68,11 +67,10 @@ function isHDFCHeaderOrFooter(cells: string[]): boolean {
     return true;
   }
 
-  // Exact header line (Date, Narration, Value Dt...)
   if (
     rowText.includes('date') &&
     rowText.includes('narration') &&
-    (rowText.includes('chq') || rowText.includes('ref'))
+    (rowText.includes('chq') || rowText.includes('ref') || rowText.includes('debit') || rowText.includes('credit'))
   ) {
     return true;
   }
@@ -80,64 +78,23 @@ function isHDFCHeaderOrFooter(cells: string[]): boolean {
   return false;
 }
 
-/**
- * Normalizes an HDFC transaction row into HDFC_COLUMNS mapping
- */
-function parseHDFCRow(cells: string[]): Record<string, string> | null {
-  if (cells.length < 3) return null;
+function cleanNumber(str: string): number | null {
+  if (!str) return null;
+  const cleaned = str.replace(/[^\d.-]/g, '');
+  if (!cleaned) return null;
+  const num = parseFloat(cleaned);
+  return isNaN(num) ? null : num;
+}
 
-  // The first cell must look like a date (DD/MM/YY or DD/MM/YYYY or DD-MM-YYYY)
-  const firstCell = cells[0].trim();
-  const dateMatch = firstCell.match(/^(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{2,4})/);
-  if (!dateMatch) return null;
-
-  const dateVal = firstCell;
-  let narration = '';
-  let valueDt = '';
-  let refNo = '';
-  let debit = '';
-  let credit = '';
-  let balance = '';
-
-  if (cells.length >= 7) {
-    narration = cells[1];
-    valueDt = cells[2];
-    refNo = cells[3];
-    debit = cells[4];
-    credit = cells[5];
-    balance = cells[6];
-  } else if (cells.length === 6) {
-    narration = cells[1];
-    valueDt = cells[2];
-    refNo = cells[3];
-    debit = cells[4];
-    balance = cells[5];
-  } else if (cells.length === 5) {
-    narration = cells[1];
-    refNo = cells[2];
-    debit = cells[3];
-    balance = cells[4];
-  } else {
-    // Variable length fallback
-    narration = cells[1] || '';
-    balance = cells[cells.length - 1] || '';
-    debit = cells[cells.length - 2] || '';
-  }
-
-  // Clean numeric amounts: remove comma and verify
-  const cleanDebit = debit.replace(/[^\d.-]/g, '');
-  const cleanCredit = credit.replace(/[^\d.-]/g, '');
-  const cleanBalance = balance.replace(/[^\d.-]/g, '');
-
-  return {
-    Date: dateVal,
-    Narration: narration.trim(),
-    'Value Dt': valueDt.trim(),
-    'Ref No./Cheque No.': refNo.trim(),
-    Debit: cleanDebit,
-    Credit: cleanCredit,
-    Balance: cleanBalance,
-  };
+interface PreParsedRow {
+  date: string;
+  narration: string;
+  valueDt: string;
+  refNo: string;
+  rawDebit?: string;
+  rawCredit?: string;
+  rawAmount?: string;
+  rawBalance?: string;
 }
 
 export async function parsePDFHDFC(
@@ -146,25 +103,164 @@ export async function parsePDFHDFC(
 ): Promise<ParseResult> {
   const pdfData = preExtracted || (await extractPDFRawData(buffer));
 
-  const rows: Array<Record<string, string>> = [];
+  const rawCandidates: PreParsedRow[] = [];
 
   for (const page of pdfData.pages) {
     for (const gridRow of page.gridRows) {
-      if (isHDFCHeaderOrFooter(gridRow)) {
-        continue;
+      if (isHDFCHeaderOrFooter(gridRow)) continue;
+
+      if (gridRow.length < 3) continue;
+      const firstCell = gridRow[0].trim();
+      const dateMatch = firstCell.match(/^(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{2,4})/);
+      if (!dateMatch) continue;
+
+      let narration = '';
+      let valueDt = '';
+      let refNo = '';
+      let rawDebit = '';
+      let rawCredit = '';
+      let rawAmount = '';
+      let rawBalance = '';
+
+      if (gridRow.length >= 7) {
+        narration = gridRow[1] || '';
+        valueDt = gridRow[2] || '';
+        refNo = gridRow[3] || '';
+        rawDebit = gridRow[4] || '';
+        rawCredit = gridRow[5] || '';
+        rawBalance = gridRow[6] || '';
+      } else if (gridRow.length === 6) {
+        narration = gridRow[1] || '';
+        valueDt = gridRow[2] || '';
+        refNo = gridRow[3] || '';
+        rawAmount = gridRow[4] || '';
+        rawBalance = gridRow[5] || '';
+      } else if (gridRow.length === 5) {
+        narration = gridRow[1] || '';
+        refNo = gridRow[2] || '';
+        rawAmount = gridRow[3] || '';
+        rawBalance = gridRow[4] || '';
+      } else {
+        narration = gridRow[1] || '';
+        rawBalance = gridRow[gridRow.length - 1] || '';
+        rawAmount = gridRow[gridRow.length - 2] || '';
       }
 
-      const parsedObj = parseHDFCRow(gridRow);
-      if (parsedObj) {
-        rows.push(parsedObj);
+      rawCandidates.push({
+        date: firstCell,
+        narration: narration.trim(),
+        valueDt: valueDt.trim(),
+        refNo: refNo.trim(),
+        rawDebit,
+        rawCredit,
+        rawAmount,
+        rawBalance,
+      });
+    }
+  }
+
+  // Pass 2: Determine Debit / Credit & Running Balance
+  const rows: Array<Record<string, string>> = [];
+  let runningBalance = pdfData.openingBalance;
+
+  for (let i = 0; i < rawCandidates.length; i++) {
+    const candidate = rawCandidates[i];
+    let debitStr = '';
+    let creditStr = '';
+    let balanceStr = candidate.rawBalance ? candidate.rawBalance.replace(/[^\d.-]/g, '') : '';
+
+    const currentBalNum = cleanNumber(balanceStr);
+    let isCredit = false;
+    let isDebit = false;
+    let needsReview = false;
+
+    if (candidate.rawDebit && candidate.rawCredit) {
+      const dNum = cleanNumber(candidate.rawDebit);
+      const cNum = cleanNumber(candidate.rawCredit);
+      if (dNum !== null && dNum > 0) {
+        debitStr = String(dNum);
+        isDebit = true;
+      }
+      if (cNum !== null && cNum > 0) {
+        creditStr = String(cNum);
+        isCredit = true;
+      }
+    } else {
+      const amtNum = cleanNumber(candidate.rawAmount || candidate.rawDebit || candidate.rawCredit || '');
+      if (amtNum !== null && amtNum > 0) {
+        if (currentBalNum !== null && runningBalance !== null && runningBalance !== undefined) {
+          const diff = currentBalNum - runningBalance;
+          if (Math.abs(diff - amtNum) < 1.0 || diff > 0.05) {
+            isCredit = true;
+            creditStr = String(amtNum);
+          } else if (Math.abs(-diff - amtNum) < 1.0 || diff < -0.05) {
+            isDebit = true;
+            debitStr = String(amtNum);
+          }
+        }
+
+        if (!isCredit && !isDebit) {
+          const upperNarr = candidate.narration.toUpperCase();
+          if (
+            upperNarr.includes('CR') ||
+            upperNarr.includes('BY ') ||
+            upperNarr.includes('CREDIT') ||
+            upperNarr.includes('SALARY') ||
+            upperNarr.includes('REFUND') ||
+            upperNarr.includes('INT.PD') ||
+            upperNarr.includes('INTEREST')
+          ) {
+            isCredit = true;
+            creditStr = String(amtNum);
+          } else if (
+            upperNarr.includes('DR') ||
+            upperNarr.includes('TO ') ||
+            upperNarr.includes('DEBIT') ||
+            upperNarr.includes('POS') ||
+            upperNarr.includes('ATM') ||
+            upperNarr.includes('WDL')
+          ) {
+            isDebit = true;
+            debitStr = String(amtNum);
+          } else {
+            // Unresolved: mark for review, default to debit but flag needs_review
+            debitStr = String(amtNum);
+            needsReview = true;
+          }
+        }
       }
     }
+
+    if (currentBalNum !== null) {
+      runningBalance = currentBalNum;
+    } else if (runningBalance !== null && runningBalance !== undefined) {
+      const cNum = cleanNumber(creditStr) || 0;
+      const dNum = cleanNumber(debitStr) || 0;
+      runningBalance = runningBalance + cNum - dNum;
+      balanceStr = String(runningBalance);
+    }
+
+    const rowObj: Record<string, string> = {
+      Date: candidate.date,
+      Narration: candidate.narration,
+      'Value Dt': candidate.valueDt,
+      'Ref No./Cheque No.': candidate.refNo,
+      Debit: debitStr,
+      Credit: creditStr,
+      Balance: balanceStr,
+    };
+
+    if (needsReview) {
+      rowObj['needs_review'] = 'true';
+    }
+
+    rows.push(rowObj);
   }
 
   return {
     headers: [...HDFC_COLUMNS],
     rows,
-    parser_version: 'hdfc-pdf-v1',
+    parser_version: 'hdfc-pdf-v2',
     detected_bank: 'HDFC Bank',
     confidence: 'high',
     suggested_mapping: HDFC_HARDCODED_MAPPING,

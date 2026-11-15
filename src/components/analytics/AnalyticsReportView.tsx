@@ -131,7 +131,7 @@ export const AnalyticsReportView: React.FC<AnalyticsReportViewProps> = ({
         </div>
         <p className="text-xs text-slate-600 mt-1">
           Generated on {formatAnalyticsDateTime(activeReport.generated_at)} •{' '}
-          {activeReport.txn_count.toLocaleString('en-IN')} confirmed transactions analysed
+          {(activeReport?.txn_count ?? 0).toLocaleString('en-IN')} confirmed transactions analysed
         </p>
       </div>
 
@@ -489,7 +489,7 @@ export const AnalyticsReportView: React.FC<AnalyticsReportViewProps> = ({
             <div>
               <div className="text-slate-500 dark:text-slate-400">Transactions analysed</div>
               <div className="font-medium text-slate-900 dark:text-white print:text-slate-900 mt-0.5 font-tabular">
-                {activeReport.txn_count.toLocaleString('en-IN')}
+                {(activeReport?.txn_count ?? 0).toLocaleString('en-IN')}
               </div>
             </div>
             <div>
@@ -566,7 +566,7 @@ export const AnalyticsReportView: React.FC<AnalyticsReportViewProps> = ({
 
                         <div className="flex items-center gap-4 font-tabular">
                           <span className="text-slate-500 dark:text-slate-400">
-                            {item.txn_count.toLocaleString('en-IN')} txns
+                            {(item?.txn_count ?? 0).toLocaleString('en-IN')} txns
                           </span>
                           <span className="px-2 py-0.5 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 font-semibold">
                             Score {score}/10

@@ -446,7 +446,9 @@ export const TransactionRow: React.FC<TransactionRowProps> = ({
             <div className="flex justify-between">
               <span>Imported / Created:</span>
               <span className="font-mono text-slate-700 dark:text-slate-300">
-                {new Date(transaction.created_at).toLocaleString('en-IN')}
+                {transaction?.created_at && !isNaN(new Date(transaction.created_at).getTime())
+                  ? new Date(transaction.created_at).toLocaleString('en-IN')
+                  : 'N/A'}
               </span>
             </div>
           </div>

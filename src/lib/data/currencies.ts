@@ -113,7 +113,7 @@ const SYMBOL_PREFIX_NO_SPACE = new Set([
 ]);
 
 export function formatCurrency(
-  amount: number,
+  amount: number | null | undefined,
   currencyCode?: string | null,
   options?: {
     showSign?: boolean;
@@ -124,7 +124,7 @@ export function formatCurrency(
   const currency = getCurrencyByCode(code);
   const decimals = currency ? currency.decimals : 2;
   const symbol = currency?.symbol || code;
-  const safeAmount = Number.isFinite(amount) ? amount : 0;
+  const safeAmount = amount !== null && amount !== undefined && Number.isFinite(amount) ? amount : 0;
   const isNegative = safeAmount < 0;
   const absAmount = Math.abs(safeAmount);
   const sign = isNegative ? '− ' : options?.showSign && safeAmount > 0 ? '+ ' : '';

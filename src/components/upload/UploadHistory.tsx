@@ -17,12 +17,16 @@ import {
 interface UploadHistoryProps {
   uploads: StatementUpload[];
   onSelectUpload: (upload: StatementUpload) => void;
+  onDeleteUpload?: (uploadId: string) => void;
+  onClearStuck?: () => void;
   isLoading?: boolean;
 }
 
 export const UploadHistory: React.FC<UploadHistoryProps> = ({
   uploads,
   onSelectUpload,
+  onDeleteUpload,
+  onClearStuck,
   isLoading = false,
 }) => {
   const getStatusBadge = (status: UploadStatus) => {
@@ -95,6 +99,17 @@ export const UploadHistory: React.FC<UploadHistoryProps> = ({
             {uploads.length} statement files tracked under audit isolation
           </span>
         </div>
+        {onClearStuck && (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={onClearStuck}
+            leftIcon={<RotateCcw className="w-3.5 h-3.5" />}
+            className="text-amber-600 border-amber-300 hover:bg-amber-50 dark:hover:bg-amber-950/30"
+          >
+            Clear Stuck Uploads
+          </Button>
+        )}
       </CardHeader>
 
       <CardContent className="p-0 divide-y divide-slate-100 dark:divide-slate-800/80">
@@ -144,7 +159,7 @@ export const UploadHistory: React.FC<UploadHistoryProps> = ({
               </div>
 
               {/* Status and Action */}
-              <div className="flex items-center justify-between sm:justify-end gap-3 shrink-0">
+              <div className="flex items-center justify-between sm:justify-end gap-2 shrink-0">
                 {getStatusBadge(upload.status)}
 
                 <Button
@@ -156,8 +171,34 @@ export const UploadHistory: React.FC<UploadHistoryProps> = ({
                   }}
                   leftIcon={<Eye className="w-3.5 h-3.5" />}
                 >
-                  Inspect
+                  {upload.status === 'completed' || upload.status === 'imported'
+                    ? 'Inspect'
+                    : upload.status === 'staged' || upload.status === 'review' || upload.status === 'pending'
+                    ? 'Resume'
+                    : 'Inspect / Retry'}
                 </Button>
+
+                {onDeleteUpload && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (
+                        window.confirm(
+                          upload.status === 'completed' || upload.status === 'imported'
+                            ? `Delete upload "${upload.file_name}" and all associated transactions?`
+                            : `Delete stuck upload "${upload.file_name}"?`
+                        )
+                      ) {
+                        onDeleteUpload(upload.id);
+                      }
+                    }}
+                    className="text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30"
+                  >
+                    Delete
+                  </Button>
+                )}
               </div>
             </div>
           ))

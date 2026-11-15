@@ -229,41 +229,68 @@ async function handleBackup(req: any, res: VercelResponse) {
 async function handleUpload(req: any, res: VercelResponse, path: string) {
   if (path.endsWith('/finalize')) {
     if (req.method !== 'POST') return res.status(405).json({ error: 'Method Not Allowed' });
+    const targetUploadId = req.body?.uploadId || req.body?.upload_id;
+    if (!targetUploadId) return res.status(400).json({ error: 'Missing uploadId' });
+    const supabase = req.supabase;
+    const user = req.user;
+
     try {
-      const { uploadId } = req.body || {};
-      if (!uploadId) return res.status(400).json({ error: 'Missing uploadId' });
-      const supabase = req.supabase;
       const { data: staged, error: stagedErr } = await supabase
         .from('staged_transactions')
         .select('*')
-        .eq('upload_id', uploadId);
+        .eq('upload_id', targetUploadId)
+        .eq('user_id', user.id);
 
-      if (stagedErr) return res.status(500).json({ error: stagedErr.message });
+      if (stagedErr) {
+        await supabase
+          .from('statement_uploads')
+          .update({ status: 'failed', error_message: stagedErr.message, updated_at: new Date().toISOString() })
+          .eq('id', targetUploadId)
+          .eq('user_id', user.id);
+        return res.status(500).json({ error: stagedErr.message });
+      }
 
       if (staged && staged.length > 0) {
         const txsToInsert = staged.map((s: any) => ({
           user_id: s.user_id,
           account_id: s.account_id,
-          date: s.date,
+          upload_id: targetUploadId,
+          date: s.txn_date || s.date,
           description: s.description,
-          amount: s.amount,
-          type: s.type,
-          category_id: s.suggested_category_id,
-          reference_number: s.reference_number,
-          notes: s.notes,
+          amount: s.debit ? Number(s.debit) : s.credit ? Number(s.credit) : Number(s.amount || 0),
+          type: s.debit ? 'debit' : s.credit ? 'credit' : s.type || 'debit',
+          category_id: s.category_id || s.suggested_category_id || null,
+          reference_number: s.reference_number || null,
+          notes: s.notes || null,
         }));
-        await supabase.from('transactions').insert(txsToInsert);
-        await supabase.from('staged_transactions').delete().eq('upload_id', uploadId);
+        const { error: insertErr } = await supabase.from('transactions').insert(txsToInsert);
+        if (insertErr) {
+          await supabase
+            .from('statement_uploads')
+            .update({ status: 'failed', error_message: insertErr.message, updated_at: new Date().toISOString() })
+            .eq('id', targetUploadId)
+            .eq('user_id', user.id);
+          return res.status(500).json({ error: insertErr.message });
+        }
+
+        await supabase.from('staged_transactions').delete().eq('upload_id', targetUploadId).eq('user_id', user.id);
       }
 
       await supabase
         .from('statement_uploads')
-        .update({ status: 'completed' })
-        .eq('id', uploadId);
+        .update({ status: 'completed', updated_at: new Date().toISOString() })
+        .eq('id', targetUploadId)
+        .eq('user_id', user.id);
 
       return res.status(200).json({ success: true, count: staged?.length || 0 });
     } catch (err: any) {
-      return res.status(500).json({ error: err?.message || 'Finalize failed' });
+      const errMsg = err?.message || 'Finalize failed';
+      await supabase
+        .from('statement_uploads')
+        .update({ status: 'failed', error_message: errMsg, updated_at: new Date().toISOString() })
+        .eq('id', targetUploadId)
+        .eq('user_id', user.id);
+      return res.status(500).json({ error: errMsg });
     }
   }
 
@@ -283,7 +310,7 @@ async function handleTransactions(req: any, res: VercelResponse, path: string) {
     const user = req.user;
     const updates = req.body || {};
 
-    const allowedFields = ['category_id', 'description', 'notes', 'tags', 'tax_deductible', 'is_split'];
+    const allowedFields = ['category_id', 'description', 'notes', 'tags', 'tax_deductible', 'is_split', 'date', 'amount', 'type', 'reference_number'];
     const filteredUpdates: Record<string, any> = {};
     for (const field of allowedFields) {
       if (updates[field] !== undefined) filteredUpdates[field] = updates[field];

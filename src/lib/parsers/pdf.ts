@@ -35,16 +35,32 @@ export interface PDFExtractionResult {
 /**
  * Extracts text items with their (x, y) coordinates from PDF ArrayBuffer
  */
-export async function extractPDFRawData(buffer: ArrayBuffer | Uint8Array): Promise<PDFExtractionResult> {
+export async function extractPDFRawData(
+  buffer: ArrayBuffer | Uint8Array,
+  password?: string
+): Promise<PDFExtractionResult> {
   const data = buffer instanceof ArrayBuffer ? new Uint8Array(buffer) : buffer;
 
-  const loadingTask = pdfjsLib.getDocument({
-    data,
-    useSystemFonts: true,
-    disableFontFace: false,
-  });
+  let pdfDoc: pdfjsLib.PDFDocumentProxy;
+  try {
+    const loadingTask = pdfjsLib.getDocument({
+      data,
+      password: password || undefined,
+      useSystemFonts: true,
+      disableFontFace: false,
+    });
+    pdfDoc = await loadingTask.promise;
+  } catch (err: any) {
+    if (
+      err?.name === 'PasswordException' ||
+      err?.message?.toLowerCase().includes('password') ||
+      err?.code === 1
+    ) {
+      throw new Error('This PDF is password-protected. Enter the PDF password and try again.');
+    }
+    throw err;
+  }
 
-  const pdfDoc = await loadingTask.promise;
   const numPages = pdfDoc.numPages;
 
   const pages: PDFRawPage[] = [];

@@ -290,8 +290,8 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ aiEnabled: aiEnabl
                         </pre>
                         {msg.dataSummary && (
                           <div className="text-[10px] text-slate-500 pt-1">
-                            Records matched: {msg.dataSummary.totalRecordsFound} • Metric calculated:{' '}
-                            ₹{msg.dataSummary.metricCalculated?.toLocaleString('en-IN') || 0}
+                            Records matched: {msg.dataSummary?.totalRecordsFound ?? 0} • Metric calculated:{' '}
+                            ₹{(msg.dataSummary?.metricCalculated ?? 0).toLocaleString('en-IN')}
                           </div>
                         )}
                       </div>

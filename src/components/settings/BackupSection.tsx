@@ -215,7 +215,7 @@ export const BackupSection: React.FC = () => {
         {/* Actions & Last Backup Status */}
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-2 border-t border-slate-100 dark:border-slate-800">
           <div className="text-xs text-slate-500">
-            {lastBackupDate ? (
+            {lastBackupDate && !isNaN(new Date(lastBackupDate).getTime()) ? (
               <span>Last backup created: {new Date(lastBackupDate).toLocaleString('en-IN')}</span>
             ) : (
               <span>No backup generated yet</span>
