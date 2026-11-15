@@ -35,7 +35,7 @@ export function formatAnalyticsDateTime(isoString: string | null | undefined): s
 export function formatAnalyticsDate(dateStr: string | null | undefined): string {
   if (!dateStr) return 'N/A';
   const d = new Date(dateStr.includes('T') ? dateStr : `${dateStr}T00:00:00`);
-  if (!Number.isFinite(d.getTime())) return dateStr;
+  if (!Number.isFinite(d.getTime())) return 'N/A';
   const day = String(d.getDate()).padStart(2, '0');
   const mon = d.toLocaleString('en-IN', { month: 'short' });
   const yr = d.getFullYear();
