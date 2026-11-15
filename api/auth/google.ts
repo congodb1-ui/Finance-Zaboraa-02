@@ -1,6 +1,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { createClient as createSupabaseClient } from '@supabase/supabase-js';
 import crypto from 'node:crypto';
+import { ensureUserBootstrap } from '../_lib/bootstrap';
 
 // --- Inlined Google JWKS verification ---
 interface GoogleJwk extends crypto.JsonWebKey {
@@ -333,6 +334,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(500).json({
         error: otpError?.message || 'Failed to exchange token for Supabase session.',
       });
+    }
+
+    if (otpData.user) {
+      await ensureUserBootstrap(
+        otpData.user.id,
+        verifiedUser.email,
+        verifiedUser.fullName || undefined
+      );
     }
 
     return res.status(200).json({
