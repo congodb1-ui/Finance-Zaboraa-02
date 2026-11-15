@@ -320,7 +320,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     });
 
     const { data: otpData, error: otpError } = await anonClient.auth.verifyOtp({
-      email: verifiedUser.email,
       token_hash: linkData.properties.hashed_token,
       type: 'magiclink',
     });
