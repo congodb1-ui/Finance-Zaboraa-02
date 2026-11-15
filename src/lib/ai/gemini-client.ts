@@ -10,11 +10,17 @@ export function isAIError(res: any): res is AIError {
   return res && typeof res === 'object' && res.error === true && typeof res.message === 'string';
 }
 
+const DEFAULT_FLASH_MODEL = 'gemini-3.5-flash-lite';
+const DEFAULT_PRO_MODEL = 'gemini-3.8-flash';
+
+function readEnvModel(envKey: 'GEMINI_MODEL_FLASH' | 'GEMINI_MODEL_PRO', fallback: string): string {
+  const val = typeof process !== 'undefined' && process.env ? process.env[envKey] : undefined;
+  return val && val.trim().length > 0 ? val.trim() : fallback;
+}
+
 export const GEMINI_MODELS = {
-  // TODO: Verify against https://ai.google.dev/gemini-api/docs/models before Go-Live
-  FLASH: 'gemini-2.5-flash',
-  // TODO: Verify against https://ai.google.dev/gemini-api/docs/models before Go-Live
-  PRO: 'gemini-2.5-pro',
+  FLASH: readEnvModel('GEMINI_MODEL_FLASH', DEFAULT_FLASH_MODEL),
+  PRO: readEnvModel('GEMINI_MODEL_PRO', DEFAULT_PRO_MODEL),
 } as const;
 
 // Simple in-memory token bucket rate limiter: max 50 requests per 60 seconds
@@ -67,7 +73,7 @@ function getAIClient(): GoogleGenAI | null {
 }
 
 /**
- * Executes a call to gemini-2.5-flash (categorization, cleaning, anomaly detection, chat).
+ * Executes a call to GEMINI_MODEL_FLASH (categorization, cleaning, anomaly detection, chat).
  * Strictly logs metadata only (never logs prompt contents).
  */
 export async function callGeminiFlash(
@@ -78,11 +84,12 @@ export async function callGeminiFlash(
     responseSchema?: any;
   }
 ): Promise<{ text: string; tokens?: number } | AIError> {
-  return executeGeminiCall(GEMINI_MODELS.FLASH, contents, config);
+  const model = readEnvModel('GEMINI_MODEL_FLASH', DEFAULT_FLASH_MODEL);
+  return executeGeminiCall(model, contents, config);
 }
 
 /**
- * Executes a call to gemini-2.5-pro (monthly report narrative only).
+ * Executes a call to GEMINI_MODEL_PRO (monthly report narrative only).
  */
 export async function callGeminiPro(
   contents: string,
@@ -91,7 +98,8 @@ export async function callGeminiPro(
     responseMimeType?: string;
   }
 ): Promise<{ text: string; tokens?: number } | AIError> {
-  return executeGeminiCall(GEMINI_MODELS.PRO, contents, config);
+  const model = readEnvModel('GEMINI_MODEL_PRO', DEFAULT_PRO_MODEL);
+  return executeGeminiCall(model, contents, config);
 }
 
 /**
@@ -133,11 +141,6 @@ async function executeGeminiCall(
       response.usageMetadata?.totalTokenCount ??
       Math.ceil(contents.length / 4);
 
-    // SECURITY: Log model, tokens, and timestamp ONLY — NEVER log the prompt content
-    console.log(
-      `[Gemini AI Success] Model: ${model} | Tokens: ${tokenCount} | Timestamp: ${new Date().toISOString()}`
-    );
-
     const text = response.text || '';
     return {
       text,
@@ -146,6 +149,12 @@ async function executeGeminiCall(
   } catch (err: any) {
     const errorMsg = err?.message || 'Unknown error occurred while contacting Gemini API.';
     const errorCode = err?.status || err?.code || 'GEMINI_CALL_FAILED';
+    const isModelNotFound =
+      Number(errorCode) === 404 ||
+      String(errorCode).toUpperCase() === 'NOT_FOUND' ||
+      /model.*not found|models\/.*is not found|not supported for generateContent|NOT_FOUND/i.test(
+        errorMsg
+      );
 
     console.error(
       `[Gemini AI Error] Model: ${model} | Code: ${errorCode} | Timestamp: ${new Date().toISOString()}`
@@ -153,8 +162,10 @@ async function executeGeminiCall(
 
     return {
       error: true,
-      message: errorMsg,
-      code: String(errorCode),
+      message: isModelNotFound
+        ? `Gemini model "${model}" was not found or is unsupported. Update GEMINI_MODEL_FLASH / GEMINI_MODEL_PRO to an active model ID from https://ai.google.dev/gemini-api/docs/models.`
+        : errorMsg,
+      code: isModelNotFound ? 'MODEL_NOT_FOUND' : String(errorCode),
     };
   }
 }

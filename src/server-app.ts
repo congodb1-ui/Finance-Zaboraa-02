@@ -38,6 +38,7 @@ import { parsePDFGeneric } from './lib/parsers/pdf-generic';
 import { getCurrentFY, getFYBounds } from './lib/fy-utils';
 import { writeAuditLog } from './lib/audit';
 import { verifyGoogleIdToken } from './lib/google-auth-server';
+import { encryptValue } from './lib/crypto';
 import { getPaymentInstruction } from './lib/actions/paymentInstructions';
 import {
   createPaymentInstructionServer,
@@ -182,20 +183,62 @@ export async function runServer() {
   const PORT = 3000;
   const HOST = '0.0.0.0';
 
-  // Security headers (CSP/frameguard relaxed for Vite SPA dev & iframe preview)
+  app.set('trust proxy', 1);
+
+  // Security headers (CSP/frameguard/CORP relaxed for Vite SPA dev & iframe preview)
   app.use(
     helmet({
       contentSecurityPolicy: false,
       frameguard: false,
       crossOriginEmbedderPolicy: false,
       crossOriginOpenerPolicy: false,
+      crossOriginResourcePolicy: false,
     })
   );
+
+  // CORS restriction on /api: allow https://finance.zaboraa.com, same-origin host (including preview proxy),
+  // and http://localhost:3000 in non-production dev
+  const ALLOWED_CORS_ORIGINS = new Set<string>(['https://finance.zaboraa.com']);
+  if (process.env.NODE_ENV !== 'production') {
+    ALLOWED_CORS_ORIGINS.add('http://localhost:3000');
+  }
+
+  app.use('/api', (req: Request, res: Response, next: NextFunction) => {
+    const origin = req.headers.origin;
+    res.setHeader('Vary', 'Origin');
+
+    if (origin) {
+      let isSameOrigin = false;
+      try {
+        const originHost = new URL(origin).host;
+        const forwardedHost = String(req.headers['x-forwarded-host'] || '').split(',')[0].trim();
+        const requestHost = forwardedHost || String(req.headers.host || '').trim();
+        isSameOrigin = Boolean(requestHost && originHost === requestHost);
+      } catch {
+        isSameOrigin = false;
+      }
+
+      if (!ALLOWED_CORS_ORIGINS.has(origin) && !isSameOrigin) {
+        return res.status(403).json({ error: 'CORS origin not allowed.' });
+      }
+      res.setHeader('Access-Control-Allow-Origin', origin);
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type, Accept');
+      res.setHeader('Access-Control-Max-Age', '86400');
+    }
+
+    if (req.method === 'OPTIONS') {
+      return res.status(204).end();
+    }
+
+    return next();
+  });
 
   app.use(express.json({ limit: '25mb' }));
   app.use(express.urlencoded({ extended: true, limit: '25mb' }));
 
-  // Rate limiting: 100 req / 15 min per IP for API routes; 10 req / 15 min on /api/ai/*
+  // Rate limiting: 100 req / 15 min per IP for API routes; 10 req / 15 min on /api/ai/*;
+  // tighter limits on /api/auth/google (15 / 15 min) and /api/payment-instructions/:id/reveal (20 / 15 min)
   const apiLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
     max: 100,
@@ -212,12 +255,28 @@ export async function runServer() {
     message: { error: 'AI rate limit exceeded. Please try again in 15 minutes.' },
   });
 
+  const authLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 15,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Too many authentication attempts. Please try again in 15 minutes.' },
+  });
+
+  const revealLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 20,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Too many reveal requests. Please try again in 15 minutes.' },
+  });
+
   app.use('/api', apiLimiter);
   app.use('/api/ai', aiLimiter);
 
   // --- Direct Google Identity Services Auth Endpoint (finance.zaboraa.com) ---
   // Flow: Browser GIS ID token -> Express verifies token + ALLOWED_EMAILS -> creates Supabase session
-  app.post('/api/auth/google', async (req: Request, res: Response) => {
+  app.post('/api/auth/google', authLimiter, async (req: Request, res: Response) => {
     try {
       const credential =
         typeof req.body?.credential === 'string' ? req.body.credential.trim() : '';
@@ -1193,6 +1252,7 @@ export async function runServer() {
 
   app.post(
     '/api/payment-instructions/:id/reveal',
+    revealLimiter,
     requireAuth,
     async (req: AuthenticatedRequest, res: Response) => {
       try {
@@ -1209,6 +1269,72 @@ export async function runServer() {
       } catch (err: any) {
         const message = err?.message || 'Failed to decrypt payment instruction.';
         console.error('Reveal payment instruction error:', message);
+        return res.status(500).json({ error: message });
+      }
+    }
+  );
+
+  // 12. Profile & PAN Encryption (Server-Side AES-256-GCM Encryption via ENCRYPTION_KEY)
+  app.post(
+    '/api/profile/pan',
+    requireAuth,
+    async (req: AuthenticatedRequest, res: Response) => {
+      try {
+        const body = req.body || {};
+        const payload: Record<string, any> = {
+          user_id: req.user!.id,
+        };
+
+        if (body.full_name !== undefined) {
+          payload.full_name = typeof body.full_name === 'string' ? body.full_name.trim() || null : null;
+        }
+        if (body.email !== undefined) {
+          payload.email = typeof body.email === 'string' ? body.email.trim() || null : null;
+        }
+        if (body.phone !== undefined) {
+          payload.phone = typeof body.phone === 'string' ? body.phone.trim() || null : null;
+        }
+        if (body.address !== undefined) {
+          payload.address = typeof body.address === 'string' ? body.address.trim() || null : null;
+        }
+        if (body.default_fy !== undefined) {
+          payload.default_fy = body.default_fy || '2026-27';
+        }
+        if (body.dark_mode !== undefined) {
+          payload.dark_mode = Boolean(body.dark_mode);
+        }
+        if (body.last_backup_at !== undefined) {
+          payload.last_backup_at = body.last_backup_at;
+        }
+
+        const rawPan = typeof body.pan === 'string' ? body.pan.trim().toUpperCase() : '';
+        if (!rawPan) {
+          return res.status(400).json({ error: 'PAN is required.' });
+        }
+        if (!/^[A-Z]{5}[0-9]{4}[A-Z]$/.test(rawPan)) {
+          return res.status(400).json({
+            error: 'Invalid PAN format. Expected 10-character format (e.g. ABCDE1234F).',
+          });
+        }
+
+        payload.pan_encrypted = await encryptValue(rawPan);
+
+        const { data: updated, error } = await req.supabase
+          .from('profiles')
+          .upsert(payload, { onConflict: 'user_id' })
+          .select('*')
+          .single();
+
+        if (error || !updated) {
+          return res.status(500).json({
+            error: error?.message || 'Failed to save encrypted PAN profile.',
+          });
+        }
+
+        return res.json(updated);
+      } catch (err: any) {
+        const message = err?.message || 'Failed to encrypt and save PAN.';
+        console.error('Save encrypted PAN error:', message);
         return res.status(500).json({ error: message });
       }
     }

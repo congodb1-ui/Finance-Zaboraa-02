@@ -27,6 +27,8 @@
 ```bash
 ALLOWED_EMAILS=your-email@gmail.com
 GEMINI_API_KEY=your-gemini-api-key
+GEMINI_MODEL_FLASH=gemini-3.5-flash-lite
+GEMINI_MODEL_PRO=gemini-3.8-flash
 VITE_APP_URL=https://finance.zaboraa.com
 NEXT_PUBLIC_APP_URL=https://finance.zaboraa.com
 VITE_GOOGLE_CLIENT_ID=your-google-web-client-id.apps.googleusercontent.com
@@ -97,4 +99,18 @@ Run cross-user Row-Level Security (RLS) isolation verification across all 13 Bat
 
 ```bash
 RLS_USER1_TOKEN=eyJ... RLS_USER2_TOKEN=eyJ... npx tsx scripts/rls-verify.ts
+RLS_USER1_TOKEN=eyJ... RLS_USER2_TOKEN=eyJ... npx tsx scripts/rls-verify.ts --seed
 ```
+
+Run the unauthenticated Express API auth sweep (every protected `/api/*` route must return HTTP `401`):
+
+```bash
+npx tsx scripts/auth-sweep.ts
+```
+
+---
+
+## 7. Encryption Key Rotation & Re-Encryption
+
+- Both `payment_instructions` (`account_number_encrypted`, `iban_encrypted`) and `profiles.pan_encrypted` are encrypted **server-side only** using `ENCRYPTION_KEY` (AES-256-GCM + PBKDF2).
+- **Important:** Any existing `profiles.pan_encrypted` or `payment_instructions` rows encrypted with a previous key (including legacy browser-derived keys) **must be re-encrypted** after rotating or migrating `ENCRYPTION_KEY` by re-entering and saving the PAN in **Settings** and re-saving any affected Bank & Payment Instructions.
