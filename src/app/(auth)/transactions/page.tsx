@@ -276,7 +276,7 @@ export default function TransactionsPage() {
                   }
                 }}
               >
-                Delete All for This Account
+                Delete All for Account
               </Button>
             )}
             <Button

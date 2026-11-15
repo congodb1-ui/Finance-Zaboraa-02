@@ -153,23 +153,39 @@ export async function processStatementUpload(
   // Check duplicate file hash for this user
   const { data: existingUpload } = await supabase
     .from('statement_uploads')
-    .select('id, row_count, file_type')
+    .select('id, row_count, file_type, status')
     .eq('user_id', user.id)
     .eq('file_hash', fileHash)
-    .neq('status', 'failed')
     .maybeSingle();
 
   if (existingUpload) {
-    return {
-      upload_id: existingUpload.id,
-      row_count: existingUpload.row_count || 0,
-      column_mapping: null,
-      needs_mapping: false,
-      headers: [],
-      error: 'DUPLICATE_FILE',
-      existing_upload_id: existingUpload.id,
-      file_type: existingUpload.file_type,
-    };
+    if (existingUpload.status === 'completed' || existingUpload.status === 'imported') {
+      return {
+        upload_id: existingUpload.id,
+        row_count: existingUpload.row_count || 0,
+        column_mapping: null,
+        needs_mapping: false,
+        headers: [],
+        error: 'DUPLICATE_FILE',
+        needs_resume: false,
+        existing_upload_id: existingUpload.id,
+        existing_status: existingUpload.status,
+        file_type: existingUpload.file_type,
+      };
+    } else {
+      return {
+        upload_id: existingUpload.id,
+        row_count: existingUpload.row_count || 0,
+        column_mapping: null,
+        needs_mapping: false,
+        headers: [],
+        error: 'UNFINISHED_UPLOAD',
+        needs_resume: true,
+        existing_upload_id: existingUpload.id,
+        existing_status: existingUpload.status,
+        file_type: existingUpload.file_type,
+      };
+    }
   }
 
   // STEP 4 — Upload to Supabase Storage path: {user_id}/{YYYY-MM}/{timestamp}-{sanitized-filename}
@@ -234,6 +250,8 @@ export async function processStatementUpload(
       parser_version: parseResult.parser_version,
       status: 'pending',
       row_count: parseResult.rows.length,
+      statement_period_start: parseResult.statement_period_start || null,
+      statement_period_end: parseResult.statement_period_end || null,
     })
     .select()
     .single();

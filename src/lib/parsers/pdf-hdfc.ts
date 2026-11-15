@@ -1,5 +1,5 @@
 import type { ParseResult, ColumnMapping } from '../../types/uploads';
-import { extractPDFRawData, type PDFExtractionResult } from './pdf';
+import { extractPDFRawData, extractStatementPeriod, type PDFExtractionResult } from './pdf';
 
 const HDFC_COLUMNS = [
   'Date',
@@ -257,6 +257,17 @@ export async function parsePDFHDFC(
     rows.push(rowObj);
   }
 
+  const period = pdfData.statementPeriodStart && pdfData.statementPeriodEnd
+    ? { start: pdfData.statementPeriodStart, end: pdfData.statementPeriodEnd }
+    : extractStatementPeriod(pdfData.fullDocumentText);
+
+  let periodStart = period.start;
+  let periodEnd = period.end;
+  if (!periodStart && rows.length > 0) {
+    periodStart = rows[0].Date;
+    periodEnd = rows[rows.length - 1].Date;
+  }
+
   return {
     headers: [...HDFC_COLUMNS],
     rows,
@@ -266,6 +277,8 @@ export async function parsePDFHDFC(
     suggested_mapping: HDFC_HARDCODED_MAPPING,
     opening_balance: pdfData.openingBalance,
     closing_balance: pdfData.closingBalance,
+    statement_period_start: periodStart,
+    statement_period_end: periodEnd,
     raw_text: pdfData.fullDocumentText,
   };
 }

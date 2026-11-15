@@ -106,4 +106,28 @@ describe('Parsers Unit Tests (UP-U01 - UP-U08)', () => {
     expect(normalizeDate('2026-11-01')).toBe('2026-11-01');
     expect(normalizeDate('15-08-2026')).toBe('2026-08-15');
   });
+
+  it('UP-U09: extractStatementPeriod parses Statement From ... To format correctly', async () => {
+    const mockPdfData = {
+      openingBalance: 238591,
+      closingBalance: 809.20,
+      fullDocumentText: 'Statement From : 01/01/2026 To : 19/07/2026\\nAccount Statement for 123456783597',
+      allGridRows: [],
+      pages: [
+        {
+          pageNumber: 1,
+          fullText: 'Statement From : 01/01/2026 To : 19/07/2026',
+          textItems: [],
+          gridRows: [
+            ['Date', 'Narration', 'Chq/Ref No', 'Value Dt', 'Withdrawal', 'Deposit', 'Balance'],
+            ['01/01/2026', 'UPI-DEBIT-PAYMENT-1', '01/01/2026', 'REF101', '100.00', '238491.00'],
+          ],
+        },
+      ],
+    };
+
+    const res = await parsePDFHDFC(new Uint8Array(0), mockPdfData);
+    expect(res.statement_period_start).toBe('01/01/2026');
+    expect(res.statement_period_end).toBe('19/07/2026');
+  });
 });

@@ -251,18 +251,30 @@ async function handleUpload(req: any, res: VercelResponse, path: string) {
       }
 
       if (staged && staged.length > 0) {
-        const txsToInsert = staged.map((s: any) => ({
-          user_id: s.user_id,
-          account_id: s.account_id,
-          upload_id: targetUploadId,
-          date: s.txn_date || s.date,
-          description: s.description,
-          amount: s.debit ? Number(s.debit) : s.credit ? Number(s.credit) : Number(s.amount || 0),
-          type: s.debit ? 'debit' : s.credit ? 'credit' : s.type || 'debit',
-          category_id: s.category_id || s.suggested_category_id || null,
-          reference_number: s.reference_number || null,
-          notes: s.notes || null,
-        }));
+        const txsToInsert = staged.map((s: any) => {
+          const debitVal = s.debit !== null && s.debit !== undefined ? Number(s.debit) : null;
+          const creditVal = s.credit !== null && s.credit !== undefined ? Number(s.credit) : null;
+          const txnType = debitVal ? 'expense' : creditVal ? 'income' : 'expense';
+
+          return {
+            user_id: s.user_id,
+            account_id: s.account_id,
+            upload_id: targetUploadId,
+            txn_date: s.txn_date,
+            description: s.description,
+            raw_description: s.raw_description || s.description,
+            debit: debitVal,
+            credit: creditVal,
+            balance: s.balance !== null && s.balance !== undefined ? Number(s.balance) : null,
+            category_id: s.category_id || s.suggested_category_id || null,
+            workspace_id: s.workspace_id || null,
+            txn_type: txnType,
+            reference_number: s.reference_number || null,
+            notes: s.notes || null,
+            source_staged_id: s.id,
+          };
+        });
+
         const { error: insertErr } = await supabase.from('transactions').insert(txsToInsert);
         if (insertErr) {
           await supabase
@@ -310,7 +322,7 @@ async function handleTransactions(req: any, res: VercelResponse, path: string) {
     const user = req.user;
     const updates = req.body || {};
 
-    const allowedFields = ['category_id', 'description', 'notes', 'tags', 'tax_deductible', 'is_split', 'date', 'amount', 'type', 'reference_number'];
+    const allowedFields = ['category_id', 'workspace_id', 'description', 'notes', 'tags', 'tax_deductible', 'is_split', 'txn_date', 'debit', 'credit', 'balance', 'txn_type', 'reference_number', 'is_transfer', 'is_self_transfer', 'transfer_pair_id', 'status'];
     const filteredUpdates: Record<string, any> = {};
     for (const field of allowedFields) {
       if (updates[field] !== undefined) filteredUpdates[field] = updates[field];

@@ -109,6 +109,8 @@ export interface ParseResult {
   suggested_mapping?: ColumnMapping;
   opening_balance?: number | null;
   closing_balance?: number | null;
+  statement_period_start?: string | null;
+  statement_period_end?: string | null;
   reconciliation_warning?: boolean;
   reconciliation_diff?: number;
   raw_text?: string;
@@ -125,7 +127,9 @@ export interface UploadApiResponse {
   detected_bank?: string;
   sample_rows?: Array<Record<string, string>>;
   error?: string;
+  needs_resume?: boolean;
   existing_upload_id?: string;
+  existing_status?: string;
   file_type?: FileType;
   reconciliation_warning?: boolean;
   reconciliation_diff?: number;

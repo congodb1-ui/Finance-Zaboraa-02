@@ -12,6 +12,7 @@ import {
   processStatementUpload,
   confirmMappingAndStaging,
   cancelUpload,
+  deleteUpload,
   getUploads,
   getUploadDetails,
   checkDateOverlap,
@@ -51,6 +52,7 @@ export default function StatementUploadPage() {
   const [currentStep, setCurrentStep] = useState<UploadStep>('select');
   const [isProcessing, setIsProcessing] = useState(false);
   const [statusMessage, setStatusMessage] = useState<{ type: 'error' | 'success' | 'info'; text: string } | null>(null);
+  const [unfinishedUploadId, setUnfinishedUploadId] = useState<string | null>(null);
 
   // Active upload parsing state
   const [uploadApiResponse, setUploadApiResponse] = useState<UploadApiResponse | null>(null);
@@ -117,7 +119,18 @@ export default function StatementUploadPage() {
       if (response.error === 'DUPLICATE_FILE') {
         setStatusMessage({
           type: 'error',
-          text: `Duplicate file detected: This exact statement (SHA-256 match) was already uploaded earlier. Upload blocked.`,
+          text: 'Duplicate file — already imported.',
+        });
+        setCurrentStep('select');
+        return;
+      }
+
+      // Handle unfinished upload (resume or delete old)
+      if (response.needs_resume && response.existing_upload_id) {
+        setUnfinishedUploadId(response.existing_upload_id);
+        setStatusMessage({
+          type: 'info',
+          text: 'This file was uploaded before but did not complete.',
         });
         setCurrentStep('select');
         return;
@@ -253,9 +266,10 @@ export default function StatementUploadPage() {
   };
 
   // Inspect past upload from History
-  const handleInspectHistoryUpload = async (upload: StatementUpload) => {
+  const handleInspectHistoryUpload = async (uploadOrId: StatementUpload | string) => {
     try {
-      const details = await getUploadDetails(upload.id);
+      const uploadId = typeof uploadOrId === 'string' ? uploadOrId : uploadOrId.id;
+      const details = await getUploadDetails(uploadId);
       setActiveUpload(details.upload);
       setStagedTransactions(details.transactions);
       setIsReadOnlyInspection(true);
@@ -316,8 +330,49 @@ export default function StatementUploadPage() {
         </div>
       </div>
 
-      {/* Floating Status Notification */}
-      {statusMessage && (
+      {/* Floating Status Notification / Resume Unfinished Banner */}
+      {unfinishedUploadId ? (
+        <div className="p-4 rounded-xl border bg-amber-50 dark:bg-amber-950/50 border-amber-200 dark:border-amber-800 text-amber-900 dark:text-amber-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs animate-in fade-in">
+          <div className="flex items-start gap-3">
+            <AlertCircle className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+            <div>
+              <span className="font-semibold block">Unfinished Upload Detected</span>
+              <p className="mt-0.5 leading-relaxed">This file was uploaded before but did not complete.</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={async () => {
+                const targetId = unfinishedUploadId;
+                setUnfinishedUploadId(null);
+                await handleInspectHistoryUpload(targetId);
+              }}
+            >
+              Resume
+            </Button>
+            <Button
+              variant="destructive"
+              size="sm"
+              onClick={async () => {
+                const targetId = unfinishedUploadId;
+                setUnfinishedUploadId(null);
+                try {
+                  await deleteUpload(targetId);
+                  setStatusMessage({ type: 'success', text: 'Previous incomplete upload removed. You can now re-upload the file.' });
+                  const history = await getUploads();
+                  setUploadsHistory(history);
+                } catch (e: any) {
+                  setStatusMessage({ type: 'error', text: e.message || 'Failed to remove old upload.' });
+                }
+              }}
+            >
+              Delete old and re-upload
+            </Button>
+          </div>
+        </div>
+      ) : statusMessage && (
         <div
           className={`p-4 rounded-xl border flex items-start gap-3 text-xs animate-in fade-in ${
             statusMessage.type === 'error'

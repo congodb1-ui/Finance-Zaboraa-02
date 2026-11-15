@@ -30,6 +30,8 @@ export interface PDFExtractionResult {
   fullDocumentText: string;
   openingBalance: number | null;
   closingBalance: number | null;
+  statementPeriodStart?: string | null;
+  statementPeriodEnd?: string | null;
 }
 
 /**
@@ -170,6 +172,7 @@ export async function extractPDFRawData(
 
   // Attempt to extract opening and closing balance from full document text for reconciliation
   const balances = extractStatementBalances(fullDocumentText);
+  const period = extractStatementPeriod(fullDocumentText);
 
   return {
     pages,
@@ -177,7 +180,37 @@ export async function extractPDFRawData(
     fullDocumentText,
     openingBalance: balances.opening,
     closingBalance: balances.closing,
+    statementPeriodStart: period.start,
+    statementPeriodEnd: period.end,
   };
+}
+
+/**
+ * Searches statement text for statement period / date range patterns
+ * Matches "Statement From : 01/01/2026 To : 19/07/2026", "Statement From 01/01/2026 To 19/07/2026", etc.
+ */
+export function extractStatementPeriod(text: string): { start: string | null; end: string | null } {
+  if (!text) return { start: null, end: null };
+
+  // Pattern 1: Statement From : DD/MM/YYYY To : DD/MM/YYYY
+  const p1 = text.match(/statement\s+from\s*[:\-]?\s*(\d{1,2}[/\-.]\d{1,2}[/\-.]\d{2,4})\s+(?:to|-)\s*[:\-]?\s*(\d{1,2}[/\-.]\d{1,2}[/\-.]\d{2,4})/i);
+  if (p1 && p1[1] && p1[2]) {
+    return { start: p1[1].trim(), end: p1[2].trim() };
+  }
+
+  // Pattern 2: Statement Period : DD/MM/YYYY to DD/MM/YYYY or DD-Mon-YYYY to DD-Mon-YYYY
+  const p2 = text.match(/(?:statement\s+period|period|txn\s+period|from\s+date)\s*[:\-]?\s*(\d{1,2}[/\-.][\w]+[/\-.]\d{2,4}|\d{1,2}[/\-.]\d{1,2}[/\-.]\d{2,4})\s*(?:to|-)\s*[:\-]?\s*(\d{1,2}[/\-.][\w]+[/\-.]\d{2,4}|\d{1,2}[/\-.]\d{1,2}[/\-.]\d{2,4})/i);
+  if (p2 && p2[1] && p2[2]) {
+    return { start: p2[1].trim(), end: p2[2].trim() };
+  }
+
+  // Pattern 3: From DD/MM/YYYY To DD/MM/YYYY
+  const p3 = text.match(/from\s*[:\-]?\s*(\d{1,2}[/\-.]\d{1,2}[/\-.]\d{2,4})\s+to\s*[:\-]?\s*(\d{1,2}[/\-.]\d{1,2}[/\-.]\d{2,4})/i);
+  if (p3 && p3[1] && p3[2]) {
+    return { start: p3[1].trim(), end: p3[2].trim() };
+  }
+
+  return { start: null, end: null };
 }
 
 /**

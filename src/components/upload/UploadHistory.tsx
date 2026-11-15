@@ -186,9 +186,7 @@ export const UploadHistory: React.FC<UploadHistoryProps> = ({
                       e.stopPropagation();
                       if (
                         window.confirm(
-                          upload.status === 'completed' || upload.status === 'imported'
-                            ? `Delete upload "${upload.file_name}" and all associated transactions?`
-                            : `Delete stuck upload "${upload.file_name}"?`
+                          `Delete this upload and its ${upload.row_count || 0} transactions? This cannot be undone.`
                         )
                       ) {
                         onDeleteUpload(upload.id);
@@ -196,7 +194,7 @@ export const UploadHistory: React.FC<UploadHistoryProps> = ({
                     }}
                     className="text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30"
                   >
-                    Delete
+                    Delete Upload
                   </Button>
                 )}
               </div>

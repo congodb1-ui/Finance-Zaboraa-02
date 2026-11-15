@@ -155,7 +155,11 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
             <span>•</span>
             <span className="inline-flex items-center gap-1">
               <Calendar className="w-3.5 h-3.5 text-slate-400" />
-              Period: {upload.statement_period_start || 'N/A'} to {upload.statement_period_end || 'N/A'}
+              Period: {upload.statement_period_start && upload.statement_period_end
+                ? `${upload.statement_period_start} to ${upload.statement_period_end}`
+                : transactions && transactions.length > 0
+                ? `${transactions[transactions.length - 1]?.raw_date || transactions[transactions.length - 1]?.txn_date || 'N/A'} to ${transactions[0]?.raw_date || transactions[0]?.txn_date || 'N/A'}`
+                : 'N/A'}
             </span>
           </div>
         </div>
@@ -183,7 +187,7 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
                 variant="destructive"
                 size="sm"
                 onClick={() => {
-                  if (window.confirm(`Delete this upload and its ${transactions.length} transactions?`)) {
+                  if (window.confirm(`Delete this upload and its ${transactions.length} transactions? This cannot be undone.`)) {
                     onDeleteUpload(upload.id);
                   }
                 }}
