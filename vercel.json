@@ -1,27 +1,20 @@
 {
-  "routes": [
+  "rewrites": [
     {
-      "src": "/api/payment-instructions/(?<id>[^/]+)/reveal",
-      "dest": "/api/payment-instructions/[id]/reveal.ts"
+      "source": "/api/payment-instructions/:id/reveal",
+      "destination": "/api/payment-instructions/[id]/reveal"
     },
     {
-      "src": "/api/payment-instructions/(?<id>[^/]+)",
-      "dest": "/api/payment-instructions/[id].ts"
+      "source": "/api/payment-instructions/:id",
+      "destination": "/api/payment-instructions/[id]"
     },
     {
-      "src": "/api/transactions/(?<id>[^/]+)",
-      "dest": "/api/transactions/[id].ts"
+      "source": "/api/transactions/:id",
+      "destination": "/api/transactions/[id]"
     },
     {
-      "src": "/api/(.*)",
-      "dest": "/api/$1.ts"
-    },
-    {
-      "handle": "filesystem"
-    },
-    {
-      "src": "/(.*)",
-      "dest": "/index.html"
+      "source": "/((?!api/).*)",
+      "destination": "/index.html"
     }
   ]
 }
