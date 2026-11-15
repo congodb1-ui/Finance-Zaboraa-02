@@ -30,6 +30,7 @@ export interface Account {
   upi_id?: string | null;
   account_holder_name?: string | null;
   operated_by_owner?: boolean;
+  current_balance?: number | null;
   credit_limit: number | null;
   billing_cycle_day: number | null;
   payment_due_day: number | null;

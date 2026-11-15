@@ -71,11 +71,16 @@ export async function getAccounts(client?: any): Promise<AccountWithBalance[]> {
   return data.map((acc: Account) => {
     const openBal = Number(acc.opening_balance ?? 0);
     const delta = balanceMap.get(acc.id) || 0;
+    const computedBal = Math.round((openBal + delta) * 100) / 100;
+    const storedBal =
+      acc.current_balance !== null && acc.current_balance !== undefined
+        ? Number(acc.current_balance)
+        : null;
     return {
       ...acc,
       opening_balance: openBal,
       opening_date: acc.opening_date ?? null,
-      current_balance: Math.round((openBal + delta) * 100) / 100,
+      current_balance: storedBal !== null && Number.isFinite(storedBal) ? storedBal : computedBal,
       last_import_date: lastImportMap.get(acc.id) || null,
     };
   });

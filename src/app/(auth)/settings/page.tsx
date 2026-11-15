@@ -9,6 +9,7 @@ import { Select } from '../../../components/ui/Select';
 import { signOut, useAuth } from '../../../lib/auth';
 import { BackupSection } from '../../../components/settings/BackupSection';
 import { BusinessProfileSection } from '../../../components/settings/BusinessProfileSection';
+import { GmailIntegrationSection } from '../../../components/settings/GmailIntegrationSection';
 import { PaymentInstructionList } from '../../../components/invoicing/PaymentInstructionList';
 import { getProfile } from '../../../lib/actions/profile';
 import { useUserPreferences } from '../../../lib/contexts/UserPreferencesContext';
@@ -311,7 +312,10 @@ export default function SettingsPage() {
         </CardContent>
       </Card>
 
-      {/* 4. Encrypted Vault Backup */}
+      {/* 4. Gmail Auto-Import Integration */}
+      <GmailIntegrationSection />
+
+      {/* 5. Encrypted Vault Backup */}
       <BackupSection />
 
       {/* 5. Session & Sign Out */}

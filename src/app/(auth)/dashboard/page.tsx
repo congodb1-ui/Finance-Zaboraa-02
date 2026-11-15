@@ -15,6 +15,7 @@ import { AnomalyBanner } from '../../../components/ai/AnomalyBanner';
 import { MonthlyReport } from '../../../components/ai/MonthlyReport';
 import { BudgetHealthRow } from '../../../components/dashboard/BudgetHealthRow';
 import { UpcomingRecurringWidget } from '../../../components/dashboard/UpcomingRecurringWidget';
+import { GmailSyncBanner } from '../../../components/dashboard/GmailSyncBanner';
 import { Button } from '../../../components/ui/Button';
 import { useUserPreferences } from '../../../lib/contexts/UserPreferencesContext';
 import {
@@ -229,6 +230,9 @@ export default function DashboardPage() {
             onViewITRReport={handleNavigateToITR}
           />
         </div>
+
+        {/* Dismissable Gmail Auto-Import Sync Banner */}
+        <GmailSyncBanner />
 
         {/* Compact Budget Health Row */}
         <BudgetHealthRow />

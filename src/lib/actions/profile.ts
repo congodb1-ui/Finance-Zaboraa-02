@@ -14,6 +14,7 @@ export interface ProfileRecord {
   timezone?: string | null;
   dark_mode: boolean;
   gmail_connected?: boolean;
+  gmail_email?: string | null;
   gmail_last_synced?: string | null;
   gmail_sync_enabled?: boolean;
   last_backup_at: string | null;
@@ -33,6 +34,7 @@ export interface ProfileUpsertInput {
   timezone?: string | null;
   dark_mode?: boolean;
   gmail_connected?: boolean;
+  gmail_email?: string | null;
   gmail_last_synced?: string | null;
   gmail_sync_enabled?: boolean;
   last_backup_at?: string | null;

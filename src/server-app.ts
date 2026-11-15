@@ -44,6 +44,11 @@ import {
   updatePaymentInstructionServer,
   decryptPaymentInstructionServer,
 } from './lib/actions/paymentInstructionsServer';
+import {
+  deleteGmailTokenFromVault,
+  saveGmailTokenToVault,
+} from './lib/gmail-vault';
+import { runGmailSyncForUser } from './lib/gmail-sync-service';
 import type { Transaction } from './types/transactions';
 import type { ColumnMapping, ParseResult } from './types/uploads';
 
@@ -1353,6 +1358,311 @@ export async function runServer() {
         const message = err?.message || 'Failed to encrypt and save PAN.';
         console.error('Save encrypted PAN error:', message);
         return res.status(500).json({ error: message });
+      }
+    }
+  );
+
+  // 13. Gmail Auto-Import Integration (Batch 5b — Tokens in Vault only, never returned)
+  const gmailManualSyncLimiter = rateLimit({
+    windowMs: 5 * 60 * 1000, // 5 minutes
+    max: 1,
+    keyGenerator: (req: Request) =>
+      (req as AuthenticatedRequest).user?.id || req.ip || 'anonymous',
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: {
+      error: 'Manual Gmail sync can only be triggered once every 5 minutes. Please wait before syncing again.',
+    },
+  });
+
+  app.get(
+    '/api/gmail/status',
+    requireAuth,
+    async (req: AuthenticatedRequest, res: Response) => {
+      try {
+        const userId = req.user!.id;
+        const [{ data: profileRow }, { data: latestLog }] = await Promise.all([
+          req.supabase
+            .from('profiles')
+            .select('gmail_connected, gmail_email, gmail_last_synced, gmail_sync_enabled')
+            .eq('user_id', userId)
+            .maybeSingle(),
+          req.supabase
+            .from('gmail_sync_log')
+            .select('last_synced_at, emails_processed, transactions_added, errors_count')
+            .eq('user_id', userId)
+            .order('last_synced_at', { ascending: false })
+            .limit(1)
+            .maybeSingle(),
+        ]);
+
+        return res.json({
+          gmail_connected: Boolean(profileRow?.gmail_connected),
+          gmail_email: profileRow?.gmail_email || null,
+          gmail_last_synced: profileRow?.gmail_last_synced || latestLog?.last_synced_at || null,
+          gmail_sync_enabled: profileRow?.gmail_sync_enabled ?? true,
+          last_sync_summary: latestLog || null,
+          has_offline_refresh_support: Boolean(process.env.GOOGLE_CLIENT_SECRET),
+        });
+      } catch (err: any) {
+        console.error('Gmail status error:', err?.message);
+        return res.status(500).json({ error: 'Failed to load Gmail integration status.' });
+      }
+    }
+  );
+
+  app.post(
+    '/api/gmail/connect',
+    requireAuth,
+    async (req: AuthenticatedRequest, res: Response) => {
+      try {
+        const userId = req.user!.id;
+        const serviceSupabase = getServiceSupabase();
+        if (!serviceSupabase) {
+          return res.status(500).json({
+            error: 'SUPABASE_SERVICE_ROLE_KEY is required on the server to store Gmail tokens securely in Vault.',
+          });
+        }
+
+        const code = typeof req.body?.code === 'string' ? req.body.code.trim() : '';
+        let accessToken =
+          typeof req.body?.access_token === 'string' ? req.body.access_token.trim() : '';
+        let refreshToken: string | null = null;
+        let expiresInSec = Number(req.body?.expires_in || 3600);
+
+        if (code) {
+          const clientId = (
+            process.env.GOOGLE_CLIENT_ID ||
+            process.env.VITE_GOOGLE_CLIENT_ID ||
+            ''
+          ).trim();
+          const clientSecret = (process.env.GOOGLE_CLIENT_SECRET || '').trim();
+          if (!clientId || !clientSecret) {
+            return res.status(400).json({
+              error: 'GOOGLE_CLIENT_SECRET is required on the server to exchange authorization codes.',
+            });
+          }
+
+          const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: new URLSearchParams({
+              code,
+              client_id: clientId,
+              client_secret: clientSecret,
+              redirect_uri: 'postmessage',
+              grant_type: 'authorization_code',
+            }).toString(),
+          });
+
+          const tokenJson = (await tokenRes.json().catch(() => ({}))) as {
+            access_token?: string;
+            refresh_token?: string;
+            expires_in?: number;
+            error_description?: string;
+            error?: string;
+          };
+
+          if (!tokenRes.ok || !tokenJson.access_token) {
+            return res.status(400).json({
+              error:
+                tokenJson.error_description ||
+                tokenJson.error ||
+                'Failed to exchange Google authorization code for Gmail access.',
+            });
+          }
+
+          accessToken = tokenJson.access_token;
+          refreshToken = tokenJson.refresh_token || null;
+          expiresInSec = Number(tokenJson.expires_in || 3600);
+        }
+
+        if (!accessToken) {
+          return res.status(400).json({ error: 'Missing Gmail OAuth access token or authorization code.' });
+        }
+
+        // Verify token works with gmail.readonly and obtain connected Gmail address
+        const gmailProfileRes = await fetch(
+          'https://gmail.googleapis.com/gmail/v1/users/me/profile',
+          {
+            headers: { Authorization: `Bearer ${accessToken}` },
+          }
+        );
+
+        if (!gmailProfileRes.ok) {
+          return res.status(400).json({
+            error: 'Google token lacks Gmail read-only permission. Please grant Gmail access.',
+          });
+        }
+
+        const gmailProfile = (await gmailProfileRes.json().catch(() => ({}))) as {
+          emailAddress?: string;
+        };
+        const gmailEmail = gmailProfile.emailAddress?.trim().toLowerCase() || req.user!.email || null;
+
+        await saveGmailTokenToVault(serviceSupabase, userId, {
+          access_token: accessToken,
+          refresh_token: refreshToken,
+          expiry: Date.now() + expiresInSec * 1000,
+        });
+
+        await serviceSupabase
+          .from('profiles')
+          .update({
+            gmail_connected: true,
+            gmail_email: gmailEmail,
+            gmail_sync_enabled: true,
+          })
+          .eq('user_id', userId);
+
+        // Never return tokens in API response
+        return res.json({
+          gmail_connected: true,
+          gmail_email: gmailEmail,
+          has_refresh_token: Boolean(refreshToken),
+        });
+      } catch (err: any) {
+        console.error('Gmail connect error:', err?.message);
+        return res.status(500).json({ error: err?.message || 'Failed to connect Gmail.' });
+      }
+    }
+  );
+
+  app.post(
+    '/api/gmail/disconnect',
+    requireAuth,
+    async (req: AuthenticatedRequest, res: Response) => {
+      try {
+        const userId = req.user!.id;
+        const serviceSupabase = getServiceSupabase();
+        if (serviceSupabase) {
+          await deleteGmailTokenFromVault(serviceSupabase, userId);
+          await serviceSupabase
+            .from('profiles')
+            .update({
+              gmail_connected: false,
+              gmail_email: null,
+            })
+            .eq('user_id', userId);
+        } else {
+          await req.supabase
+            .from('profiles')
+            .update({
+              gmail_connected: false,
+              gmail_email: null,
+            })
+            .eq('user_id', userId);
+        }
+
+        return res.json({ gmail_connected: false });
+      } catch (err: any) {
+        console.error('Gmail disconnect error:', err?.message);
+        return res.status(500).json({ error: err?.message || 'Failed to disconnect Gmail.' });
+      }
+    }
+  );
+
+  app.patch(
+    '/api/gmail/settings',
+    requireAuth,
+    async (req: AuthenticatedRequest, res: Response) => {
+      try {
+        const userId = req.user!.id;
+        const enabled = Boolean(req.body?.gmail_sync_enabled);
+
+        const { data: updated, error } = await req.supabase
+          .from('profiles')
+          .update({ gmail_sync_enabled: enabled })
+          .eq('user_id', userId)
+          .select('gmail_sync_enabled')
+          .single();
+
+        if (error) {
+          return res.status(500).json({ error: error.message });
+        }
+
+        return res.json({ gmail_sync_enabled: Boolean(updated?.gmail_sync_enabled) });
+      } catch (err: any) {
+        console.error('Gmail settings update error:', err?.message);
+        return res.status(500).json({ error: 'Failed to update Gmail auto-sync setting.' });
+      }
+    }
+  );
+
+  app.post(
+    '/api/gmail/sync',
+    requireAuth,
+    gmailManualSyncLimiter,
+    async (req: AuthenticatedRequest, res: Response) => {
+      try {
+        const userId = req.user!.id;
+        const serviceSupabase = getServiceSupabase();
+        if (!serviceSupabase) {
+          return res.status(500).json({
+            error: 'SUPABASE_SERVICE_ROLE_KEY is required on the server to run Gmail sync.',
+          });
+        }
+
+        // Enforce DB-backed 5-minute cooldown across restarts as well
+        const { data: latestLog } = await serviceSupabase
+          .from('gmail_sync_log')
+          .select('last_synced_at')
+          .eq('user_id', userId)
+          .order('last_synced_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        if (latestLog?.last_synced_at) {
+          const elapsedMs = Date.now() - new Date(latestLog.last_synced_at).getTime();
+          const cooldownMs = 5 * 60 * 1000;
+          if (elapsedMs >= 0 && elapsedMs < cooldownMs) {
+            const retryAfterSec = Math.ceil((cooldownMs - elapsedMs) / 1000);
+            res.setHeader('Retry-After', String(retryAfterSec));
+            return res.status(429).json({
+              error: `Gmail was synced recently. Please wait ${Math.ceil(retryAfterSec / 60)} minute(s) before syncing again.`,
+              retry_after_seconds: retryAfterSec,
+            });
+          }
+        }
+
+        const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
+        const canCallEdgeFunction =
+          SUPABASE_URL &&
+          !SUPABASE_URL.includes('placeholder') &&
+          Boolean(serviceRoleKey) &&
+          process.env.USE_SUPABASE_EDGE_GMAIL_SYNC === 'true';
+
+        if (canCallEdgeFunction) {
+          try {
+            const fnRes = await fetch(`${SUPABASE_URL}/functions/v1/gmail-sync`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${serviceRoleKey}`,
+              },
+              body: JSON.stringify({ user_id: userId }),
+            });
+            if (fnRes.ok) {
+              const fnJson = await fnRes.json();
+              if (typeof fnJson?.emails_processed === 'number') {
+                return res.json(fnJson);
+              }
+            }
+          } catch {
+            // Fall back cleanly to Express server sync pipeline if Edge Function is not deployed yet
+          }
+        }
+
+        const result = await runGmailSyncForUser(serviceSupabase, userId);
+        return res.json(result);
+      } catch (err: any) {
+        const message = err?.message || 'Failed to sync Gmail alerts.';
+        console.error('Gmail sync route error:', message);
+        const isClientErr =
+          message.includes('not connected') ||
+          message.includes('expired') ||
+          message.includes('reconnect');
+        return res.status(isClientErr ? 400 : 500).json({ error: message });
       }
     }
   );

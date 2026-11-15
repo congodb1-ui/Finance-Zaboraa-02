@@ -109,6 +109,16 @@ Run the files in `supabase/migrations/` **one by one in exact chronological file
 31. `20240010000004_invoices_v2.sql`
 32. `20240010000005_invoice_numbering_rpc.sql`
 33. `20240010000006_logos_bucket.sql`
+34. `20240011000001_batch_2b_family_and_seed.sql`
+35. `20240012000001_batch_4b_dedup_self_transfer.sql`
+36. `20240013000001_batch_5b_gmail_sync.sql`
+
+### Deploying the `gmail-sync` Edge Function & 6-Hour Cron
+```bash
+npx supabase functions deploy gmail-sync
+npx supabase secrets set ENCRYPTION_KEY=... GOOGLE_CLIENT_ID=... GOOGLE_CLIENT_SECRET=... GEMINI_API_KEY=...
+```
+Schedule `gmail-sync` in Supabase Dashboard → Edge Functions → Schedules with cron `"0 */6 * * *"`.
 
 ---
 

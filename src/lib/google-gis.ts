@@ -36,11 +36,52 @@ export interface GoogleAccountsId {
   cancel: () => void;
 }
 
+export interface GoogleTokenResponse {
+  access_token?: string;
+  expires_in?: number | string;
+  scope?: string;
+  error?: string;
+  error_description?: string;
+}
+
+export interface GoogleCodeResponse {
+  code?: string;
+  scope?: string;
+  error?: string;
+  error_description?: string;
+}
+
+export interface GoogleAccountsOAuth2 {
+  initTokenClient: (config: {
+    client_id: string;
+    scope: string;
+    prompt?: '' | 'none' | 'consent' | 'select_account';
+    hint?: string;
+    callback: (response: GoogleTokenResponse) => void;
+    error_callback?: (err: { type?: string; message?: string }) => void;
+  }) => {
+    requestAccessToken: (overrideConfig?: { prompt?: string }) => void;
+  };
+  initCodeClient: (config: {
+    client_id: string;
+    scope: string;
+    ux_mode?: 'popup' | 'redirect';
+    access_type?: 'offline' | 'online';
+    prompt?: string;
+    login_hint?: string;
+    callback: (response: GoogleCodeResponse) => void;
+    error_callback?: (err: { type?: string; message?: string }) => void;
+  }) => {
+    requestCode: () => void;
+  };
+}
+
 declare global {
   interface Window {
     google?: {
       accounts?: {
         id?: GoogleAccountsId;
+        oauth2?: GoogleAccountsOAuth2;
       };
     };
   }
@@ -99,6 +140,14 @@ export function loadGoogleIdentityScript(): Promise<GoogleAccountsId> {
   });
 
   return loadPromise;
+}
+
+export async function loadGoogleOAuth2Client(): Promise<GoogleAccountsOAuth2> {
+  await loadGoogleIdentityScript();
+  if (!window.google?.accounts?.oauth2) {
+    throw new Error('Google OAuth2 client is not available.');
+  }
+  return window.google.accounts.oauth2;
 }
 
 export function disableGoogleAutoSelect() {
