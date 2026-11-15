@@ -174,6 +174,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   try {
+    console.log('[auth/google] Env check - SUPABASE_URL present:', Boolean(process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.VITE_SUPABASE_URL));
+    console.log('[auth/google] Env check - SUPABASE_SERVICE_ROLE_KEY present:', Boolean(process.env.SUPABASE_SERVICE_ROLE_KEY));
+
     const credential =
       typeof req.body?.credential === 'string' ? req.body.credential.trim() : '';
 
@@ -233,22 +236,57 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       });
     }
 
+    // Step 1: Ensure user exists in Supabase Auth before generateLink
+    const { data: userListData } = await serviceSupabase.auth.admin.listUsers();
+    const existingUser = (userListData?.users || []).find(
+      (u) => u.email?.toLowerCase() === verifiedUser.email
+    );
+
+    if (!existingUser) {
+      console.log(`[auth/google] Creating new user for email: ${verifiedUser.email}`);
+      const { error: createErr } = await serviceSupabase.auth.admin.createUser({
+        email: verifiedUser.email,
+        email_confirm: true,
+        user_metadata: {
+          full_name: verifiedUser.fullName || undefined,
+          avatar_url: verifiedUrl(verifiedUser.avatarUrl),
+          name: verifiedUser.fullName || undefined,
+          picture: verifiedUrl(verifiedUser.avatarUrl),
+        },
+      });
+
+      if (createErr) {
+        console.error('[auth/google] Supabase admin.createUser error:', {
+          message: createErr.message,
+          status: createErr.status,
+          code: (createErr as any).code,
+        });
+        return res.status(500).json({ error: createErr.message || 'Failed to create user.' });
+      }
+    }
+
+    // Step 2: Generate magic link token for session exchange
     const { data: linkData, error: linkError } = await serviceSupabase.auth.admin.generateLink({
       type: 'magiclink',
       email: verifiedUser.email,
       options: {
+        redirectTo: 'https://finance.zaboraa.com',
         data: {
           full_name: verifiedUser.fullName || undefined,
-          avatar_url: verifiedUser.avatarUrl || undefined,
+          avatar_url: verifiedUrl(verifiedUser.avatarUrl),
           name: verifiedUser.fullName || undefined,
-          picture: verifiedUser.avatarUrl || undefined,
+          picture: verifiedUrl(verifiedUser.avatarUrl),
         },
       },
     });
 
     if (linkError || !linkData?.properties?.hashed_token) {
-      console.error('Supabase generateLink failed:', linkError?.message);
-      return res.status(500).json({ error: 'Failed to create Supabase user session.' });
+      console.error('[auth/google] Supabase generateLink error:', {
+        message: linkError?.message,
+        status: linkError?.status,
+        code: (linkError as any)?.code,
+      });
+      return res.status(500).json({ error: linkError?.message || 'Failed to create Supabase magic link.' });
     }
 
     if (linkData.user?.id && (verifiedUser.fullName || verifiedUser.avatarUrl)) {
@@ -272,6 +310,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
     }
 
+    // Step 3: Exchange token_hash for session
     const anonClient = createSupabaseClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
       auth: {
         persistSession: false,
@@ -281,13 +320,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     });
 
     const { data: otpData, error: otpError } = await anonClient.auth.verifyOtp({
+      email: verifiedUser.email,
       token_hash: linkData.properties.hashed_token,
       type: 'magiclink',
     });
 
     if (otpError || !otpData?.session) {
-      console.error('Supabase verifyOtp failed:', otpError?.message);
-      return res.status(500).json({ error: 'Failed to exchange token for Supabase session.' });
+      console.error('[auth/google] Supabase verifyOtp error:', {
+        message: otpError?.message,
+        status: otpError?.status,
+        code: (otpError as any)?.code,
+      });
+      return res.status(500).json({
+        error: otpError?.message || 'Failed to exchange token for Supabase session.',
+      });
     }
 
     return res.status(200).json({
@@ -300,8 +346,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       },
       user: otpData.user,
     });
-  } catch (err) {
-    console.error('Google auth route error:', err);
-    return res.status(500).json({ error: 'Authentication failed. Please try again.' });
+  } catch (err: any) {
+    console.error('[auth/google] Route handler error:', {
+      message: err?.message,
+      stack: err?.stack,
+    });
+    return res.status(500).json({ error: err?.message || 'Authentication failed. Please try again.' });
   }
+}
+
+function verifiedUrl(url: string | null): string | undefined {
+  return url ? url : undefined;
 }
