@@ -68,7 +68,17 @@ All 20 secondary routes routed through `api/[...all].ts` were audited:
 
 ---
 
-## 5. Human To-Do List (Manual Steps Required)
+## 5. 42501 Fix (November 15, 2026)
+
+* **Migration Filename**: `20261115000000_fix_authenticated_grants.sql`
+* **Remote Status**: 38/38 migrations applied on project `yargpwshsycktbcxnpit`.
+* **Grants Applied**: 21 public tables received explicit `GRANT USAGE ON SCHEMA public`, `GRANT SELECT, INSERT, UPDATE, DELETE ON public.<table> TO authenticated`, and sequence grants (`GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO authenticated`).
+* **RLS Isolation Test**: QA User A reading own rows returns `200 OK`; QA User A reading QA User B rows returns `0 rows`.
+* **42501 Permission Denied Result**: **RESOLVED** across `profiles`, `business_profiles`, `payment_instructions`, and `ai_settings`.
+
+---
+
+## 6. Human To-Do List (Manual Steps Required)
 
 > [!IMPORTANT]
 > The following manual administrative tasks must be verified directly in the respective vendor consoles by an account owner:
