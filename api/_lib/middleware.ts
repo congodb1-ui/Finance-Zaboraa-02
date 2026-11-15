@@ -1,5 +1,5 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { createClient as createSupabaseClient, type User } from '@supabase/supabase-js';
+import { createClient as createSupabaseClient } from '@supabase/supabase-js';
 
 const SUPABASE_URL =
   process.env.NEXT_PUBLIC_SUPABASE_URL ||
@@ -10,11 +10,6 @@ const SUPABASE_ANON_KEY =
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
   process.env.VITE_SUPABASE_ANON_KEY ||
   'placeholder-anon-key';
-
-export interface AuthenticatedVercelRequest extends VercelRequest {
-  user?: User;
-  supabase?: any;
-}
 
 export function setCorsHeaders(req: VercelRequest, res: VercelResponse): boolean {
   const origin = (req.headers.origin as string) || '';
@@ -64,7 +59,7 @@ export function setCorsHeaders(req: VercelRequest, res: VercelResponse): boolean
 }
 
 export async function authenticateRequest(
-  req: AuthenticatedVercelRequest,
+  req: VercelRequest & { user?: any; supabase?: any },
   res: VercelResponse
 ): Promise<boolean> {
   try {
@@ -115,14 +110,6 @@ export async function authenticateRequest(
       res.status(403).json({ error: 'Forbidden' });
       return false;
     }
-
-    const originalGetUser = reqSupabase.auth.getUser.bind(reqSupabase.auth);
-    reqSupabase.auth.getUser = (async (jwt?: string) => {
-      if (jwt) {
-        return originalGetUser(jwt);
-      }
-      return { data: { user }, error: null };
-    }) as any;
 
     req.user = user;
     req.supabase = reqSupabase;
