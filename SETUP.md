@@ -112,6 +112,7 @@ Run the files in `supabase/migrations/` **one by one in exact chronological file
 34. `20240011000001_batch_2b_family_and_seed.sql`
 35. `20240012000001_batch_4b_dedup_self_transfer.sql`
 36. `20240013000001_batch_5b_gmail_sync.sql`
+37. `20240014000001_batch_6b_analytics_reports.sql`
 
 ### Deploying the `gmail-sync` Edge Function & 6-Hour Cron
 ```bash

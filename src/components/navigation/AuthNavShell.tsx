@@ -21,6 +21,7 @@ import {
   Sparkles,
   FileText,
   Users,
+  BarChart3,
 } from 'lucide-react';
 
 interface AuthNavShellProps {
@@ -46,6 +47,7 @@ export const AuthNavShell: React.FC<AuthNavShellProps> = ({
 
   const navItems: NavItem[] = [
     { name: 'Dashboard', path: '/dashboard', icon: LayoutDashboard },
+    { name: 'Analytics', path: '/analytics', icon: BarChart3 },
     { name: 'Accounts', path: '/accounts', icon: Building2 },
     { name: 'Upload Statements', path: '/upload', icon: Upload },
     { name: 'Transactions', path: '/transactions', icon: Receipt },
@@ -81,7 +83,7 @@ export const AuthNavShell: React.FC<AuthNavShellProps> = ({
   return (
     <div className="min-h-screen flex flex-col md:flex-row bg-slate-50 dark:bg-[#0B1120] text-slate-900 dark:text-slate-100 transition-colors">
       {/* Desktop Persistent Left Sidebar (260px) */}
-      <aside className="hidden md:flex flex-col w-64 border-r border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0B1120] shrink-0 sticky top-0 h-screen z-30">
+      <aside className="hidden md:flex print:hidden flex-col w-64 border-r border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0B1120] shrink-0 sticky top-0 h-screen z-30">
         {/* Brand Header */}
         <div className="h-16 flex items-center px-6 border-b border-slate-200 dark:border-slate-800">
           <ZaboraaWordmark size="md" />
@@ -161,7 +163,7 @@ export const AuthNavShell: React.FC<AuthNavShellProps> = ({
       </aside>
 
       {/* Mobile Top Bar */}
-      <header className="md:hidden flex items-center justify-between px-4 h-14 border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0B1120] sticky top-0 z-30">
+      <header className="md:hidden print:hidden flex items-center justify-between px-4 h-14 border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0B1120] sticky top-0 z-30">
         <ZaboraaWordmark size="sm" />
         <div className="flex items-center gap-2">
           <ThemeToggle showText={false} />
@@ -182,7 +184,7 @@ export const AuthNavShell: React.FC<AuthNavShellProps> = ({
       </div>
 
       {/* Mobile Bottom Tab Bar (5 main destinations, min 44x44px touch targets) */}
-      <nav className="md:hidden fixed bottom-0 left-0 right-0 h-14 bg-white/95 dark:bg-[#0B1120]/95 backdrop-blur-md border-t border-slate-200 dark:border-slate-800 flex items-center justify-around px-2 z-30">
+      <nav className="md:hidden print:hidden fixed bottom-0 left-0 right-0 h-14 bg-white/95 dark:bg-[#0B1120]/95 backdrop-blur-md border-t border-slate-200 dark:border-slate-800 flex items-center justify-around px-2 z-30">
         {mobileNavItems.map((item) => {
           const Icon = item.icon;
           const isActive = currentPath === item.path || (item.path !== '/' && currentPath.startsWith(item.path));

@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useAuth, signInWithGoogle, signOut, getGoogleClientId } from './lib/auth';
 import { LandingSkeleton } from './components/landing/LandingSkeleton';
 import DashboardPlaceholderPage from './app/(auth)/dashboard/page';
+import AnalyticsPage from './app/(auth)/analytics/page';
 import AccountsPage from './app/(auth)/accounts/page';
 import AccountDetailPage from './app/(auth)/accounts/[id]/page';
 import StatementUploadPage from './app/(auth)/upload/page';
@@ -31,7 +32,7 @@ import { ShieldCheck } from 'lucide-react';
 export default function App() {
   const { isAuthenticated, isLoading } = useAuth();
   const [currentRoute, setCurrentRoute] = useState<
-    '/' | '/dashboard' | '/accounts' | '/account-detail' | '/upload' | '/transactions' | '/invoices' | '/invoice-view' | '/invoice-edit' | '/clients' | '/recurring' | '/budgets' | '/rules' | '/reports' | '/ai' | '/settings' | '/settings/ai' | '/playground'
+    '/' | '/dashboard' | '/analytics' | '/accounts' | '/account-detail' | '/upload' | '/transactions' | '/invoices' | '/invoice-view' | '/invoice-edit' | '/clients' | '/recurring' | '/budgets' | '/rules' | '/reports' | '/ai' | '/settings' | '/settings/ai' | '/playground'
   >('/');
   const [selectedAccountId, setSelectedAccountId] = useState<string>('acc_hdfc_01');
   const [selectedInvoiceId, setSelectedInvoiceId] = useState<string>('');
@@ -71,6 +72,7 @@ export default function App() {
         path.match(/^\/invoices\/([^/]+)$/);
 
       if (hash === 'dashboard') setCurrentRoute('/dashboard');
+      else if (hash === 'analytics') setCurrentRoute('/analytics');
       else if (hash === 'accounts') setCurrentRoute('/accounts');
       else if (hash.startsWith('account-detail') || hash.startsWith('accounts/')) {
         const idMatch = hash.match(/id=([a-zA-Z0-9_-]+)/) || hash.match(/accounts\/([a-zA-Z0-9_-]+)/);
@@ -178,6 +180,7 @@ export default function App() {
 
     const isProtected =
       targetRoute === '/dashboard' ||
+      targetRoute === '/analytics' ||
       targetRoute === '/accounts' ||
       targetRoute === '/account-detail' ||
       targetRoute === '/upload' ||
@@ -282,6 +285,12 @@ export default function App() {
         {currentRoute === '/dashboard' && (
           <AuthNavShell activePathOverride="/dashboard" onNavigateOverride={(p) => navigateTo(p as any)}>
             <DashboardPlaceholderPage />
+          </AuthNavShell>
+        )}
+
+        {currentRoute === '/analytics' && (
+          <AuthNavShell activePathOverride="/analytics" onNavigateOverride={(p) => navigateTo(p as any)}>
+            <AnalyticsPage />
           </AuthNavShell>
         )}
 

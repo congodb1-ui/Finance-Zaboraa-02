@@ -49,6 +49,7 @@ import {
   saveGmailTokenToVault,
 } from './lib/gmail-vault';
 import { runGmailSyncForUser } from './lib/gmail-sync-service';
+import { generateAnalyticsReport, listAnalyticsReports } from './lib/analytics/generate';
 import type { Transaction } from './types/transactions';
 import type { ColumnMapping, ParseResult } from './types/uploads';
 
@@ -1663,6 +1664,112 @@ export async function runServer() {
           message.includes('expired') ||
           message.includes('reconnect');
         return res.status(isClientErr ? 400 : 500).json({ error: message });
+      }
+    }
+  );
+
+  // 14. AI Analytics & Consolidated Report (Batch 6b — Read-Only, max 1/hour per user)
+  const analyticsLastGeneratedAt = new Map<string, number>();
+  const analyticsInFlight = new Set<string>();
+  const ANALYTICS_COOLDOWN_MS = 60 * 60 * 1000; // 1 hour
+
+  app.get(
+    '/api/analytics/reports',
+    requireAuth,
+    async (req: AuthenticatedRequest, res: Response) => {
+      try {
+        const reports = await listAnalyticsReports(req.supabase, req.user!.id);
+        return res.json({ reports });
+      } catch (err: any) {
+        console.error('Analytics list reports error:', err?.message);
+        return res.status(500).json({
+          error: err?.message || 'Failed to load analytics reports.',
+        });
+      }
+    }
+  );
+
+  app.post(
+    '/api/analytics/generate',
+    requireAuth,
+    async (req: AuthenticatedRequest, res: Response) => {
+      const userId = req.user!.id;
+
+      if (analyticsInFlight.has(userId)) {
+        return res.status(429).json({
+          error: 'An analytics report is already being generated. Please wait a moment.',
+          retry_after_seconds: 30,
+          retry_after_minutes: 1,
+        });
+      }
+
+      try {
+        // Check in-memory cooldown first
+        const memTs = analyticsLastGeneratedAt.get(userId);
+        if (memTs) {
+          const elapsed = Date.now() - memTs;
+          if (elapsed >= 0 && elapsed < ANALYTICS_COOLDOWN_MS) {
+            const retryAfterSec = Math.ceil((ANALYTICS_COOLDOWN_MS - elapsed) / 1000);
+            const retryAfterMin = Math.max(1, Math.ceil(retryAfterSec / 60));
+            res.setHeader('Retry-After', String(retryAfterSec));
+            return res.status(429).json({
+              error: `Analytics report can only be generated once per hour. Please try again in ${retryAfterMin} minute${retryAfterMin === 1 ? '' : 's'}.`,
+              retry_after_seconds: retryAfterSec,
+              retry_after_minutes: retryAfterMin,
+            });
+          }
+        }
+
+        // Also enforce DB-backed 1-hour cooldown across server restarts
+        const { data: latestReport } = await req.supabase
+          .from('analytics_reports')
+          .select('generated_at')
+          .eq('user_id', userId)
+          .order('generated_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        if (latestReport?.generated_at) {
+          const dbTs = new Date(latestReport.generated_at).getTime();
+          if (Number.isFinite(dbTs)) {
+            const elapsed = Date.now() - dbTs;
+            if (elapsed >= 0 && elapsed < ANALYTICS_COOLDOWN_MS) {
+              analyticsLastGeneratedAt.set(userId, dbTs);
+              const retryAfterSec = Math.ceil((ANALYTICS_COOLDOWN_MS - elapsed) / 1000);
+              const retryAfterMin = Math.max(1, Math.ceil(retryAfterSec / 60));
+              res.setHeader('Retry-After', String(retryAfterSec));
+              return res.status(429).json({
+                error: `Analytics report can only be generated once per hour. Please try again in ${retryAfterMin} minute${retryAfterMin === 1 ? '' : 's'}.`,
+                retry_after_seconds: retryAfterSec,
+                retry_after_minutes: retryAfterMin,
+              });
+            }
+          }
+        }
+
+        analyticsInFlight.add(userId);
+
+        const { data: profileRow } = await req.supabase
+          .from('profiles')
+          .select('full_name')
+          .eq('user_id', userId)
+          .maybeSingle();
+
+        const { report } = await generateAnalyticsReport({
+          supabase: req.supabase,
+          userId,
+          profileName: profileRow?.full_name || undefined,
+        });
+
+        analyticsLastGeneratedAt.set(userId, Date.now());
+        return res.json({ report });
+      } catch (err: any) {
+        const status = Number(err?.statusCode) || 500;
+        const message = err?.message || 'Failed to generate AI analytics report.';
+        console.error('Analytics generate error:', message);
+        return res.status(status).json({ error: message });
+      } finally {
+        analyticsInFlight.delete(userId);
       }
     }
   );
