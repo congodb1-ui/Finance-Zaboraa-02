@@ -1,7 +1,6 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { createClient as createSupabaseClient } from '@supabase/supabase-js';
 import crypto from 'node:crypto';
-import { ensureUserBootstrap } from '../_lib/bootstrap';
 
 // --- Inlined Google JWKS verification ---
 interface GoogleJwk extends crypto.JsonWebKey {
@@ -337,11 +336,21 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     if (otpData.user) {
-      await ensureUserBootstrap(
-        otpData.user.id,
-        verifiedUser.email,
-        verifiedUser.fullName || undefined
-      );
+      // Inline simple profile bootstrap check if needed
+      try {
+        await serviceSupabase.from('profiles').upsert(
+          {
+            id: otpData.user.id,
+            email: verifiedUser.email,
+            full_name: verifiedUser.fullName || verifiedUser.email.split('@')[0],
+            avatar_url: verifiedUrl(verifiedUser.avatarUrl),
+            updated_at: new Date().toISOString(),
+          },
+          { onConflict: 'id' }
+        );
+      } catch (bsErr) {
+        console.error('[auth/google] Profile upsert error:', bsErr);
+      }
     }
 
     return res.status(200).json({

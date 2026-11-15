@@ -58,8 +58,13 @@ export function setCorsHeaders(req: VercelRequest, res: VercelResponse): boolean
   return true;
 }
 
+export type AuthenticatedVercelRequest = VercelRequest & {
+  user?: any;
+  supabase?: any;
+};
+
 export async function authenticateRequest(
-  req: VercelRequest & { user?: any; supabase?: any },
+  req: AuthenticatedVercelRequest,
   res: VercelResponse
 ): Promise<boolean> {
   try {

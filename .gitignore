@@ -10,3 +10,4 @@ scripts/
 !scripts/rls-verify.ts
 !scripts/auth-sweep.ts
 public/assets/aistudio/
+.vercel
