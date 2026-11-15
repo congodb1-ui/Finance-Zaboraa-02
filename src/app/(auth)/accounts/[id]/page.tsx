@@ -4,27 +4,23 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { BalanceChart } from '../../../../components/accounts/BalanceChart';
 import { AccountLedger } from '../../../../components/accounts/AccountLedger';
 import { StatementHistory } from '../../../../components/accounts/StatementHistory';
+import { AccountForm } from '../../../../components/accounts/AccountForm';
 import { Card } from '../../../../components/ui/Card';
 import { Button } from '../../../../components/ui/Button';
 import { formatINR, CATEGORY_PALETTE } from '../../../../types/design-system';
-import { getAccountById, getAccounts } from '../../../../lib/actions/accounts';
+import { getAccountById, updateAccount } from '../../../../lib/actions/accounts';
 import { getAccountLedgerWithRunningBalance } from '../../../../lib/actions/transactions';
 import { getCategories } from '../../../../lib/actions/categories';
 import { getUploads } from '../../../../lib/actions/upload';
-import type { AccountWithBalance } from '../../../../types/accounts';
+import type { AccountFormData, AccountWithBalance } from '../../../../types/accounts';
 import type { Category } from '../../../../types/categories';
 import type { StatementUpload } from '../../../../types/uploads';
 import type { Transaction } from '../../../../types/transactions';
 import {
   ArrowLeft,
-  Building2,
-  Calendar,
-  CreditCard,
-  Landmark,
-  Wallet,
+  Pencil,
   RefreshCw,
-  Clock,
-  ShieldCheck,
+  CheckCircle2,
 } from 'lucide-react';
 
 interface AccountDetailPageProps {
@@ -46,6 +42,12 @@ export default function AccountDetailPage({
     return 'acc_hdfc_01';
   });
 
+  useEffect(() => {
+    if (propAccountId && propAccountId !== accountId) {
+      setAccountId(propAccountId);
+    }
+  }, [propAccountId, accountId]);
+
   const [account, setAccount] = useState<AccountWithBalance | null>(null);
   const [categories, setCategories] = useState<Category[]>([]);
   const [uploads, setUploads] = useState<StatementUpload[]>([]);
@@ -56,6 +58,9 @@ export default function AccountDetailPage({
     { date: string; balance: number }[]
   >([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [isEditOpen, setIsEditOpen] = useState(false);
+  const [isSavingEdit, setIsSavingEdit] = useState(false);
+  const [saveNotice, setSaveNotice] = useState<string | null>(null);
 
   // Filters for the account ledger
   const [filterDates, setFilterDates] = useState({
@@ -109,6 +114,22 @@ export default function AccountDetailPage({
     }
   };
 
+  const handleEditSubmit = async (formData: AccountFormData) => {
+    if (!account) return;
+    setIsSavingEdit(true);
+    setSaveNotice(null);
+    try {
+      const updated = await updateAccount(account.id, formData);
+      setAccount(updated);
+      setIsEditOpen(false);
+      await loadAccountData();
+      setSaveNotice('Account details updated successfully.');
+      setTimeout(() => setSaveNotice(null), 4000);
+    } finally {
+      setIsSavingEdit(false);
+    }
+  };
+
   const handleBackClick = () => {
     if (onBack) {
       onBack();
@@ -153,6 +174,11 @@ export default function AccountDetailPage({
               <span className="font-mono text-slate-600 dark:text-slate-400">
                 {account?.bank_name}
               </span>
+              {account && !account.is_active && (
+                <span className="px-1.5 py-0.5 text-[10px] font-semibold uppercase rounded bg-slate-200 dark:bg-slate-700 text-slate-600 dark:text-slate-300">
+                  Inactive
+                </span>
+              )}
             </div>
             <h1 className="font-heading font-bold text-2xl sm:text-3xl text-slate-900 dark:text-white tracking-tight flex items-center gap-2.5">
               <span
@@ -166,6 +192,15 @@ export default function AccountDetailPage({
 
         {/* Action Controls */}
         <div className="flex items-center gap-2.5 shrink-0">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setIsEditOpen(true)}
+            disabled={!account}
+            leftIcon={<Pencil className="w-3.5 h-3.5" />}
+          >
+            Edit
+          </Button>
           <Button
             variant="outline"
             size="sm"
@@ -183,6 +218,13 @@ export default function AccountDetailPage({
           </Button>
         </div>
       </div>
+
+      {saveNotice && (
+        <div className="p-3.5 rounded-xl bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-200 dark:border-emerald-800 text-xs text-emerald-900 dark:text-emerald-200 flex items-center gap-2">
+          <CheckCircle2 className="w-4 h-4 shrink-0" />
+          <span>{saveNotice}</span>
+        </div>
+      )}
 
       {/* Account KPI Header Card */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
@@ -212,7 +254,9 @@ export default function AccountDetailPage({
             {formatINR(account?.opening_balance ?? 0)}
           </div>
           <span className="text-[11px] text-slate-500 mt-1 block">
-            Account initial baseline balance
+            {account?.opening_date
+              ? `As of ${account.opening_date}`
+              : 'Account initial baseline balance'}
           </span>
         </Card>
 
@@ -222,9 +266,18 @@ export default function AccountDetailPage({
             Account Metadata
           </span>
           <div className="text-xs space-y-1 font-mono text-slate-700 dark:text-slate-300">
-            <div>Type: {account?.account_type.replace('_', ' ')}</div>
-            <div>Account Last 4: {account?.account_number_last4 ? `****${account.account_number_last4}` : 'N/A'}</div>
-            <div>Purpose: {account?.purpose || 'General Financial'}</div>
+            <div>Holder: {account?.account_holder_name || 'Not specified'}</div>
+            <div>
+              Type: {account?.account_type.replace('_', ' ')} ({account?.purpose || 'personal'})
+            </div>
+            <div>
+              Last 4: {account?.account_number_last4 ? `****${account.account_number_last4}` : 'N/A'}
+              {account?.ifsc ? ` · IFSC: ${account.ifsc}` : ''}
+            </div>
+            {account?.upi_id && <div>UPI: {account.upi_id}</div>}
+            <div>
+              Self-Transfer Eligible: {account?.operated_by_owner === false ? 'No (Family Member)' : 'Yes (Owner Operated)'}
+            </div>
           </div>
         </Card>
       </div>
@@ -246,6 +299,16 @@ export default function AccountDetailPage({
 
       {/* 3. Statement Upload History */}
       <StatementHistory uploads={uploads} />
+
+      {/* Edit Account Modal */}
+      {isEditOpen && account && (
+        <AccountForm
+          initialData={account}
+          onSubmit={handleEditSubmit}
+          onCancel={() => setIsEditOpen(false)}
+          isLoading={isSavingEdit}
+        />
+      )}
     </div>
   );
 }

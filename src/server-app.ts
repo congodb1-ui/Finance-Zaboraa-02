@@ -39,6 +39,7 @@ import { getCurrentFY, getFYBounds } from './lib/fy-utils';
 import { writeAuditLog } from './lib/audit';
 import { verifyGoogleIdToken } from './lib/google-auth-server';
 import { encryptValue } from './lib/crypto';
+import { ensureBatch2bBootstrap } from './lib/batch2b-seed';
 import { getPaymentInstruction } from './lib/actions/paymentInstructions';
 import {
   createPaymentInstructionServer,
@@ -392,6 +393,15 @@ export async function runServer() {
       if (otpError || !otpData?.session) {
         console.error('Supabase verifyOtp failed:', otpError?.message);
         return res.status(500).json({ error: 'Failed to exchange token for Supabase session.' });
+      }
+
+      const authedUser = otpData.user || linkData.user;
+      if (authedUser?.id) {
+        try {
+          await ensureBatch2bBootstrap(serviceSupabase, authedUser);
+        } catch (seedErr: any) {
+          console.error('[Batch 2b] Bootstrap warning:', seedErr?.message);
+        }
       }
 
       return res.json({

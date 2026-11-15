@@ -123,7 +123,13 @@ export async function createAccount(
       currency: data.currency || 'INR',
       is_active: data.is_active ?? true,
       color_index: data.color_index ?? 0,
+      icon: data.icon?.trim() || null,
       notes: data.notes?.trim() || null,
+      purpose: data.purpose?.trim() || 'personal',
+      ifsc: data.ifsc?.trim() ? data.ifsc.trim().toUpperCase() : null,
+      upi_id: data.upi_id?.trim() || null,
+      account_holder_name: data.account_holder_name?.trim() || null,
+      operated_by_owner: data.operated_by_owner ?? true,
       opening_balance: data.opening_balance ?? 0,
       opening_date: data.opening_date || null,
       credit_limit: data.credit_limit ?? null,
@@ -171,7 +177,19 @@ export async function updateAccount(
   if (data.currency !== undefined) updatePayload.currency = data.currency;
   if (data.is_active !== undefined) updatePayload.is_active = data.is_active;
   if (data.color_index !== undefined) updatePayload.color_index = data.color_index;
+  if (data.icon !== undefined) updatePayload.icon = data.icon?.trim() || null;
   if (data.notes !== undefined) updatePayload.notes = data.notes?.trim() || null;
+  if (data.purpose !== undefined) updatePayload.purpose = data.purpose?.trim() || 'personal';
+  if (data.ifsc !== undefined) {
+    updatePayload.ifsc = data.ifsc?.trim() ? data.ifsc.trim().toUpperCase() : null;
+  }
+  if (data.upi_id !== undefined) updatePayload.upi_id = data.upi_id?.trim() || null;
+  if (data.account_holder_name !== undefined) {
+    updatePayload.account_holder_name = data.account_holder_name?.trim() || null;
+  }
+  if (data.operated_by_owner !== undefined) {
+    updatePayload.operated_by_owner = Boolean(data.operated_by_owner);
+  }
   if (data.opening_balance !== undefined) {
     updatePayload.opening_balance = data.opening_balance ?? 0;
   }

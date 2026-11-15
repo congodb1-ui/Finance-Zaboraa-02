@@ -13,6 +13,7 @@ export type AccountType =
 export interface Account {
   id: string;
   user_id: string;
+  family_id?: string | null;
   name: string;
   bank_name: string;
   account_type: AccountType;
@@ -20,10 +21,15 @@ export interface Account {
   currency: string;
   is_active: boolean;
   color_index: number;
+  icon?: string | null;
   notes: string | null;
   opening_balance?: number | null;
   opening_date?: string | null;
   purpose?: string | null;
+  ifsc?: string | null;
+  upi_id?: string | null;
+  account_holder_name?: string | null;
+  operated_by_owner?: boolean;
   credit_limit: number | null;
   billing_cycle_day: number | null;
   payment_due_day: number | null;

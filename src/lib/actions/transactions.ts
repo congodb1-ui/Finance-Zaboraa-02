@@ -320,81 +320,101 @@ export async function commitUploadTransactions(
     console.warn('Recurring match notice:', recErr);
   }
 
-  // STEP 6 — Detect transfers across other accounts within ±1.5 days
+  // STEP 6 — Detect self-transfers across other owner-operated accounts within ±1.5 days
+  // Both Account A and Account B must have operated_by_owner = true (accounts with operated_by_owner = false
+  // belong to family members and represent family transfers / expenses, not self-transfers).
   let transferPairsFound = 0;
   if (newlyInsertedTransactions.length > 0) {
-    const minWindow = new Date(minDate);
-    minWindow.setDate(minWindow.getDate() - 2);
-    const maxWindow = new Date(maxDate);
-    maxWindow.setDate(maxWindow.getDate() + 2);
+    const { data: userAccounts } = await supabase
+      .from('accounts')
+      .select('id, operated_by_owner')
+      .eq('user_id', user.id);
 
-    const { data: candidateTxns } = await supabase
-      .from('transactions')
-      .select('*')
-      .eq('user_id', user.id)
-      .neq('account_id', upload.account_id)
-      .eq('is_transfer', false)
-      .gte('txn_date', minWindow.toISOString().split('T')[0])
-      .lte('txn_date', maxWindow.toISOString().split('T')[0]);
+    const operatedByOwnerMap = new Map<string, boolean>();
+    for (const acc of userAccounts || []) {
+      operatedByOwnerMap.set(acc.id, acc.operated_by_owner !== false);
+    }
 
-    const otherCandidates = (candidateTxns || []).map((r: any) => mapDbTransaction(r));
-    const pairedOtherIds = new Set<string>();
+    const isSourceOperatedByOwner = operatedByOwnerMap.get(upload.account_id) ?? true;
 
-    for (const newTx of newlyInsertedTransactions) {
-      if (newTx.is_transfer) continue;
+    if (isSourceOperatedByOwner) {
+      const minWindow = new Date(minDate);
+      minWindow.setDate(minWindow.getDate() - 2);
+      const maxWindow = new Date(maxDate);
+      maxWindow.setDate(maxWindow.getDate() + 2);
 
-      const newAmt = newTx.debit ?? newTx.credit;
-      if (!newAmt) continue;
-      const isNewDebit = newTx.debit !== null && newTx.debit !== undefined;
-      const newDateMs = new Date(newTx.txn_date).getTime();
+      const { data: candidateTxns } = await supabase
+        .from('transactions')
+        .select('*')
+        .eq('user_id', user.id)
+        .neq('account_id', upload.account_id)
+        .eq('is_transfer', false)
+        .gte('txn_date', minWindow.toISOString().split('T')[0])
+        .lte('txn_date', maxWindow.toISOString().split('T')[0]);
 
-      for (const otherTx of otherCandidates) {
-        if (otherTx.id === newTx.id || pairedOtherIds.has(otherTx.id)) continue;
-        if (otherTx.is_transfer && otherTx.transfer_pair_id) continue;
-        if (otherTx.account_id === newTx.account_id) continue;
+      const otherCandidates = (candidateTxns || []).map((r: any) => mapDbTransaction(r));
+      const pairedOtherIds = new Set<string>();
 
-        const otherAmt = otherTx.debit ?? otherTx.credit;
-        if (!otherAmt || Math.abs(newAmt - otherAmt) > 0.01) continue;
+      for (const newTx of newlyInsertedTransactions) {
+        if (newTx.is_transfer) continue;
 
-        const isOtherDebit = otherTx.debit !== null && otherTx.debit !== undefined;
-        if (isNewDebit === isOtherDebit) continue;
+        const newAmt = newTx.debit ?? newTx.credit;
+        if (!newAmt) continue;
+        const isNewDebit = newTx.debit !== null && newTx.debit !== undefined;
+        const newDateMs = new Date(newTx.txn_date).getTime();
 
-        const otherDateMs = new Date(otherTx.txn_date).getTime();
-        const diffMs = Math.abs(newDateMs - otherDateMs);
-        if (diffMs <= 86400000 * 1.5) {
-          const pairId = crypto.randomUUID();
-          pairedOtherIds.add(otherTx.id);
+        for (const otherTx of otherCandidates) {
+          if (otherTx.id === newTx.id || pairedOtherIds.has(otherTx.id)) continue;
+          if (otherTx.is_transfer && otherTx.transfer_pair_id) continue;
+          if (otherTx.account_id === newTx.account_id) continue;
 
-          await Promise.all([
-            supabase
-              .from('transactions')
-              .update({
-                is_transfer: true,
-                transfer_pair_id: pairId,
-                txn_type: 'transfer',
-                category_id: null,
-              })
-              .eq('id', newTx.id)
-              .eq('user_id', user.id),
-            supabase
-              .from('transactions')
-              .update({
-                is_transfer: true,
-                transfer_pair_id: pairId,
-                txn_type: 'transfer',
-                category_id: null,
-              })
-              .eq('id', otherTx.id)
-              .eq('user_id', user.id),
-          ]);
+          // Require operated_by_owner = true on both legs
+          const isOtherOperatedByOwner = operatedByOwnerMap.get(otherTx.account_id) ?? true;
+          if (!isOtherOperatedByOwner) continue;
 
-          newTx.is_transfer = true;
-          newTx.transfer_pair_id = pairId;
-          newTx.txn_type = 'transfer';
-          newTx.category_id = null;
-          newTx.category = undefined;
-          transferPairsFound++;
-          break;
+          const otherAmt = otherTx.debit ?? otherTx.credit;
+          if (!otherAmt || Math.abs(newAmt - otherAmt) > 0.01) continue;
+
+          const isOtherDebit = otherTx.debit !== null && otherTx.debit !== undefined;
+          if (isNewDebit === isOtherDebit) continue;
+
+          const otherDateMs = new Date(otherTx.txn_date).getTime();
+          const diffMs = Math.abs(newDateMs - otherDateMs);
+          if (diffMs <= 86400000 * 1.5) {
+            const pairId = crypto.randomUUID();
+            pairedOtherIds.add(otherTx.id);
+
+            await Promise.all([
+              supabase
+                .from('transactions')
+                .update({
+                  is_transfer: true,
+                  transfer_pair_id: pairId,
+                  txn_type: 'transfer',
+                  category_id: null,
+                })
+                .eq('id', newTx.id)
+                .eq('user_id', user.id),
+              supabase
+                .from('transactions')
+                .update({
+                  is_transfer: true,
+                  transfer_pair_id: pairId,
+                  txn_type: 'transfer',
+                  category_id: null,
+                })
+                .eq('id', otherTx.id)
+                .eq('user_id', user.id),
+            ]);
+
+            newTx.is_transfer = true;
+            newTx.transfer_pair_id = pairId;
+            newTx.txn_type = 'transfer';
+            newTx.category_id = null;
+            newTx.category = undefined;
+            transferPairsFound++;
+            break;
+          }
         }
       }
     }

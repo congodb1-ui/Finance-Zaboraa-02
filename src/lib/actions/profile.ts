@@ -5,12 +5,17 @@ export interface ProfileRecord {
   id: string;
   user_id: string;
   full_name: string | null;
+  owner_full_name?: string | null;
   email: string | null;
   pan_encrypted: string | null;
   phone: string | null;
   address: string | null;
   default_fy: string;
+  timezone?: string | null;
   dark_mode: boolean;
+  gmail_connected?: boolean;
+  gmail_last_synced?: string | null;
+  gmail_sync_enabled?: boolean;
   last_backup_at: string | null;
   created_at: string;
   updated_at: string;
@@ -18,13 +23,18 @@ export interface ProfileRecord {
 
 export interface ProfileUpsertInput {
   full_name?: string | null;
+  owner_full_name?: string | null;
   email?: string | null;
   pan?: string | null;
   pan_encrypted?: string | null;
   phone?: string | null;
   address?: string | null;
   default_fy?: string | null;
+  timezone?: string | null;
   dark_mode?: boolean;
+  gmail_connected?: boolean;
+  gmail_last_synced?: string | null;
+  gmail_sync_enabled?: boolean;
   last_backup_at?: string | null;
 }
 
