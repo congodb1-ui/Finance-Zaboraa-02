@@ -112,8 +112,30 @@ export function parseAmount(val: any): number | null {
 export async function processStatementUpload(
   file: File,
   accountId: string,
-  client?: any
+  clientOrPassword?: any,
+  maybePassword?: string
 ): Promise<UploadApiResponse> {
+  let client: any = undefined;
+  let password: string | undefined = undefined;
+
+  if (typeof clientOrPassword === 'string') {
+    password = clientOrPassword;
+  } else if (
+    clientOrPassword &&
+    typeof clientOrPassword === 'object' &&
+    ('auth' in clientOrPassword || 'from' in clientOrPassword)
+  ) {
+    client = clientOrPassword;
+    password = maybePassword;
+  } else if (
+    clientOrPassword &&
+    typeof clientOrPassword === 'object' &&
+    'password' in clientOrPassword
+  ) {
+    client = clientOrPassword.client;
+    password = clientOrPassword.password;
+  }
+
   // STEP 1 — Authenticate
   const supabase = client || createClient();
   const {
@@ -208,7 +230,7 @@ export async function processStatementUpload(
     } else if (fileType === 'xlsx') {
       parseResult = parseXLSX(arrayBuffer);
     } else {
-      parseResult = await parseStatementPDF(arrayBuffer);
+      parseResult = await parseStatementPDF(arrayBuffer, { password });
     }
   } catch (err: any) {
     // If storage upload occurred, attempt clean cleanup

@@ -1,5 +1,5 @@
 import type { ParseResult } from '../../types/uploads';
-import { extractPDFRawData, type PDFExtractionResult } from './pdf';
+import { extractPDFRawData, PdfPasswordError, type PDFExtractionResult } from './pdf';
 import { parsePDFHDFC, isHDFCStatement } from './pdf-hdfc';
 import { parsePDFGeneric } from './pdf-generic';
 import { parseCSV } from './csv';
@@ -9,6 +9,7 @@ import { parseBOM, isBOMStatement } from './bom';
 import { parseBOI, isBOIStatement } from './boi';
 
 export {
+  PdfPasswordError,
   parsePaytmUPI,
   isPaytmStatement,
   matchAccountForPaytm,
@@ -35,10 +36,11 @@ export {
  */
 export async function parseStatementPDF(
   buffer: ArrayBuffer | Uint8Array,
-  options?: { preExtracted?: PDFExtractionResult } | PDFExtractionResult
+  options?: { preExtracted?: PDFExtractionResult; password?: string } | PDFExtractionResult
 ): Promise<ParseResult> {
-  const preExtracted = options && 'pages' in options ? options : options?.preExtracted;
-  const pdfData = preExtracted || (await extractPDFRawData(buffer));
+  const preExtracted = options && 'pages' in options ? options : (options as any)?.preExtracted;
+  const password = options && 'password' in options ? (options as any).password : undefined;
+  const pdfData = preExtracted || (await extractPDFRawData(buffer, password));
   const firstPageText = pdfData.pages[0]?.fullText || pdfData.fullDocumentText;
   const fullText = pdfData.fullDocumentText;
 

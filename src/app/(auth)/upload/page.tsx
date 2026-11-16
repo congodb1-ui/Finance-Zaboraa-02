@@ -6,6 +6,7 @@ import { UploadProgress, type UploadStep } from '../../../components/upload/Uplo
 import { ColumnMappingWizard } from '../../../components/upload/ColumnMappingWizard';
 import { ReviewScreen } from '../../../components/upload/ReviewScreen';
 import { UploadHistory } from '../../../components/upload/UploadHistory';
+import { PdfPasswordModal } from '../../../components/upload/PdfPasswordModal';
 import { Card, CardHeader, CardTitle, CardContent } from '../../../components/ui/Card';
 import { Button } from '../../../components/ui/Button';
 import {
@@ -55,6 +56,11 @@ export default function StatementUploadPage() {
   const [statusMessage, setStatusMessage] = useState<{ type: 'error' | 'success' | 'info'; text: string } | null>(null);
   const [unfinishedUploadId, setUnfinishedUploadId] = useState<string | null>(null);
 
+  // PDF Password modal state
+  const [isPasswordModalOpen, setIsPasswordModalOpen] = useState(false);
+  const [passwordError, setPasswordError] = useState<string | null>(null);
+  const [isSubmittingPassword, setIsSubmittingPassword] = useState(false);
+
   // Active upload parsing state
   const [uploadApiResponse, setUploadApiResponse] = useState<UploadApiResponse | null>(null);
   const [activeUpload, setActiveUpload] = useState<StatementUpload | null>(null);
@@ -86,6 +92,8 @@ export default function StatementUploadPage() {
   const handleFileSelected = (file: File) => {
     setSelectedFile(file);
     setStatusMessage(null);
+    setIsPasswordModalOpen(false);
+    setPasswordError(null);
   };
 
   const handleClearFile = () => {
@@ -96,10 +104,12 @@ export default function StatementUploadPage() {
     setStagedTransactions([]);
     setStatusMessage(null);
     setIsReadOnlyInspection(false);
+    setIsPasswordModalOpen(false);
+    setPasswordError(null);
   };
 
   // STEP 1-8: Trigger Upload & Parse
-  const handleStartParsing = async () => {
+  const handleStartParsing = async (password?: string) => {
     if (!selectedFile) {
       setStatusMessage({ type: 'error', text: 'Please select a statement file to upload.' });
       return;
@@ -114,7 +124,7 @@ export default function StatementUploadPage() {
     setCurrentStep('parse');
 
     try {
-      const response = await processStatementUpload(selectedFile, selectedAccountId);
+      const response = await processStatementUpload(selectedFile, selectedAccountId, password);
 
       // Handle duplicate file error
       if (response.error === 'DUPLICATE_FILE') {
@@ -137,6 +147,8 @@ export default function StatementUploadPage() {
         return;
       }
 
+      setIsPasswordModalOpen(false);
+      setPasswordError(null);
       setUploadApiResponse(response);
 
       // Fetch newly created statement upload record
@@ -171,14 +183,41 @@ export default function StatementUploadPage() {
       }
     } catch (err: any) {
       console.error('Upload failed:', err);
-      setStatusMessage({
-        type: 'error',
-        text: err.message || 'Failed to parse statement. Please check file format.',
-      });
-      setCurrentStep('select');
+      const isPasswordError =
+        err?.code === 'PASSWORD_REQUIRED' ||
+        err?.code === 'INCORRECT_PASSWORD' ||
+        err?.name === 'PdfPasswordError' ||
+        err?.name === 'PasswordException' ||
+        err?.message?.toLowerCase().includes('password');
+
+      if (isPasswordError) {
+        setIsPasswordModalOpen(true);
+        if (
+          err?.code === 'INCORRECT_PASSWORD' ||
+          err?.message?.toLowerCase().includes('incorrect')
+        ) {
+          setPasswordError('Incorrect password. Please verify and try again.');
+        } else {
+          setPasswordError(null);
+        }
+        setCurrentStep('select');
+      } else {
+        setStatusMessage({
+          type: 'error',
+          text: err.message || 'Failed to parse statement. Please check file format.',
+        });
+        setCurrentStep('select');
+      }
     } finally {
       setIsProcessing(false);
+      setIsSubmittingPassword(false);
     }
+  };
+
+  const handlePasswordSubmit = async (password: string) => {
+    setIsSubmittingPassword(true);
+    setPasswordError(null);
+    await handleStartParsing(password);
   };
 
   // Handle manual column mapping confirmation from ColumnMappingWizard
@@ -530,7 +569,7 @@ export default function StatementUploadPage() {
                   <Button
                     variant="primary"
                     size="lg"
-                    onClick={handleStartParsing}
+                    onClick={() => handleStartParsing()}
                     isLoading={isProcessing}
                     leftIcon={<Sliders className="w-4 h-4" />}
                   >
@@ -630,6 +669,19 @@ export default function StatementUploadPage() {
           )}
         </div>
       )}
+
+      {/* PDF Password Modal */}
+      <PdfPasswordModal
+        isOpen={isPasswordModalOpen}
+        onClose={() => {
+          setIsPasswordModalOpen(false);
+          setPasswordError(null);
+        }}
+        onSubmit={handlePasswordSubmit}
+        fileName={selectedFile?.name}
+        error={passwordError}
+        isLoading={isSubmittingPassword || isProcessing}
+      />
     </div>
   );
 }

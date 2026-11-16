@@ -832,6 +832,7 @@ export async function runServer() {
         const supabase = req.supabase;
         const file = req.file;
         const accountId = req.body?.account_id as string | undefined;
+        const password = req.body?.password as string | undefined;
 
         if (!file) {
           return res.status(400).json({ error: 'No file uploaded.' });
@@ -902,13 +903,29 @@ export async function runServer() {
         ) as ArrayBuffer;
 
         let parseResult: ParseResult;
-        if (fileType === 'csv') {
-          const text = file.buffer.toString('utf-8');
-          parseResult = await parseStatementCSV(text);
-        } else if (fileType === 'xlsx') {
-          parseResult = parseXLSX(arrayBuffer);
-        } else {
-          parseResult = await parseStatementPDF(arrayBuffer);
+        try {
+          if (fileType === 'csv') {
+            const text = file.buffer.toString('utf-8');
+            parseResult = await parseStatementCSV(text);
+          } else if (fileType === 'xlsx') {
+            parseResult = parseXLSX(arrayBuffer);
+          } else {
+            parseResult = await parseStatementPDF(arrayBuffer, { password });
+          }
+        } catch (parseErr: any) {
+          if (
+            parseErr?.code === 'PASSWORD_REQUIRED' ||
+            parseErr?.code === 'INCORRECT_PASSWORD' ||
+            parseErr?.name === 'PdfPasswordError' ||
+            parseErr?.name === 'PasswordException' ||
+            parseErr?.message?.includes('password')
+          ) {
+            return res.status(401).json({
+              error: parseErr.code || (password ? 'INCORRECT_PASSWORD' : 'PASSWORD_REQUIRED'),
+              message: parseErr.message || 'PDF password required.',
+            });
+          }
+          throw parseErr;
         }
 
         if (parseResult.rows.length === 0) {

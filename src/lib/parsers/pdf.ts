@@ -34,11 +34,21 @@ export interface PDFExtractionResult {
   statementPeriodEnd?: string | null;
 }
 
+export class PdfPasswordError extends Error {
+  code: 'PASSWORD_REQUIRED' | 'INCORRECT_PASSWORD';
+  constructor(code: 'PASSWORD_REQUIRED' | 'INCORRECT_PASSWORD', message: string) {
+    super(message);
+    this.name = 'PdfPasswordError';
+    this.code = code;
+  }
+}
+
 /**
  * Extracts text items with their (x, y) coordinates from PDF ArrayBuffer
  */
 export async function extractPDFRawData(
-  buffer: ArrayBuffer | Uint8Array
+  buffer: ArrayBuffer | Uint8Array,
+  password?: string
 ): Promise<PDFExtractionResult> {
   const data =
     buffer instanceof Uint8Array
@@ -49,6 +59,7 @@ export async function extractPDFRawData(
   try {
     const loadingTask = pdfjsLib.getDocument({
       data,
+      password: password || undefined,
       useSystemFonts: true,
       disableFontFace: false,
     });
@@ -56,13 +67,22 @@ export async function extractPDFRawData(
   } catch (err: any) {
     if (
       err?.name === 'PasswordException' ||
+      err?.name === 'PasswordResponses' ||
       err?.message?.toLowerCase().includes('password') ||
       err?.code === 1 ||
       err?.code === 2
     ) {
-      throw new Error(
-        'This PDF is password-protected. Please unlock it in your bank app / PDF reader (File → Export as unlocked PDF) and upload the unlocked PDF. Zaboraa never asks for your PDF password.'
-      );
+      if (password) {
+        throw new PdfPasswordError(
+          'INCORRECT_PASSWORD',
+          'Incorrect PDF password. Please check and try again.'
+        );
+      } else {
+        throw new PdfPasswordError(
+          'PASSWORD_REQUIRED',
+          'This PDF statement is password-protected. Please enter password to unlock.'
+        );
+      }
     }
     throw err;
   }
