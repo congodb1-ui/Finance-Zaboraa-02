@@ -870,18 +870,23 @@ function setCorsHeaders(req: VercelRequest, res: VercelResponse): boolean {
 
 async function authenticateRequest(
   req: VercelRequest & { user?: any; supabase?: any },
-  res: VercelResponse
+  res: VercelResponse,
+  options?: { optionalAuth?: boolean }
 ): Promise<boolean> {
   try {
     const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      res.status(401).json({ error: 'Unauthorized' });
+      if (!options?.optionalAuth) {
+        res.status(401).json({ error: 'Unauthorized' });
+      }
       return false;
     }
 
     const token = authHeader.slice(7).trim();
     if (!token) {
-      res.status(401).json({ error: 'Unauthorized' });
+      if (!options?.optionalAuth) {
+        res.status(401).json({ error: 'Unauthorized' });
+      }
       return false;
     }
 
@@ -903,7 +908,9 @@ async function authenticateRequest(
     } = await reqSupabase.auth.getUser(token);
 
     if (error || !user) {
-      res.status(401).json({ error: 'Unauthorized' });
+      if (!options?.optionalAuth) {
+        res.status(401).json({ error: 'Unauthorized' });
+      }
       return false;
     }
 
@@ -917,7 +924,9 @@ async function authenticateRequest(
       allowedEmails.length > 0 &&
       (!user.email || !allowedEmails.includes(user.email.toLowerCase()))
     ) {
-      res.status(403).json({ error: 'Forbidden' });
+      if (!options?.optionalAuth) {
+        res.status(403).json({ error: 'Forbidden' });
+      }
       return false;
     }
 
@@ -926,7 +935,9 @@ async function authenticateRequest(
     return true;
   } catch (err) {
     console.error('[api/[...all]] Auth verification error:', err);
-    res.status(401).json({ error: 'Unauthorized' });
+    if (!options?.optionalAuth) {
+      res.status(401).json({ error: 'Unauthorized' });
+    }
     return false;
   }
 }
@@ -1676,7 +1687,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const path = getUrlPath(req);
 
     // If status check or connect, ensure we don't crash before handling
-    const authenticated = await authenticateRequest(req as any, res);
+    const authenticated = await authenticateRequest(req as any, res, {
+      optionalAuth: path === '/api/gmail/status',
+    });
     if (!authenticated) {
       if (path === '/api/gmail/status') {
         return res.status(200).json({
@@ -1684,7 +1697,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           gmail_email: null,
           gmail_last_synced: null,
           gmail_sync_enabled: false,
-          has_offline_refresh_support: true,
+          has_offline_refresh_support: Boolean(process.env.GOOGLE_CLIENT_SECRET),
           last_sync_summary: null,
         });
       }
