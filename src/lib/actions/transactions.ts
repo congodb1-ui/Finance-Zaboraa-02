@@ -448,21 +448,30 @@ export async function commitUploadTransactions(
 
   // STEP 5b — Passive Recurring Transaction Matching
   try {
-    const { matchAndAdvanceRecurring } = await import('./recurring');
-    for (const newTx of newlyInsertedTransactions) {
-      const amt = newTx.debit ?? newTx.credit ?? 0;
-      const matchedRec = await matchAndAdvanceRecurring(
-        {
-          description: newTx.description,
-          amount: amt,
-          txn_date: newTx.txn_date,
-          account_id: newTx.account_id,
-        },
-        supabase
-      );
-      if (matchedRec) {
-        newTx.is_recurring = true;
-        newTx.recurring_id = matchedRec.id;
+    const { data: activeRecurring } = await supabase
+      .from('recurring_transactions')
+      .select('id')
+      .eq('user_id', user.id)
+      .eq('is_active', true)
+      .limit(1);
+
+    if (activeRecurring && activeRecurring.length > 0) {
+      const { matchAndAdvanceRecurring } = await import('./recurring');
+      for (const newTx of newlyInsertedTransactions) {
+        const amt = newTx.debit ?? newTx.credit ?? 0;
+        const matchedRec = await matchAndAdvanceRecurring(
+          {
+            description: newTx.description,
+            amount: amt,
+            txn_date: newTx.txn_date,
+            account_id: newTx.account_id,
+          },
+          supabase
+        );
+        if (matchedRec) {
+          newTx.is_recurring = true;
+          newTx.recurring_id = matchedRec.id;
+        }
       }
     }
   } catch (recErr) {
