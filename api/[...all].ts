@@ -488,11 +488,14 @@ async function fetchFullGmailMessage(
 
 async function runGmailSyncForUser(
   serviceSupabase: any,
-  userId: string
+  userId: string,
+  userSupabase?: any
 ): Promise<GmailSyncResult> {
   if (!serviceSupabase) {
     throw new Error('SUPABASE_SERVICE_ROLE_KEY is required to run Gmail sync.');
   }
+
+  const db = userSupabase || serviceSupabase;
 
   // 1 & 2. Load token from Vault & refresh if expired
   const accessToken = await getValidGmailAccessToken(serviceSupabase, userId);
@@ -505,26 +508,26 @@ async function runGmailSyncForUser(
     { data: categories },
     { data: aiSettingsRow },
   ] = await Promise.all([
-    serviceSupabase
+    db
       .from('profiles')
       .select('gmail_last_synced, owner_full_name, full_name')
       .eq('user_id', userId)
       .maybeSingle(),
-    serviceSupabase
+    db
       .from('accounts')
       .select('id, account_number_last4, account_type')
       .eq('user_id', userId),
-    serviceSupabase
+    db
       .from('transaction_rules')
       .select('*')
       .eq('user_id', userId)
       .eq('is_active', true)
       .order('priority', { ascending: true }),
-    serviceSupabase
+    db
       .from('categories')
       .select('*')
       .or(`user_id.eq.${userId},is_system.eq.true`),
-    serviceSupabase
+    db
       .from('ai_settings')
       .select('ai_enabled')
       .eq('user_id', userId)
@@ -570,7 +573,7 @@ async function runGmailSyncForUser(
 
       if (outcome.type === 'error') {
         errorsCount++;
-        await serviceSupabase.from('email_parse_errors').insert({
+        await db.from('email_parse_errors').insert({
           user_id: userId,
           gmail_msg_id: ref.id,
           from_address: outcome.fromAddress,
@@ -585,7 +588,7 @@ async function runGmailSyncForUser(
       const matchedAccount = accountByLast4.get(outcome.last4);
       if (!matchedAccount) {
         errorsCount++;
-        await serviceSupabase.from('email_parse_errors').insert({
+        await db.from('email_parse_errors').insert({
           user_id: userId,
           gmail_msg_id: ref.id,
           from_address: outcome.fromAddress,
@@ -601,7 +604,7 @@ async function runGmailSyncForUser(
       // Balance alert: update accounts.current_balance ONLY
       if (outcome.type === 'balance') {
         if (outcome.balanceAfter !== null && outcome.balanceAfter !== undefined) {
-          await serviceSupabase
+          await db
             .from('accounts')
             .update({
               current_balance: outcome.balanceAfter,
@@ -615,7 +618,7 @@ async function runGmailSyncForUser(
 
       // Transaction dedup check (UPI / IMPS ref)
       if (outcome.upiRef) {
-        const { data: existingUpi } = await serviceSupabase
+        const { data: existingUpi } = await db
           .from('transactions')
           .select('id')
           .eq('upi_ref_no', outcome.upiRef)
@@ -627,7 +630,7 @@ async function runGmailSyncForUser(
           continue; // Silent dedup skip
         }
       } else if (outcome.impsRef) {
-        const { data: existingImps } = await serviceSupabase
+        const { data: existingImps } = await db
           .from('transactions')
           .select('id')
           .eq('imps_ref_no', outcome.impsRef)
@@ -707,7 +710,7 @@ async function runGmailSyncForUser(
       }
 
       // Step 7: Insert transaction
-      const { data: insertedTx, error: insertErr } = await serviceSupabase
+      const { data: insertedTx, error: insertErr } = await db
         .from('transactions')
         .insert({
           user_id: userId,
@@ -737,7 +740,7 @@ async function runGmailSyncForUser(
 
       if (insertErr || !insertedTx) {
         errorsCount++;
-        await serviceSupabase.from('email_parse_errors').insert({
+        await db.from('email_parse_errors').insert({
           user_id: userId,
           gmail_msg_id: ref.id,
           from_address: outcome.fromAddress,
@@ -752,7 +755,7 @@ async function runGmailSyncForUser(
 
       // Step 8: Update account current_balance if balanceAfter was extracted
       if (outcome.balanceAfter !== null && outcome.balanceAfter !== undefined) {
-        await serviceSupabase
+        await db
           .from('accounts')
           .update({
             current_balance: outcome.balanceAfter,
@@ -763,7 +766,7 @@ async function runGmailSyncForUser(
       }
     } catch (msgErr: any) {
       errorsCount++;
-      await serviceSupabase.from('email_parse_errors').insert({
+      await db.from('email_parse_errors').insert({
         user_id: userId,
         gmail_msg_id: ref.id,
         from_address: 'unknown',
@@ -776,14 +779,14 @@ async function runGmailSyncForUser(
 
   const nowIso = new Date().toISOString();
   await Promise.all([
-    serviceSupabase.from('gmail_sync_log').insert({
+    db.from('gmail_sync_log').insert({
       user_id: userId,
       last_synced_at: nowIso,
       emails_processed: emailsProcessed,
       transactions_added: transactionsAdded,
       errors_count: errorsCount,
     }),
-    serviceSupabase.from('profiles').update({ gmail_last_synced: nowIso }).eq('user_id', userId),
+    db.from('profiles').update({ gmail_last_synced: nowIso }).eq('user_id', userId),
   ]);
 
   return {
@@ -1327,12 +1330,13 @@ async function handleGmail(req: any, res: VercelResponse, path: string) {
     const supabase = req.supabase;
     const user = req.user;
     const serviceSupabase = getServiceSupabase() || supabase;
+    const db = supabase || serviceSupabase;
 
     if (path.endsWith('/status')) {
       if (req.method !== 'GET') return res.status(405).json({ error: 'Method Not Allowed' });
       
       try {
-        const { data, error } = await serviceSupabase
+        const { data, error } = await db
           .from('profiles')
           .select('gmail_connected, gmail_last_synced, gmail_email, gmail_sync_enabled')
           .eq('user_id', user?.id)
@@ -1346,7 +1350,7 @@ async function handleGmail(req: any, res: VercelResponse, path: string) {
         const edgeDisabled = process.env.USE_SUPABASE_EDGE_GMAIL_SYNC === 'false';
         const syncEnabled = isConnected && !edgeDisabled && Boolean(data?.gmail_sync_enabled ?? true);
 
-        const { data: lastLog } = await serviceSupabase
+        const { data: lastLog } = await db
           .from('gmail_sync_log')
           .select('last_synced_at, emails_processed, transactions_added, errors_count')
           .eq('user_id', user?.id)
@@ -1490,15 +1494,25 @@ async function handleGmail(req: any, res: VercelResponse, path: string) {
         expiry: Date.now() + expiresInSec * 1000,
       });
 
-      // Update profiles table with the consented Gmail email
-      const { error: updateErr } = await serviceSupabase
+      let encryptedRefreshToken: string | null = null;
+      if (refreshToken) {
+        encryptedRefreshToken = await encryptValue(refreshToken);
+      }
+
+      // Update profiles table with the consented Gmail email using user client
+      const profileUpdates: Record<string, any> = {
+        gmail_connected: true,
+        gmail_email: consentedEmail,
+        gmail_sync_enabled: true,
+        updated_at: new Date().toISOString(),
+      };
+      if (encryptedRefreshToken) {
+        profileUpdates.gmail_refresh_token_encrypted = encryptedRefreshToken;
+      }
+
+      const { error: updateErr } = await db
         .from('profiles')
-        .update({
-          gmail_connected: true,
-          gmail_email: consentedEmail,
-          gmail_sync_enabled: true,
-          updated_at: new Date().toISOString(),
-        })
+        .update(profileUpdates)
         .eq('user_id', user.id);
 
       if (updateErr) {
@@ -1520,13 +1534,14 @@ async function handleGmail(req: any, res: VercelResponse, path: string) {
         console.warn('[api/gmail/disconnect] vault delete warning:', err?.message)
       );
 
-      await serviceSupabase
+      await db
         .from('profiles')
         .update({
           gmail_connected: false,
           gmail_email: null,
           gmail_last_synced: null,
           gmail_sync_enabled: false,
+          gmail_refresh_token_encrypted: null,
           updated_at: new Date().toISOString(),
         })
         .eq('user_id', user?.id);
@@ -1537,7 +1552,7 @@ async function handleGmail(req: any, res: VercelResponse, path: string) {
       if (req.method !== 'PATCH' && req.method !== 'POST') return res.status(405).json({ error: 'Method Not Allowed' });
       const syncEnabled = req.body?.sync_enabled !== undefined ? req.body.sync_enabled : req.body?.gmail_sync_enabled;
       if (syncEnabled !== undefined) {
-        await serviceSupabase
+        await db
           .from('profiles')
           .update({
             gmail_sync_enabled: Boolean(syncEnabled),
@@ -1557,7 +1572,7 @@ async function handleGmail(req: any, res: VercelResponse, path: string) {
       }
 
       // Enforce 5-minute manual sync cooldown
-      const { data: latestLog } = await serviceSupabase
+      const { data: latestLog } = await db
         .from('gmail_sync_log')
         .select('last_synced_at')
         .eq('user_id', user.id)
@@ -1608,7 +1623,7 @@ async function handleGmail(req: any, res: VercelResponse, path: string) {
         }
       }
 
-      const result = await runGmailSyncForUser(serviceSupabase, user.id);
+      const result = await runGmailSyncForUser(serviceSupabase, user.id, supabase);
       return res.status(200).json(result);
     }
 
