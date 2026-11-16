@@ -81,9 +81,51 @@ const testCases = [
     expectedDesc: 'MOHAMMAD HATIM MOTORWALA',
     expectedRef: '631247105135',
   },
+  {
+    raw: '0000234669620494 12/12/22 SAYYED-WASIMSSAYYED@ICICI-ICIC0003182-234669620494-SAVING-UPI PAYMENT',
+    expectedType: 'UPI',
+    expectedDesc: 'WASIMSSAYYED',
+    expectedRef: '234669620494',
+  },
+  {
+    raw: '0000234669620494 12/12/22 SAYYE-AFAZ.SHAIKH@OKAXIS-UTIB0000000-234669620494-SAVING-UPI PAYMENT',
+    expectedType: 'UPI',
+    expectedDesc: 'AFAZ SHAIKH',
+    expectedRef: '234669620494',
+  },
+  {
+    raw: 'UPI-ASHFAK MOHAMADYUSIN-***@YBL-YESB0YBLUPI-234612345678-SENT USING GPAY',
+    expectedType: 'UPI',
+    expectedDesc: 'ASHFAK MOHAMADYUSIN',
+    expectedRef: '234612345678',
+  },
+];
+
+import { stripStatementNoise, isStatementNoiseLine } from '../src/lib/parsers/strip-statement-noise';
+
+const noiseTestLines = [
+  'Page No :: 60',
+  'Page 59 of 60',
+  'HDFC BANK LIMITED',
+  'Registered Office: Senapati Bapat Marg, Lower Parel, Mumbai 400013',
+  'MR. WASIM SALIM SAYYED',
+  'FLAT NO 402 KOOL HOMES PUNE MAHARASHTRA 411048',
+  'Statement From : 01/01/2022 To : 31/12/2022',
+  'Date Narration Value Dt Ref No./Cheque No. Debit Credit Balance',
+  'Opening Balance : 15,007.32',
+  '01/01/22 UPI-AFAZ SHAIKH-***@OKAXIS-UTIB0000000-234669620494 01/01/22 234669620494 500.00 14,507.32',
 ];
 
 let failed = 0;
+
+const stripped = stripStatementNoise(noiseTestLines);
+if (stripped.length !== 1 || !stripped[0].startsWith('01/01/22')) {
+  console.error(`FAIL: stripStatementNoise did not correctly isolate the valid transaction line. Result:`, stripped);
+  failed++;
+} else {
+  console.log('Noise stripping verification passed: only valid transaction date row preserved.');
+}
+
 for (const tc of testCases) {
   const res = parseBankNarration(tc.raw, tc.refCol);
   let ok = true;

@@ -1,6 +1,7 @@
 import type { ParseResult, ColumnMapping } from '../../types/uploads';
 import { extractPDFRawData, extractStatementPeriod, type PDFExtractionResult } from './pdf';
 import { parseBankNarration } from './bank-transaction';
+import { isStatementNoiseLine, stripStatementNoise } from './strip-statement-noise';
 
 // Keep in sync with Gmail narration cleaner in api/[...all].ts
 // and src/lib/parsers/gmail/hdfc.ts
@@ -40,6 +41,10 @@ export function isHDFCStatement(firstPageText: string): boolean {
 function isHDFCHeaderOrFooter(cells: string[]): boolean {
   if (cells.length === 0) return true;
   const rowText = cells.join(' ').toLowerCase();
+
+  if (isStatementNoiseLine(cells.join(' '))) {
+    return true;
+  }
 
   if (
     rowText.includes('hdfc bank limited') ||
@@ -96,8 +101,10 @@ function cleanNumber(str: string): number | null {
  */
 export function joinNarrationLines(lines: string[]): string {
   if (!lines || lines.length === 0) return '';
+  const cleanLines = stripStatementNoise(lines);
+  if (cleanLines.length === 0) return '';
   let joined = '';
-  for (const rawLine of lines) {
+  for (const rawLine of cleanLines) {
     const line = (rawLine || '').trim();
     if (!line) continue;
     if (!joined) {
@@ -206,7 +213,7 @@ export async function parsePDFHDFC(
       for (const line of lines) {
         line.items.sort((a, b) => a.x - b.x);
         const lineText = line.items.map((i) => i.text).join(' ');
-        if (isHDFCHeaderOrFooter([lineText])) continue;
+        if (isStatementNoiseLine(lineText) || isHDFCHeaderOrFooter([lineText])) continue;
 
         // Assign items to columns based on x coordinates:
         // Date: 25..65
@@ -250,9 +257,9 @@ export async function parsePDFHDFC(
 
           currentTxn = {
             date: dateStr,
-            narrationParts: narrStr ? [narrStr] : [],
+            narrationParts: narrStr && !isStatementNoiseLine(narrStr) ? [narrStr] : [],
             valueDt: valDtStr,
-            refNoParts: refStr ? [refStr] : [],
+            refNoParts: refStr && !isStatementNoiseLine(refStr) ? [refStr] : [],
             rawDebit: debitStr,
             rawCredit: creditStr,
             rawAmount: '',
@@ -260,10 +267,10 @@ export async function parsePDFHDFC(
           };
         } else if (currentTxn) {
           // Wrapped multi-line narration / ref continuation
-          if (narrStr) {
+          if (narrStr && !isStatementNoiseLine(narrStr)) {
             currentTxn.narrationParts.push(narrStr);
           }
-          if (refStr) {
+          if (refStr && !isStatementNoiseLine(refStr)) {
             currentTxn.refNoParts.push(refStr);
           }
         }

@@ -2,6 +2,7 @@ import Papa from 'papaparse';
 import type { ColumnMapping, ParseResult, ParsedTransaction } from '../../types/uploads';
 import { extractPDFRawData, type PDFExtractionResult } from './pdf';
 import { extractImpsRef, parseIndianDate, parseMonetaryValue } from './utils';
+import { isStatementNoiseLine } from './strip-statement-noise';
 
 const BOM_COLUMNS = [
   'Txn Date',
@@ -42,6 +43,7 @@ function isBOMHeaderRow(cells: string[]): boolean {
 
 function isBOMFooterOrMeta(cells: string[]): boolean {
   const joined = cells.join(' ').toLowerCase();
+  if (isStatementNoiseLine(cells.join(' '))) return true;
   return (
     joined.includes('bank of maharashtra') ||
     joined.includes('statement of account') ||

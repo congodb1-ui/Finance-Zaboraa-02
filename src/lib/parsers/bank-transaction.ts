@@ -123,8 +123,29 @@ export function parseBankNarration(
   text = text.replace(/([a-zA-Z])-\s*\r?\n\s*([a-zA-Z])/g, '$1$2');
   text = text.replace(/\r?\n|\r/g, ' ').replace(/\s{2,}/g, ' ').trim();
 
-  // Fix common PDF wrapped split words e.g. "LIM ITED" -> "LIMITED"
+  // Fix common PDF wrapped split words e.g. "LIM ITED" -> "LIMITED", "PA YMENT" -> "PAYMENT"
   text = text.replace(/\bLIM\s+ITED\b/gi, 'LIMITED');
+  text = text.replace(/\bPA\s+YMENT\b/gi, 'PAYMENT');
+
+  // STEP 4A & 4B: Strip leading UTR prefix and/or date prepended to narration (Old bank statement format)
+  // e.g. "0000234669620494 12/12/22 SAYYED-WASIMSSAYYED@ICICI-ICIC0003182-234669620494-SAVING-UPI PAYMENT"
+  let leadingUtrRef = '';
+  const leadingUtrMatch = text.match(/^(\d{10,20})\s+/);
+  if (leadingUtrMatch) {
+    leadingUtrRef = cleanRef(leadingUtrMatch[1]);
+    text = text.slice(leadingUtrMatch[0].length).trim();
+  }
+
+  const leadingDateMatch = text.match(/^(\d{1,2}[/\-.]\d{1,2}[/\-.]\d{2,4})\s+/);
+  if (leadingDateMatch) {
+    text = text.slice(leadingDateMatch[0].length).trim();
+  }
+
+  // STEP 4D: Strip trailing -SAVING-UPI PAYMENT, -UPI PAYMENT, -UPI
+  text = text.replace(/[-/\s]+(?:SAVING-)?UPI\s+PAYMENT$/i, '');
+  text = text.replace(/[-/\s]+SAVING-UPI$/i, '');
+
+  const effectiveFallbackRef = leadingUtrRef || fallbackRef;
 
   // ==========================================
   // 2. RTGS
@@ -358,10 +379,12 @@ export function parseBankNarration(
   }
 
   // ==========================================
-  // 9. UPI
+  // 9. UPI (with UPI- prefix OR containing VPA @)
   // Format: UPI-<NAME>-<MASKED>@BANK-<IFSC>-<UTR>-<SUFFIX>
+  // Or Old Statement Format: [SENDER-]NAME@BANK-IFSC-UTR
   // ==========================================
-  if (/^UPI[\/\-\s]/i.test(text)) {
+  const hasUpiPrefix = /^UPI[\/\-\s]/i.test(text);
+  if (hasUpiPrefix || /@[a-zA-Z0-9.-]+/.test(text)) {
     let working = text.replace(/^UPI[\/\-\s]+/i, '').trim();
 
     // 1. Extract 12-digit UTR
@@ -369,6 +392,8 @@ export function parseBankNarration(
     const utrMatch = text.match(/(?:^|[-/\s])(\d{12})(?=$|[-/\s])/);
     if (utrMatch) {
       extractedRef = utrMatch[1];
+    } else if (effectiveFallbackRef) {
+      extractedRef = effectiveFallbackRef;
     }
 
     // 2. Strip noise phrases
@@ -377,12 +402,23 @@ export function parseBankNarration(
       ''
     );
 
-    // 3. Strip VPA, masked accounts, IFSC, and UTR suffixes
-    const splitMatch = working.match(
-      /^(.*?)(?:-[*]{3,}|-[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+|-[A-Z]{4}0[A-Z0-9]{6}|-\d{12}|@[a-zA-Z0-9.-]+)/
-    );
-    if (splitMatch && splitMatch[1] && splitMatch[1].trim().length > 0) {
-      working = splitMatch[1];
+    // 3. Extract Merchant / Payee
+    if (hasUpiPrefix) {
+      // Standard format: UPI-<NAME>-<MASKED>@BANK or UPI-<NAME>-<IFSC>-<UTR>
+      const splitMatch = working.match(
+        /^(.*?)(?:-[*]{3,}|-[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+|-[A-Z]{4}0[A-Z0-9]{6}|-\d{12}|@[a-zA-Z0-9.-]+)/
+      );
+      if (splitMatch && splitMatch[1] && splitMatch[1].trim().length > 0) {
+        working = splitMatch[1].trim();
+      }
+    } else {
+      // Old statement format without UPI prefix: [SENDER-]VPA_USER@BANK-IFSC-UTR
+      const vpaMatch = working.match(/^(?:.*?-)?([a-zA-Z0-9._%+-]+)@[a-zA-Z0-9.-]+/);
+      if (vpaMatch && vpaMatch[1]) {
+        let vpaUser = vpaMatch[1].trim();
+        vpaUser = vpaUser.replace(/[._]+/g, ' ').trim();
+        working = vpaUser;
+      }
     }
 
     // Clean trailing hyphens, slashes, spaces, and "-NA" or "NA"

@@ -85,6 +85,39 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
     }
   }
 
+  // Balance continuity check across staged transactions
+  const balanceDiscontinuity = React.useMemo(() => {
+    if (!transactions || transactions.length < 2) return null;
+    const rowsWithBalance = transactions.filter(
+      (t) => typeof t.balance === 'number' && !isNaN(t.balance)
+    );
+    if (rowsWithBalance.length < 2) return null;
+
+    let ascendingDiscontinuities = 0;
+    let descendingDiscontinuities = 0;
+
+    for (let i = 0; i < transactions.length - 1; i++) {
+      const cur = transactions[i];
+      const next = transactions[i + 1];
+      if (typeof cur.balance === 'number' && typeof next.balance === 'number') {
+        const expectedNext = cur.balance - (next.debit || 0) + (next.credit || 0);
+        if (Math.abs(expectedNext - next.balance) > 0.05) {
+          ascendingDiscontinuities++;
+        }
+        const expectedCur = next.balance - (cur.debit || 0) + (cur.credit || 0);
+        if (Math.abs(expectedCur - cur.balance) > 0.05) {
+          descendingDiscontinuities++;
+        }
+      }
+    }
+
+    const minMismatches = Math.min(ascendingDiscontinuities, descendingDiscontinuities);
+    if (minMismatches > 0) {
+      return { count: minMismatches };
+    }
+    return null;
+  }, [transactions]);
+
   const totalPages = Math.ceil(transactions.length / pageSize) || 1;
   const paginatedTransactions = transactions.slice((currentPage - 1) * pageSize, currentPage * pageSize);
 
@@ -283,6 +316,19 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
           >
             <X className="w-4 h-4" />
           </button>
+        </div>
+      )}
+
+      {/* Balance Continuity Warning Banner */}
+      {balanceDiscontinuity && (
+        <div className="p-4 rounded-xl bg-amber-50 dark:bg-amber-950/50 border border-amber-300 dark:border-amber-800 text-amber-900 dark:text-amber-100 flex items-start gap-3 animate-in fade-in shadow-2xs">
+          <AlertTriangle className="w-5 h-5 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+          <div className="text-xs">
+            <span className="font-semibold text-sm block">⚠️ Balance Continuity Warning</span>
+            <p className="mt-0.5 text-amber-800 dark:text-amber-200 leading-relaxed">
+              Discontinuous balance sequence detected across {balanceDiscontinuity.count} transaction(s). Please verify row order and values before confirming.
+            </p>
+          </div>
         </div>
       )}
 

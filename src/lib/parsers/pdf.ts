@@ -80,7 +80,7 @@ export async function extractPDFRawData(
       } else {
         throw new PdfPasswordError(
           'PASSWORD_REQUIRED',
-          'This PDF statement is password-protected. Please enter password to unlock.'
+          'This PDF is password-protected. Please enter password to unlock.'
         );
       }
     }

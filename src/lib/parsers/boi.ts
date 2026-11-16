@@ -2,6 +2,7 @@ import Papa from 'papaparse';
 import type { ColumnMapping, ParseResult, ParsedTransaction } from '../../types/uploads';
 import { extractPDFRawData, type PDFExtractionResult } from './pdf';
 import { extractImpsRef, parseIndianDate, parseMonetaryValue } from './utils';
+import { isStatementNoiseLine } from './strip-statement-noise';
 
 const BOI_COLUMNS = [
   'Date',
@@ -53,6 +54,7 @@ function isBOIHeaderRow(cells: string[]): boolean {
 
 function isBOIFooterOrMeta(cells: string[]): boolean {
   const joined = cells.join(' ').toLowerCase();
+  if (isStatementNoiseLine(cells.join(' '))) return true;
   return (
     joined.includes('bank of india') ||
     joined.includes('star connect') ||

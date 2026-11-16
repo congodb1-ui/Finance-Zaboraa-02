@@ -3,6 +3,7 @@ import type { ColumnMapping, ParseResult, ParsedTransaction } from '../../types/
 import type { Account } from '../../types/accounts';
 import { extractPDFRawData, type PDFExtractionResult, type ExtractedTextItem } from './pdf';
 import { buildIsoTimestamp, parseIndianDate, parseMonetaryValue } from './utils';
+import { isStatementNoiseLine } from './strip-statement-noise';
 
 const GPAY_COLUMNS = [
   'Date',
@@ -284,6 +285,7 @@ export async function parseGPayPDF(
       const lower = lineText.toLowerCase();
       if (
         !lineText ||
+        isStatementNoiseLine(lineText) ||
         lower.includes('upi transaction id') ||
         lower.includes('date & time') ||
         lower.includes('google pay') ||

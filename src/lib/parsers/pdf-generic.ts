@@ -1,6 +1,7 @@
 import type { ParseResult } from '../../types/uploads';
 import { extractPDFRawData, type PDFExtractionResult } from './pdf';
 import { detectColumnMapping } from './column-mapper';
+import { isStatementNoiseLine } from './strip-statement-noise';
 
 function findHeaderRowIndex(lines: string[][]): number {
   if (lines.length === 0) return 0;
@@ -103,6 +104,7 @@ export async function parsePDFGeneric(
     // Skip summary / page footer rows
     const rowText = nonEmpty.join(' ').toLowerCase();
     if (
+      isStatementNoiseLine(nonEmpty.join(' ')) ||
       rowText.includes('page no') ||
       rowText.includes('page :') ||
       rowText.includes('total withdrawal') ||

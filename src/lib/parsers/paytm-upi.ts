@@ -2,6 +2,7 @@ import type { ColumnMapping, ParseResult, ParsedTransaction } from '../../types/
 import type { Account } from '../../types/accounts';
 import { extractPDFRawData, type PDFExtractionResult, type ExtractedTextItem } from './pdf';
 import { buildIsoTimestamp, extractUpiRef, parseIndianDate, parseMonetaryValue } from './utils';
+import { isStatementNoiseLine } from './strip-statement-noise';
 
 const PAYTM_COLUMNS = [
   'Date',
@@ -152,6 +153,8 @@ function inferStatementYear(fullText: string): number {
 }
 
 function isPaytmHeaderOrFooter(text: string): boolean {
+  if (!text) return true;
+  if (isStatementNoiseLine(text)) return true;
   const lower = text.toLowerCase();
   return (
     lower.includes('date & time') ||
