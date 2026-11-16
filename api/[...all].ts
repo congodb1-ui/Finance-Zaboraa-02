@@ -1,7 +1,58 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { createClient as createSupabaseClient } from '@supabase/supabase-js';
 import crypto from 'node:crypto';
-import { encryptValue } from '../src/lib/crypto';
+
+// --- Inlined Crypto Helper for Serverless runtime ---
+const CIPHER_PREFIX = 'zbf:v1:';
+const PBKDF2_ITERATIONS = 100000;
+
+function getEncryptionKeyFromEnv(): string {
+  const procKey = process.env.ENCRYPTION_KEY || 'default-secret-key-32-chars-long!';
+  return procKey.trim();
+}
+
+async function deriveAesKey(secret: string, salt: Uint8Array): Promise<crypto.webcrypto.CryptoKey> {
+  const enc = new TextEncoder();
+  const keyMaterial = await crypto.subtle.importKey(
+    'raw',
+    enc.encode(secret),
+    { name: 'PBKDF2' },
+    false,
+    ['deriveKey']
+  );
+  return crypto.subtle.deriveKey(
+    {
+      name: 'PBKDF2',
+      salt: salt as any,
+      iterations: PBKDF2_ITERATIONS,
+      hash: 'SHA-256',
+    },
+    keyMaterial,
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['encrypt', 'decrypt']
+  );
+}
+
+async function encryptValue(plainText: string): Promise<string> {
+  if (!plainText) return plainText;
+  const secret = getEncryptionKeyFromEnv();
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const key = await deriveAesKey(secret, salt);
+  const enc = new TextEncoder();
+  const encryptedBuf = await crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv },
+    key,
+    enc.encode(plainText)
+  );
+
+  const saltB64 = Buffer.from(salt).toString('base64');
+  const ivB64 = Buffer.from(iv).toString('base64');
+  const cipherB64 = Buffer.from(new Uint8Array(encryptedBuf)).toString('base64');
+
+  return `${CIPHER_PREFIX}${saltB64}:${ivB64}:${cipherB64}`;
+}
 
 // --- Inlined Cors & Auth Helpers ---
 function getSupabaseUrl(): string {
