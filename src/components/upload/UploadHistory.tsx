@@ -1,7 +1,9 @@
-import React from 'react';
+import React, { useState } from 'react';
 import type { StatementUpload, UploadStatus } from '../../types/uploads';
 import { Card, CardHeader, CardTitle, CardContent } from '../ui/Card';
 import { Button } from '../ui/Button';
+import { EditUploadModal } from './EditUploadModal';
+import { RevertModal } from './RevertModal';
 import {
   FileSpreadsheet,
   FileText,
@@ -12,6 +14,9 @@ import {
   CheckCircle2,
   AlertCircle,
   RotateCcw,
+  Edit3,
+  Undo2,
+  Trash2,
 } from 'lucide-react';
 
 interface UploadHistoryProps {
@@ -19,6 +24,7 @@ interface UploadHistoryProps {
   onSelectUpload: (upload: StatementUpload) => void;
   onDeleteUpload?: (uploadId: string) => void;
   onClearStuck?: () => void;
+  onUploadUpdated?: (upload: StatementUpload) => void;
   isLoading?: boolean;
 }
 
@@ -27,8 +33,11 @@ export const UploadHistory: React.FC<UploadHistoryProps> = ({
   onSelectUpload,
   onDeleteUpload,
   onClearStuck,
+  onUploadUpdated,
   isLoading = false,
 }) => {
+  const [editingUpload, setEditingUpload] = useState<StatementUpload | null>(null);
+  const [revertingUpload, setRevertingUpload] = useState<StatementUpload | null>(null);
   const getStatusBadge = (status: UploadStatus) => {
     switch (status) {
       case 'imported':
@@ -159,7 +168,7 @@ export const UploadHistory: React.FC<UploadHistoryProps> = ({
               </div>
 
               {/* Status and Action */}
-              <div className="flex items-center justify-between sm:justify-end gap-2 shrink-0">
+              <div className="flex flex-wrap items-center justify-between sm:justify-end gap-2 shrink-0">
                 {getStatusBadge(upload.status)}
 
                 <Button
@@ -178,30 +187,66 @@ export const UploadHistory: React.FC<UploadHistoryProps> = ({
                     : 'Inspect / Retry'}
                 </Button>
 
-                {onDeleteUpload && (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      if (
-                        window.confirm(
-                          `Delete this upload and its ${upload.row_count || 0} transactions? This cannot be undone.`
-                        )
-                      ) {
-                        onDeleteUpload(upload.id);
-                      }
-                    }}
-                    className="text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30"
-                  >
-                    Delete Upload
-                  </Button>
-                )}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setEditingUpload(upload);
+                  }}
+                  leftIcon={<Edit3 className="w-3.5 h-3.5" />}
+                  className="text-slate-700 dark:text-slate-300"
+                >
+                  Edit Upload Details
+                </Button>
+
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setRevertingUpload(upload);
+                  }}
+                  leftIcon={<Undo2 className="w-3.5 h-3.5" />}
+                  className="text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30"
+                >
+                  {upload.status === 'completed' || upload.status === 'imported'
+                    ? 'Revert Import'
+                    : 'Delete Upload'}
+                </Button>
               </div>
             </div>
           ))
         )}
       </CardContent>
+
+      {/* Edit Upload Modal */}
+      {editingUpload && (
+        <EditUploadModal
+          isOpen={Boolean(editingUpload)}
+          upload={editingUpload}
+          onClose={() => setEditingUpload(null)}
+          onSaved={(updated) => {
+            if (onUploadUpdated) onUploadUpdated(updated);
+            if (onClearStuck) onClearStuck();
+            setEditingUpload(null);
+          }}
+        />
+      )}
+
+      {/* Revert Modal */}
+      {revertingUpload && (
+        <RevertModal
+          isOpen={Boolean(revertingUpload)}
+          upload={revertingUpload}
+          onClose={() => setRevertingUpload(null)}
+          onReverted={() => {
+            if (onDeleteUpload) onDeleteUpload(revertingUpload.id);
+            if (onClearStuck) onClearStuck();
+            setRevertingUpload(null);
+          }}
+        />
+      )}
     </Card>
   );
 };

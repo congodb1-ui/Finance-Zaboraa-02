@@ -772,15 +772,171 @@ export async function cancelUpload(
   return { success: true };
 }
 /**
- * Completely deletes an upload and all associated records.
- * Order & Scope:
- * 1. Delete transactions tied to upload_id (for current user)
- * 2. Delete staged_transactions tied to upload_id (for current user)
- * 3. Remove storage file if storage_path exists
- * 4. Delete statement_uploads record (removes SHA-256 dedup entry)
- * 5. Insert audit_log entry
+ * Recalculate account balance from opening_balance and sum of transactions
  */
-export async function deleteUpload(
+export async function syncAccountBalance(accountId: string, client?: any): Promise<number> {
+  const supabase = client || createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user || !accountId) return 0;
+
+  const [{ data: acc }, { data: txns }] = await Promise.all([
+    supabase.from('accounts').select('opening_balance').eq('id', accountId).eq('user_id', user.id).maybeSingle(),
+    supabase.from('transactions').select('debit, credit').eq('account_id', accountId).eq('user_id', user.id),
+  ]);
+
+  const openBal = Number(acc?.opening_balance ?? 0);
+  let delta = 0;
+  if (txns) {
+    for (const tx of txns) {
+      delta += Number(tx.credit ?? 0) - Number(tx.debit ?? 0);
+    }
+  }
+  const newBal = Math.round((openBal + delta) * 100) / 100;
+
+  await supabase
+    .from('accounts')
+    .update({ current_balance: newBal, updated_at: new Date().toISOString() })
+    .eq('id', accountId)
+    .eq('user_id', user.id);
+
+  return newBal;
+}
+
+export interface UpdateUploadDetailsInput {
+  account_id?: string;
+  bank_name?: string;
+  statement_period_start?: string | null;
+  statement_period_end?: string | null;
+  file_label?: string | null;
+}
+
+/**
+ * Edit upload details (Batch 3 fix):
+ * Allows re-mapping statement to another account, updating bank name, period dates, or nickname.
+ */
+export async function updateUploadDetails(
+  uploadId: string,
+  updates: UpdateUploadDetailsInput,
+  client?: any
+): Promise<{ success: boolean; upload: StatementUpload }> {
+  const supabase = client || createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) {
+    throw new Error('Unauthorized');
+  }
+
+  // 1. Fetch current upload
+  const { data: oldUpload, error: fetchErr } = await supabase
+    .from('statement_uploads')
+    .select('*')
+    .eq('id', uploadId)
+    .eq('user_id', user.id)
+    .single();
+
+  if (fetchErr || !oldUpload) {
+    throw new Error('Upload record not found or access denied.');
+  }
+
+  const oldAccountId = oldUpload.account_id;
+  const newAccountId = updates.account_id || oldAccountId;
+
+  // 2. Validate new account belongs to user if changed
+  if (newAccountId && newAccountId !== oldAccountId) {
+    const { data: targetAccount, error: accErr } = await supabase
+      .from('accounts')
+      .select('id')
+      .eq('id', newAccountId)
+      .eq('user_id', user.id)
+      .maybeSingle();
+
+    if (accErr || !targetAccount) {
+      throw new Error('Target account not found or access denied.');
+    }
+  }
+
+  // 3. Prepare payload for statement_uploads (only updating confirmed DB columns)
+  const uploadPayload: Record<string, any> = {
+    updated_at: new Date().toISOString(),
+  };
+  if (updates.account_id) uploadPayload.account_id = updates.account_id;
+  if (updates.statement_period_start !== undefined) uploadPayload.statement_period_start = updates.statement_period_start;
+  if (updates.statement_period_end !== undefined) uploadPayload.statement_period_end = updates.statement_period_end;
+
+  let { data: updatedUpload, error: upErr } = await supabase
+    .from('statement_uploads')
+    .update(uploadPayload)
+    .eq('id', uploadId)
+    .eq('user_id', user.id)
+    .select('*, accounts(id, name, bank_name, account_number_last4)')
+    .single();
+
+  if (upErr || !updatedUpload) {
+    throw new Error(upErr?.message || 'Failed to update statement upload.');
+  }
+
+  // 4. If account_id changed, move transactions / staged transactions
+  if (newAccountId && newAccountId !== oldAccountId) {
+    // If upload was staged / pending / review
+    await supabase
+      .from('staged_transactions')
+      .update({ account_id: newAccountId, updated_at: new Date().toISOString() })
+      .eq('upload_id', uploadId)
+      .eq('user_id', user.id);
+
+    // If upload was completed / imported
+    await supabase
+      .from('transactions')
+      .update({ account_id: newAccountId, updated_at: new Date().toISOString() })
+      .eq('upload_id', uploadId)
+      .eq('user_id', user.id);
+
+    // Recalculate totals for both old and new accounts
+    if (oldAccountId) await syncAccountBalance(oldAccountId, supabase);
+    await syncAccountBalance(newAccountId, supabase);
+  }
+
+  // 5. Append audit log
+  try {
+    await supabase.from('audit_log').insert({
+      user_id: user.id,
+      table_name: 'statement_uploads',
+      record_id: uploadId,
+      action: 'update',
+      old_data: {
+        account_id: oldAccountId,
+        statement_period_start: oldUpload.statement_period_start,
+        statement_period_end: oldUpload.statement_period_end,
+      },
+      new_data: {
+        account_id: updatedUpload.account_id,
+        statement_period_start: updatedUpload.statement_period_start,
+        statement_period_end: updatedUpload.statement_period_end,
+      },
+    });
+  } catch (err) {
+    console.warn('Failed to append audit log for upload update:', err);
+  }
+
+  return {
+    success: true,
+    upload: {
+      ...updatedUpload,
+      account: updatedUpload.accounts || undefined,
+    },
+  };
+}
+
+/**
+ * Revert / Undo a statement import completely.
+ * Deletes transactions, staged transactions, storage file, and statement_uploads record.
+ * Frees SHA-256 hash so file can be immediately re-uploaded. Recalculates account balance.
+ */
+export async function revertImport(
   uploadId: string,
   client?: any
 ): Promise<{ success: boolean; deletedTxnCount: number }> {
@@ -793,19 +949,21 @@ export async function deleteUpload(
     throw new Error('Unauthorized');
   }
 
-  // Fetch upload info first
-  const { data: upload } = await supabase
+  // 1. Fetch upload record
+  const { data: upload, error: fetchErr } = await supabase
     .from('statement_uploads')
-    .select('id, file_name, row_count, storage_path')
+    .select('id, file_name, file_hash, account_id, storage_path, row_count')
     .eq('id', uploadId)
     .eq('user_id', user.id)
     .maybeSingle();
 
-  if (!upload) {
+  if (fetchErr || !upload) {
     return { success: true, deletedTxnCount: 0 };
   }
 
-  // 1. Count and delete transactions
+  const accountId = upload.account_id;
+
+  // 2. Count and delete transactions
   const { data: txns } = await supabase
     .from('transactions')
     .select('id')
@@ -814,36 +972,35 @@ export async function deleteUpload(
 
   const deletedTxnCount = txns?.length || 0;
 
-  const { error: txErr } = await supabase
-    .from('transactions')
-    .delete()
-    .eq('upload_id', uploadId)
-    .eq('user_id', user.id);
+  if (deletedTxnCount > 0) {
+    const { error: txErr } = await supabase
+      .from('transactions')
+      .delete()
+      .eq('upload_id', uploadId)
+      .eq('user_id', user.id);
 
-  if (txErr) {
-    throw new Error(`Failed to delete transactions: ${txErr.message}`);
+    if (txErr) {
+      throw new Error(`Failed to delete transactions: ${txErr.message}`);
+    }
   }
 
-  // 2. Delete staged transactions
-  const { error: stagedErr } = await supabase
+  // 3. Delete staged transactions
+  await supabase
     .from('staged_transactions')
     .delete()
     .eq('upload_id', uploadId)
     .eq('user_id', user.id);
 
-  if (stagedErr) {
-    throw new Error(`Failed to delete staged transactions: ${stagedErr.message}`);
-  }
-
-  // 3. Delete storage file if path present
+  // 4. Remove storage file if present
   if (upload.storage_path) {
-    await supabase.storage
-      .from('statements')
-      .remove([upload.storage_path])
-      .catch(() => {});
+    try {
+      await supabase.storage.from('statements').remove([upload.storage_path]);
+    } catch {
+      // Ignore storage remove errors
+    }
   }
 
-  // 4. Delete statement_uploads record (clears SHA-256 dedup)
+  // 5. Delete statement_uploads record (clears file_hash deduplication)
   const { error: uploadErr } = await supabase
     .from('statement_uploads')
     .delete()
@@ -854,19 +1011,40 @@ export async function deleteUpload(
     throw new Error(`Failed to delete upload record: ${uploadErr.message}`);
   }
 
-  // 5. Audit log entry
-  await supabase.from('audit_logs').insert({
-    user_id: user.id,
-    action: 'DELETE',
-    entity_type: 'statement_upload',
-    entity_id: uploadId,
-    details: {
-      file_name: upload.file_name,
-      deleted_transactions: deletedTxnCount,
-    },
-  }).catch(() => {});
+  // 6. Recalculate account balance
+  if (accountId) {
+    await syncAccountBalance(accountId, supabase);
+  }
+
+  // 7. Write to audit_log
+  try {
+    await supabase.from('audit_log').insert({
+      user_id: user.id,
+      table_name: 'statement_uploads',
+      record_id: uploadId,
+      action: 'delete',
+      old_data: {
+        file_name: upload.file_name,
+        deleted_transactions: deletedTxnCount,
+        account_id: accountId,
+      },
+      new_data: null,
+    });
+  } catch (err) {
+    console.warn('Failed to append audit log for upload revert:', err);
+  }
 
   return { success: true, deletedTxnCount };
+}
+
+/**
+ * Completely deletes an upload and all associated records.
+ */
+export async function deleteUpload(
+  uploadId: string,
+  client?: any
+): Promise<{ success: boolean; deletedTxnCount: number }> {
+  return revertImport(uploadId, client);
 }
 
 /**

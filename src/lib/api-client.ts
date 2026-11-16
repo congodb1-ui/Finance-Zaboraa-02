@@ -52,9 +52,20 @@ async function handleResponse<T = any>(res: Response): Promise<T> {
   return res as unknown as T;
 }
 
+function formatUrl(path: string): string {
+  if (path.startsWith('http://') || path.startsWith('https://')) {
+    return path;
+  }
+  if (typeof window === 'undefined') {
+    const base = process.env.NEXT_PUBLIC_APP_URL || 'https://finance.zaboraa.com';
+    return `${base.replace(/\/$/, '')}${path.startsWith('/') ? path : `/${path}`}`;
+  }
+  return path;
+}
+
 export async function apiGet<T = any>(path: string, params?: Record<string, any>): Promise<T> {
   const authHeader = await getAuthHeader();
-  let url = path;
+  let url = formatUrl(path);
 
   if (params && Object.keys(params).length > 0) {
     const searchParams = new URLSearchParams();
@@ -83,6 +94,7 @@ export async function apiGet<T = any>(path: string, params?: Record<string, any>
 export async function apiPost<T = any>(path: string, body?: any): Promise<T> {
   const authHeader = await getAuthHeader();
   const isFormData = typeof FormData !== 'undefined' && body instanceof FormData;
+  const url = formatUrl(path);
 
   const headers: Record<string, string> = {
     Accept: 'application/json',
@@ -93,7 +105,7 @@ export async function apiPost<T = any>(path: string, body?: any): Promise<T> {
     headers['Content-Type'] = 'application/json';
   }
 
-  const res = await fetch(path, {
+  const res = await fetch(url, {
     method: 'POST',
     headers,
     body: isFormData ? body : JSON.stringify(body ?? {}),
@@ -104,8 +116,9 @@ export async function apiPost<T = any>(path: string, body?: any): Promise<T> {
 
 export async function apiPatch<T = any>(path: string, body?: any): Promise<T> {
   const authHeader = await getAuthHeader();
+  const url = formatUrl(path);
 
-  const res = await fetch(path, {
+  const res = await fetch(url, {
     method: 'PATCH',
     headers: {
       'Content-Type': 'application/json',

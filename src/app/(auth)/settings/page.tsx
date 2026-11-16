@@ -49,6 +49,7 @@ function SettingsContent() {
   const [defaultFy, setDefaultFy] = useState('2026-27');
   const [panInput, setPanInput] = useState('');
   const [hasEncryptedPan, setHasEncryptedPan] = useState(false);
+  const [isEditingPan, setIsEditingPan] = useState(false);
 
   const [isLoadingProfile, setIsLoadingProfile] = useState(true);
   const [isSavingProfile, setIsSavingProfile] = useState(false);
@@ -111,10 +112,36 @@ function SettingsContent() {
     setProfileError(null);
     setProfileSuccess(null);
 
-    const normalizedPan = panInput.trim().toUpperCase();
-    if (normalizedPan.length > 0 && !PAN_REGEX.test(normalizedPan)) {
-      setProfileError('Invalid PAN format. Please enter 10 characters (e.g. ABCDE1234F).');
-      return;
+    const trimmedInput = panInput.trim().toUpperCase();
+
+    // Determine PAN payload based on state
+    let panPayload: { pan?: string; pan_number?: string; remove_pan?: boolean; skip_pan?: boolean } = {};
+
+    if (isEditingPan) {
+      if (trimmedInput.length > 0) {
+        if (!PAN_REGEX.test(trimmedInput)) {
+          setProfileError('Enter a valid 10-character PAN (e.g. ABCDE1234F).');
+          return;
+        }
+        panPayload = { pan: trimmedInput, pan_number: trimmedInput };
+      } else {
+        // User clicked Change PAN and left it empty -> treat as remove PAN
+        panPayload = { remove_pan: true, pan: '' };
+      }
+    } else if (hasEncryptedPan) {
+      // User never clicked Change PAN -> omit PAN completely
+      panPayload = { skip_pan: true };
+    } else {
+      // No saved PAN and not editing -> check if user provided one
+      if (trimmedInput.length === 0) {
+        setProfileError('PAN is required.');
+        return;
+      }
+      if (!PAN_REGEX.test(trimmedInput)) {
+        setProfileError('Enter a valid 10-character PAN (e.g. ABCDE1234F).');
+        return;
+      }
+      panPayload = { pan: trimmedInput, pan_number: trimmedInput };
     }
 
     setIsSavingProfile(true);
@@ -125,12 +152,14 @@ function SettingsContent() {
         phone,
         address,
         default_fy: defaultFy,
-        ...(normalizedPan.length > 0 ? { pan: normalizedPan } : {}),
+        ...panPayload,
       });
 
       setHasEncryptedPan(Boolean(updated.pan_encrypted));
+      setIsEditingPan(false);
       setPanInput('');
-      setProfileSuccess('Profile saved to your encrypted Supabase vault.');
+      setProfileError(null);
+      setProfileSuccess('Profile Saved');
     } catch (err: any) {
       setProfileError(err?.message || 'Failed to save profile settings.');
     } finally {
@@ -225,16 +254,74 @@ function SettingsContent() {
                 disabled={isLoadingProfile || isSavingProfile}
               />
 
-              <Input
-                label={hasEncryptedPan ? 'Update PAN (Encrypted at rest)' : 'PAN Number (Encrypted at rest)'}
-                type="password"
-                autoComplete="off"
-                value={panInput}
-                onChange={(e) => setPanInput(e.target.value.toUpperCase())}
-                placeholder={hasEncryptedPan ? '•••••••••• (enter new PAN to replace)' : 'ABCDE1234F'}
-                helperText="Encrypted with AES-256-GCM before leaving your browser."
-                disabled={isLoadingProfile || isSavingProfile}
-              />
+              {hasEncryptedPan && !isEditingPan ? (
+                <div className="space-y-1.5">
+                  <label className="block text-xs font-medium text-slate-700 dark:text-slate-300">
+                    PAN Number (Encrypted at rest)
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <div className="flex-1 px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50 text-slate-700 dark:text-slate-300 font-mono text-sm tracking-widest flex items-center justify-between">
+                      <span>••••••••••</span>
+                      <span className="text-[10px] font-sans text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/60 px-2 py-0.5 rounded border border-emerald-200 dark:border-emerald-800 flex items-center gap-1">
+                        <Lock className="w-3 h-3" /> Encrypted
+                      </span>
+                    </div>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => {
+                        setIsEditingPan(true);
+                        setPanInput('');
+                        setProfileError(null);
+                      }}
+                    >
+                      Change PAN
+                    </Button>
+                  </div>
+                  <p className="text-[11px] text-slate-500">
+                    Encrypted with AES-256-GCM. Click Change PAN to replace or remove.
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <label className="block text-xs font-medium text-slate-700 dark:text-slate-300">
+                      {hasEncryptedPan ? 'New PAN Number' : 'PAN Number (Encrypted at rest)'}
+                    </label>
+                    {hasEncryptedPan && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsEditingPan(false);
+                          setPanInput('');
+                          setProfileError(null);
+                        }}
+                        className="text-xs text-indigo-600 dark:text-indigo-400 hover:underline"
+                      >
+                        Keep Current PAN
+                      </button>
+                    )}
+                  </div>
+                  <Input
+                    type="text"
+                    maxLength={10}
+                    autoComplete="off"
+                    value={panInput}
+                    onChange={(e) => {
+                      setPanInput(e.target.value.toUpperCase());
+                      if (profileError) setProfileError(null);
+                    }}
+                    placeholder={hasEncryptedPan ? 'Enter 10-char PAN or clear to remove' : 'ABCDE1234F'}
+                    helperText={
+                      hasEncryptedPan
+                        ? 'Leave empty and click Save to remove PAN from profile.'
+                        : 'Encrypted with AES-256-GCM before leaving your browser.'
+                    }
+                    disabled={isLoadingProfile || isSavingProfile}
+                  />
+                </div>
+              )}
 
               <Input
                 label="Address"

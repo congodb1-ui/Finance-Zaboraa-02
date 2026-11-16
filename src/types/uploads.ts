@@ -32,6 +32,8 @@ export interface StatementUpload {
   error_message: string | null;
   statement_period_start: string | null;
   statement_period_end: string | null;
+  bank_name?: string | null;
+  file_label?: string | null;
   imported_at: string | null;
   created_at: string;
   updated_at: string;

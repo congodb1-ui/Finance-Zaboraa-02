@@ -27,7 +27,10 @@ export interface ProfileUpsertInput {
   owner_full_name?: string | null;
   email?: string | null;
   pan?: string | null;
+  pan_number?: string | null;
   pan_encrypted?: string | null;
+  skip_pan?: boolean;
+  remove_pan?: boolean;
   phone?: string | null;
   address?: string | null;
   default_fy?: string | null;
@@ -87,15 +90,37 @@ export async function upsertProfile(
   const supabase = isClientProvided ? clientOrData : createClient();
   const input: ProfileUpsertInput = (isClientProvided ? maybeData : clientOrData) || {};
 
-  const trimmedPan = input.pan?.trim().toUpperCase() || '';
+  const trimmedPan = (input.pan_number ?? input.pan)?.trim().toUpperCase() || '';
   if (trimmedPan.length > 0) {
     if (!PAN_REGEX.test(trimmedPan)) {
-      throw new Error('Invalid PAN format. Expected 10-character format (e.g. ABCDE1234F).');
+      throw new Error('Enter a valid 10-character PAN (e.g. ABCDE1234F).');
     }
-    // Encrypt PAN strictly on the Express server using ENCRYPTION_KEY
+    // Encrypt PAN on the server endpoint using ENCRYPTION_KEY
     return apiPost<ProfileRecord>('/api/profile/pan', {
       ...input,
       pan: trimmedPan,
+      pan_number: trimmedPan,
+    });
+  }
+
+  if (input.remove_pan) {
+    return apiPost<ProfileRecord>('/api/profile/pan', {
+      ...input,
+      remove_pan: true,
+      pan: '',
+      pan_number: '',
+    }).catch(async () => {
+      // Direct fallback if API endpoint unavailable
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) throw new Error('Unauthorized');
+      const { data: updated, error } = await supabase
+        .from('profiles')
+        .update({ pan_encrypted: null, updated_at: new Date().toISOString() })
+        .eq('user_id', user.id)
+        .select('*')
+        .single();
+      if (error) throw error;
+      return updated as ProfileRecord;
     });
   }
 

@@ -3,6 +3,8 @@ import type { StatementUpload, StagedTransaction, OverlapCheckResult } from '../
 import { Card, CardHeader, CardTitle, CardContent } from '../ui/Card';
 import { Button } from '../ui/Button';
 import { formatINR } from '../../types/design-system';
+import { EditUploadModal } from './EditUploadModal';
+import { RevertModal } from './RevertModal';
 import {
   CheckCircle2,
   AlertTriangle,
@@ -16,6 +18,8 @@ import {
   X,
   AlertOctagon,
   Lock,
+  Edit3,
+  Undo2,
 } from 'lucide-react';
 
 interface ReviewScreenProps {
@@ -28,6 +32,7 @@ interface ReviewScreenProps {
   onUploadAgain?: () => void;
   isReadOnly?: boolean;
   onUpdateStagedRow?: (stagedId: string, updates: any) => Promise<void>;
+  onUploadUpdated?: (upload: StatementUpload) => void;
 }
 
 export const ReviewScreen: React.FC<ReviewScreenProps> = ({
@@ -40,6 +45,7 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
   onUploadAgain,
   isReadOnly = false,
   onUpdateStagedRow,
+  onUploadUpdated,
 }) => {
   const [currentPage, setCurrentPage] = useState(1);
   const [replaceDecision, setReplaceDecision] = useState<'keep_both' | 'replace' | null>(null);
@@ -57,6 +63,8 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
   // Batch 3b: Modal state for replacing PDF imports
   const [showReplaceModal, setShowReplaceModal] = useState(false);
   const [replaceConfirmationText, setReplaceConfirmationText] = useState('');
+  const [showEditModal, setShowEditModal] = useState(false);
+  const [showRevertModal, setShowRevertModal] = useState(false);
 
   const pageSize = 50;
 
@@ -184,64 +192,71 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
         </div>
 
         {/* Read-only status or active buttons */}
-        {isReadOnly ? (
-          <div className="flex items-center gap-3 shrink-0">
-            <span className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-800">
-              <CheckCircle2 className="w-3.5 h-3.5" />
-              Imported Record
-            </span>
-            {onUploadAgain && (
+        <div className="flex items-center flex-wrap gap-2 shrink-0">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => setShowEditModal(true)}
+            leftIcon={<Edit3 className="w-3.5 h-3.5 text-slate-500" />}
+          >
+            Edit Upload Details
+          </Button>
+
+          {isReadOnly ? (
+            <>
+              <span className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-800">
+                <CheckCircle2 className="w-3.5 h-3.5" />
+                Imported Record
+              </span>
               <Button
                 type="button"
                 variant="outline"
                 size="sm"
-                onClick={onUploadAgain}
+                className="text-red-600 border-red-200 dark:border-red-900/50 hover:bg-red-50 dark:hover:bg-red-950/30"
+                onClick={() => setShowRevertModal(true)}
+                leftIcon={<Undo2 className="w-3.5 h-3.5 text-red-500" />}
               >
-                Upload Again
+                Revert This Import
               </Button>
-            )}
-            {onDeleteUpload && (
+              {onUploadAgain && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={onUploadAgain}
+                >
+                  Upload Again
+                </Button>
+              )}
+            </>
+          ) : (
+            <>
               <Button
                 type="button"
                 variant="destructive"
                 size="sm"
-                onClick={() => {
-                  if (window.confirm(`Delete this upload and its ${transactions.length} transactions? This cannot be undone.`)) {
-                    onDeleteUpload(upload.id);
-                  }
-                }}
+                onClick={handleCancel}
+                disabled={isSubmitting}
                 leftIcon={<Trash2 className="w-3.5 h-3.5" />}
               >
-                Delete This Import
+                Cancel Upload
               </Button>
-            )}
-          </div>
-        ) : (
-          <div className="flex items-center gap-3 shrink-0">
-            <Button
-              type="button"
-              variant="destructive"
-              size="sm"
-              onClick={handleCancel}
-              disabled={isSubmitting}
-              leftIcon={<Trash2 className="w-3.5 h-3.5" />}
-            >
-              Cancel Upload
-            </Button>
-            <Button
-              type="button"
-              variant="primary"
-              size="md"
-              data-testid="confirm-import-button"
-              onClick={handleConfirm}
-              isLoading={isSubmitting}
-              disabled={isSubmitting || (overlapInfo?.has_overlap && !replaceDecision)}
-              rightIcon={<ArrowRight className="w-4 h-4" />}
-            >
-              Confirm & Import
-            </Button>
-          </div>
-        )}
+              <Button
+                type="button"
+                variant="primary"
+                size="md"
+                data-testid="confirm-import-button"
+                onClick={handleConfirm}
+                isLoading={isSubmitting}
+                disabled={isSubmitting || (overlapInfo?.has_overlap && !replaceDecision)}
+                rightIcon={<ArrowRight className="w-4 h-4" />}
+              >
+                Confirm & Import
+              </Button>
+            </>
+          )}
+        </div>
       </div>
 
       {/* Deliverable 4: Reconciliation Warning Banner (dismissable) */}
@@ -659,6 +674,30 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
           </table>
         </CardContent>
       </Card>
+
+      {/* Edit Upload Modal */}
+      <EditUploadModal
+        upload={upload}
+        isOpen={showEditModal}
+        onClose={() => setShowEditModal(false)}
+        onSaved={(updated) => {
+          if (onUploadUpdated) onUploadUpdated(updated);
+        }}
+      />
+
+      {/* Revert Modal */}
+      <RevertModal
+        upload={upload}
+        isOpen={showRevertModal}
+        onClose={() => setShowRevertModal(false)}
+        onReverted={() => {
+          if (onDeleteUpload) {
+            onDeleteUpload(upload.id);
+          } else if (onUploadAgain) {
+            onUploadAgain();
+          }
+        }}
+      />
     </div>
   );
 };

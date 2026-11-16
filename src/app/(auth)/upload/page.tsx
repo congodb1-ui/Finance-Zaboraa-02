@@ -39,6 +39,7 @@ import {
   ShieldCheck,
   Plus,
   RefreshCw,
+  Mail,
 } from 'lucide-react';
 
 export default function StatementUploadPage() {
@@ -280,6 +281,19 @@ export default function StatementUploadPage() {
     }
   };
 
+  // Delete upload from History
+  const handleDeleteUpload = async (uploadId: string) => {
+    try {
+      await deleteUpload(uploadId);
+      setStatusMessage({ type: 'success', text: 'Upload and associated transactions deleted.' });
+      const freshHistory = await getUploads();
+      setUploadsHistory(freshHistory);
+    } catch (err: any) {
+      console.error('Delete upload failed:', err);
+      setStatusMessage({ type: 'error', text: err.message || 'Failed to delete upload.' });
+    }
+  };
+
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 w-full space-y-6">
       {/* Page Header */}
@@ -298,35 +312,50 @@ export default function StatementUploadPage() {
           </p>
         </div>
 
-        {/* Tab Switcher */}
-        <div className="flex items-center p-1 bg-slate-100 dark:bg-slate-800 rounded-lg shrink-0">
-          <button
+        {/* Tab Switcher & Gmail Import */}
+        <div className="flex items-center gap-2 flex-wrap shrink-0">
+          <Button
             type="button"
+            variant="outline"
+            size="sm"
             onClick={() => {
-              setActiveTab('upload');
-              setIsReadOnlyInspection(false);
+              window.location.href = '/settings';
             }}
-            className={`flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-medium rounded-md transition-colors ${
-              activeTab === 'upload' && !isReadOnlyInspection
-                ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-xs'
-                : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
-            }`}
+            className="text-indigo-600 dark:text-indigo-400 border-indigo-200 dark:border-indigo-900/50 hover:bg-indigo-50 dark:hover:bg-indigo-950/30"
+            leftIcon={<Mail className="w-3.5 h-3.5" />}
           >
-            <UploadCloud className="w-3.5 h-3.5" />
-            <span>Upload New</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => setActiveTab('history')}
-            className={`flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-medium rounded-md transition-colors ${
-              activeTab === 'history'
-                ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-xs'
-                : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
-            }`}
-          >
-            <History className="w-3.5 h-3.5" />
-            <span>Upload History ({uploadsHistory.length})</span>
-          </button>
+            Import from Gmail
+          </Button>
+
+          <div className="flex items-center p-1 bg-slate-100 dark:bg-slate-800 rounded-lg shrink-0">
+            <button
+              type="button"
+              onClick={() => {
+                setActiveTab('upload');
+                setIsReadOnlyInspection(false);
+              }}
+              className={`flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                activeTab === 'upload' && !isReadOnlyInspection
+                  ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-xs'
+                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+              }`}
+            >
+              <UploadCloud className="w-3.5 h-3.5" />
+              <span>Upload New</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab('history')}
+              className={`flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                activeTab === 'history'
+                  ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-xs'
+                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+              }`}
+            >
+              <History className="w-3.5 h-3.5" />
+              <span>Upload History ({uploadsHistory.length})</span>
+            </button>
+          </div>
         </div>
       </div>
 
@@ -412,6 +441,7 @@ export default function StatementUploadPage() {
         <UploadHistory
           uploads={uploadsHistory}
           onSelectUpload={handleInspectHistoryUpload}
+          onDeleteUpload={handleDeleteUpload}
         />
       )}
 

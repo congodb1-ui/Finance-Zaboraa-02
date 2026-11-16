@@ -1330,13 +1330,34 @@ export async function runServer() {
           payload.last_backup_at = body.last_backup_at;
         }
 
-        const rawPan = typeof body.pan === 'string' ? body.pan.trim().toUpperCase() : '';
+        if (body.skip_pan === true) {
+          return res.status(200).json({ success: true });
+        }
+
+        if (body.remove_pan === true || (body.pan === '' && (body.remove_pan || !body.pan_number))) {
+          payload.pan_encrypted = null;
+          const { data: updated, error } = await req.supabase
+            .from('profiles')
+            .upsert(payload, { onConflict: 'user_id' })
+            .select('*')
+            .single();
+
+          if (error || !updated) {
+            return res.status(500).json({
+              error: error?.message || 'Failed to remove PAN.',
+            });
+          }
+          return res.status(200).json({ success: true, profile: updated, ...updated });
+        }
+
+        const incomingPan = body.pan_number ?? body.pan ?? body.encryptedPan ?? body.encrypted_pan;
+        const rawPan = typeof incomingPan === 'string' ? incomingPan.trim().toUpperCase() : '';
         if (!rawPan) {
           return res.status(400).json({ error: 'PAN is required.' });
         }
         if (!/^[A-Z]{5}[0-9]{4}[A-Z]$/.test(rawPan)) {
           return res.status(400).json({
-            error: 'Invalid PAN format. Expected 10-character format (e.g. ABCDE1234F).',
+            error: 'PAN format is invalid. Use 10 characters: 5 letters, 4 digits, 1 letter.',
           });
         }
 
@@ -1354,7 +1375,7 @@ export async function runServer() {
           });
         }
 
-        return res.json(updated);
+        return res.status(200).json({ success: true, profile: updated, ...updated });
       } catch (err: any) {
         const message = err?.message || 'Failed to encrypt and save PAN.';
         console.error('Save encrypted PAN error:', message);
