@@ -72,6 +72,8 @@ export async function computeSHA256(buffer: ArrayBuffer): Promise<string> {
   return hashArray.map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
+import { parseIndianDate } from '../parsers/utils';
+
 /**
  * Normalizes date string into ISO YYYY-MM-DD
  * Handles DD/MM/YYYY, DD-MM-YYYY, YYYY-MM-DD, DD MMM YYYY, etc.
@@ -79,21 +81,15 @@ export async function computeSHA256(buffer: ArrayBuffer): Promise<string> {
 export function normalizeDate(dateStr: string): string {
   if (!dateStr) return new Date().toISOString().split('T')[0];
 
+  const parsed = parseIndianDate(dateStr);
+  if (parsed) return parsed;
+
   const trimmed = dateStr.trim();
   if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return trimmed;
 
-  const dmyMatch = trimmed.match(/^(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{2,4})$/);
-  if (dmyMatch) {
-    const day = dmyMatch[1].padStart(2, '0');
-    const month = dmyMatch[2].padStart(2, '0');
-    let year = dmyMatch[3];
-    if (year.length === 2) year = `20${year}`;
-    return `${year}-${month}-${day}`;
-  }
-
-  const parsed = new Date(trimmed);
-  if (!isNaN(parsed.getTime())) {
-    return parsed.toISOString().split('T')[0];
+  const d = new Date(trimmed);
+  if (!isNaN(d.getTime())) {
+    return d.toISOString().split('T')[0];
   }
 
   return new Date().toISOString().split('T')[0];

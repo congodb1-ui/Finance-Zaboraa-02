@@ -155,11 +155,30 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
             <span>•</span>
             <span className="inline-flex items-center gap-1">
               <Calendar className="w-3.5 h-3.5 text-slate-400" />
-              Period: {upload.statement_period_start && upload.statement_period_end
-                ? `${upload.statement_period_start} to ${upload.statement_period_end}`
-                : transactions && transactions.length > 0
-                ? `${transactions[transactions.length - 1]?.raw_date || transactions[transactions.length - 1]?.txn_date || 'N/A'} to ${transactions[0]?.raw_date || transactions[0]?.txn_date || 'N/A'}`
-                : 'N/A'}
+              Period: {(() => {
+                const formatToDMY = (val?: string | null) => {
+                  if (!val) return '';
+                  const trimmed = val.trim();
+                  const isoM = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})/);
+                  if (isoM) return `${isoM[3]}/${isoM[2]}/${isoM[1]}`;
+                  return trimmed;
+                };
+
+                const start = formatToDMY(upload.statement_period_start);
+                const end = formatToDMY(upload.statement_period_end);
+
+                if (start && end) {
+                  return `${start} to ${end}`;
+                }
+
+                if (transactions && transactions.length > 0) {
+                  const txStart = formatToDMY(transactions[transactions.length - 1]?.raw_date || transactions[transactions.length - 1]?.txn_date);
+                  const txEnd = formatToDMY(transactions[0]?.raw_date || transactions[0]?.txn_date);
+                  return `${txStart} to ${txEnd}`;
+                }
+
+                return 'N/A';
+              })()}
             </span>
           </div>
         </div>
