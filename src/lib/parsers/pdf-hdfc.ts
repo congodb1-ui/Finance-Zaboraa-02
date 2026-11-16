@@ -90,6 +90,32 @@ function cleanNumber(str: string): number | null {
 }
 
 /**
+ * Joins multi-line narration parts for an HDFC transaction, properly handling
+ * mid-word line-break hyphens while preserving format delimiters.
+ */
+export function joinNarrationLines(lines: string[]): string {
+  if (!lines || lines.length === 0) return '';
+  let joined = '';
+  for (const rawLine of lines) {
+    const line = (rawLine || '').trim();
+    if (!line) continue;
+    if (!joined) {
+      joined = line;
+      continue;
+    }
+
+    // Check if previous line ended with a mid-word hyphen, e.g. "G-" and next is "ENERAL"
+    // Hyphen followed by letter without asterisks/bank code separators
+    if (/([a-zA-Z])-$/.test(joined) && /^[a-zA-Z]/.test(line) && !/^\*{2,}/.test(line) && !/^[A-Z]{4}0/.test(line)) {
+      joined = joined.slice(0, -1) + line;
+    } else {
+      joined = joined + ' ' + line;
+    }
+  }
+  return joined;
+}
+
+/**
  * Converts a string to Title Case while preserving acronyms/initialisms
  */
 export function toTitleCase(str: string): string {
@@ -121,7 +147,8 @@ export function cleanHdfcNarration(
     return { cleanDescription: 'HDFC Transaction', reference: fallbackRef };
   }
 
-  // 1. Join wrapped lines & collapse whitespace
+  // 1. Join wrapped lines & collapse whitespace (handling mid-word line-break hyphens)
+  text = text.replace(/([a-zA-Z])-\s*\r?\n\s*([a-zA-Z])/g, '$1$2');
   text = text.replace(/\r?\n|\r/g, ' ').replace(/\s{2,}/g, ' ');
 
   // 2. Extract reference: 12-digit UTR from narration or fallback to refCol
@@ -275,7 +302,7 @@ export async function parsePDFHDFC(
           if (currentTxn) {
             rawCandidates.push({
               date: currentTxn.date,
-              narration: currentTxn.narrationParts.join(' '),
+              narration: joinNarrationLines(currentTxn.narrationParts),
               valueDt: currentTxn.valueDt,
               refNo: currentTxn.refNo,
               rawDebit: currentTxn.rawDebit,
@@ -304,7 +331,7 @@ export async function parsePDFHDFC(
       if (currentTxn) {
         rawCandidates.push({
           date: currentTxn.date,
-          narration: currentTxn.narrationParts.join(' '),
+          narration: joinNarrationLines(currentTxn.narrationParts),
           valueDt: currentTxn.valueDt,
           refNo: currentTxn.refNo,
           rawDebit: currentTxn.rawDebit,

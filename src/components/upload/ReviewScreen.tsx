@@ -634,7 +634,7 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
                         {tx.description}
                       </div>
                       {tx.raw_description && tx.raw_description !== tx.description && (
-                        <div className="text-[10px] text-slate-400 font-mono truncate max-w-sm mt-0.5">
+                        <div className="text-[10px] text-slate-400 font-mono break-words mt-0.5">
                           {tx.raw_description}
                         </div>
                       )}
