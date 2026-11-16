@@ -250,8 +250,12 @@ export async function processStatementUpload(
       parser_version: parseResult.parser_version,
       status: 'pending',
       row_count: parseResult.rows.length,
-      statement_period_start: parseResult.statement_period_start || null,
-      statement_period_end: parseResult.statement_period_end || null,
+      statement_period_start: parseResult.statement_period_start
+        ? normalizeDate(parseResult.statement_period_start)
+        : null,
+      statement_period_end: parseResult.statement_period_end
+        ? normalizeDate(parseResult.statement_period_end)
+        : null,
     })
     .select()
     .single();
