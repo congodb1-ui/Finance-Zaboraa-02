@@ -1,6 +1,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { createClient as createSupabaseClient } from '@supabase/supabase-js';
 import crypto from 'node:crypto';
+import { runGmailSyncForUser } from '../src/lib/gmail-sync-service';
 
 // --- Inlined Crypto Helper for Serverless runtime ---
 const CIPHER_PREFIX = 'zbf:v1:';
@@ -54,6 +55,188 @@ async function encryptValue(plainText: string): Promise<string> {
   return `${CIPHER_PREFIX}${saltB64}:${ivB64}:${cipherB64}`;
 }
 
+async function decryptValue(cipherText: string): Promise<string> {
+  if (!cipherText || !cipherText.startsWith(CIPHER_PREFIX)) return cipherText;
+  const parts = cipherText.slice(CIPHER_PREFIX.length).split(':');
+  if (parts.length !== 3) return cipherText;
+
+  const [saltB64, ivB64, encryptedB64] = parts;
+  const salt = new Uint8Array(Buffer.from(saltB64, 'base64'));
+  const iv = new Uint8Array(Buffer.from(ivB64, 'base64'));
+  const encryptedBuf = new Uint8Array(Buffer.from(encryptedB64, 'base64'));
+
+  const secret = getEncryptionKeyFromEnv();
+  const key = await deriveAesKey(secret, salt);
+
+  const decryptedBuf = await crypto.subtle.decrypt(
+    { name: 'AES-GCM', iv },
+    key,
+    encryptedBuf
+  );
+
+  return new TextDecoder().decode(decryptedBuf);
+}
+
+// --- Gmail Vault Helpers (AES-256-GCM + Supabase Vault RPCs) ---
+interface GmailVaultTokenPayload {
+  access_token: string;
+  refresh_token: string | null;
+  expiry: number; // Unix epoch ms
+}
+
+function getGmailVaultSecretName(userId: string): string {
+  return `gmail_token_${userId}`;
+}
+
+async function saveGmailTokenToVault(
+  serviceSupabase: any,
+  userId: string,
+  payload: GmailVaultTokenPayload
+): Promise<void> {
+  if (!serviceSupabase) {
+    throw new Error('SUPABASE_SERVICE_ROLE_KEY is required to store Gmail tokens in Vault.');
+  }
+
+  const secretName = getGmailVaultSecretName(userId);
+  const serialized = JSON.stringify({
+    access_token: payload.access_token,
+    refresh_token: payload.refresh_token || null,
+    expiry: payload.expiry,
+  });
+
+  const valueToStore =
+    process.env.ENCRYPTION_KEY && process.env.ENCRYPTION_KEY.trim().length > 0
+      ? await encryptValue(serialized)
+      : serialized;
+
+  const { error } = await serviceSupabase.rpc('upsert_gmail_vault_token', {
+    p_secret_name: secretName,
+    p_secret_value: valueToStore,
+  });
+
+  if (error) {
+    throw new Error(`Failed to save Gmail token to Vault: ${error.message}`);
+  }
+}
+
+async function loadGmailTokenFromVault(
+  serviceSupabase: any,
+  userId: string
+): Promise<GmailVaultTokenPayload | null> {
+  if (!serviceSupabase) {
+    throw new Error('SUPABASE_SERVICE_ROLE_KEY is required to read Gmail tokens from Vault.');
+  }
+
+  const secretName = getGmailVaultSecretName(userId);
+  const { data, error } = await serviceSupabase.rpc('get_gmail_vault_token', {
+    p_secret_name: secretName,
+  });
+
+  if (error) {
+    throw new Error(`Failed to read Gmail token from Vault: ${error.message}`);
+  }
+
+  if (!data || typeof data !== 'string') {
+    return null;
+  }
+
+  const rawJson = data.startsWith(CIPHER_PREFIX) ? await decryptValue(data) : data;
+  const parsed = JSON.parse(rawJson) as Partial<GmailVaultTokenPayload>;
+  if (!parsed?.access_token) {
+    return null;
+  }
+
+  return {
+    access_token: parsed.access_token,
+    refresh_token: parsed.refresh_token || null,
+    expiry: typeof parsed.expiry === 'number' ? parsed.expiry : 0,
+  };
+}
+
+async function deleteGmailTokenFromVault(
+  serviceSupabase: any,
+  userId: string
+): Promise<void> {
+  if (!serviceSupabase) return;
+
+  const secretName = getGmailVaultSecretName(userId);
+  const { error } = await serviceSupabase.rpc('delete_gmail_vault_token', {
+    p_secret_name: secretName,
+  });
+
+  if (error) {
+    throw new Error(`Failed to remove Gmail token from Vault: ${error.message}`);
+  }
+}
+
+async function getValidGmailAccessToken(
+  serviceSupabase: any,
+  userId: string
+): Promise<string> {
+  const token = await loadGmailTokenFromVault(serviceSupabase, userId);
+  if (!token) {
+    throw new Error('Gmail is not connected for this user.');
+  }
+
+  const nowMs = Date.now();
+  if (token.expiry > nowMs + 60_000) {
+    return token.access_token;
+  }
+
+  if (!token.refresh_token) {
+    throw new Error('Gmail access token expired. Please reconnect Gmail in Settings.');
+  }
+
+  const clientId = (
+    process.env.GOOGLE_CLIENT_ID ||
+    process.env.VITE_GOOGLE_CLIENT_ID ||
+    ''
+  ).trim();
+  const clientSecret = (process.env.GOOGLE_CLIENT_SECRET || '').trim();
+
+  if (!clientId || !clientSecret) {
+    throw new Error(
+      'Gmail access token expired and GOOGLE_CLIENT_SECRET is not configured for offline refresh.'
+    );
+  }
+
+  const refreshRes = await fetch('https://oauth2.googleapis.com/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      client_id: clientId,
+      client_secret: clientSecret,
+      refresh_token: token.refresh_token,
+      grant_type: 'refresh_token',
+    }).toString(),
+  });
+
+  const refreshJson = (await refreshRes.json().catch(() => ({}))) as {
+    access_token?: string;
+    expires_in?: number;
+    refresh_token?: string;
+    error_description?: string;
+    error?: string;
+  };
+
+  if (!refreshRes.ok || !refreshJson.access_token) {
+    throw new Error(
+      refreshJson.error_description ||
+        refreshJson.error ||
+        'Failed to refresh Gmail access token. Please reconnect Gmail in Settings.'
+    );
+  }
+
+  const nextPayload: GmailVaultTokenPayload = {
+    access_token: refreshJson.access_token,
+    refresh_token: refreshJson.refresh_token || token.refresh_token,
+    expiry: Date.now() + Number(refreshJson.expires_in || 3600) * 1000,
+  };
+
+  await saveGmailTokenToVault(serviceSupabase, userId, nextPayload);
+  return nextPayload.access_token;
+}
+
 // --- Inlined Cors & Auth Helpers ---
 function getSupabaseUrl(): string {
   return (
@@ -71,6 +254,14 @@ function getSupabaseAnonKey(): string {
     process.env.SUPABASE_ANON_KEY ||
     'placeholder-anon-key'
   );
+}
+
+function getServiceSupabase() {
+  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!serviceRoleKey) return null;
+  return createSupabaseClient(getSupabaseUrl(), serviceRoleKey, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
 }
 
 function setCorsHeaders(req: VercelRequest, res: VercelResponse): boolean {
@@ -567,12 +758,13 @@ async function handleGmail(req: any, res: VercelResponse, path: string) {
   try {
     const supabase = req.supabase;
     const user = req.user;
+    const serviceSupabase = getServiceSupabase() || supabase;
 
     if (path.endsWith('/status')) {
       if (req.method !== 'GET') return res.status(405).json({ error: 'Method Not Allowed' });
       
       try {
-        const { data, error } = await supabase
+        const { data, error } = await serviceSupabase
           .from('profiles')
           .select('gmail_connected, gmail_last_synced, gmail_email, gmail_sync_enabled')
           .eq('user_id', user?.id)
@@ -582,13 +774,25 @@ async function handleGmail(req: any, res: VercelResponse, path: string) {
           console.warn('[api/gmail/status] Supabase query warning:', error.message);
         }
 
+        const isConnected = Boolean(data?.gmail_connected);
+        const edgeDisabled = process.env.USE_SUPABASE_EDGE_GMAIL_SYNC === 'false';
+        const syncEnabled = isConnected && !edgeDisabled && Boolean(data?.gmail_sync_enabled ?? true);
+
+        const { data: lastLog } = await serviceSupabase
+          .from('gmail_sync_log')
+          .select('last_synced_at, emails_processed, transactions_added, errors_count')
+          .eq('user_id', user?.id)
+          .order('last_synced_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
         return res.status(200).json({
-          gmail_connected: Boolean(data?.gmail_connected),
-          gmail_email: data?.gmail_email || null,
+          gmail_connected: isConnected,
+          gmail_email: isConnected ? data?.gmail_email || null : null,
           gmail_last_synced: data?.gmail_last_synced || null,
-          gmail_sync_enabled: Boolean(data?.gmail_sync_enabled),
-          has_offline_refresh_support: true,
-          last_sync_summary: null,
+          gmail_sync_enabled: syncEnabled,
+          has_offline_refresh_support: Boolean(process.env.GOOGLE_CLIENT_SECRET),
+          last_sync_summary: lastLog || null,
         });
       } catch (statusErr: any) {
         console.error('[api/gmail/status] Error reading status:', statusErr);
@@ -597,7 +801,7 @@ async function handleGmail(req: any, res: VercelResponse, path: string) {
           gmail_email: null,
           gmail_last_synced: null,
           gmail_sync_enabled: false,
-          has_offline_refresh_support: true,
+          has_offline_refresh_support: Boolean(process.env.GOOGLE_CLIENT_SECRET),
           last_sync_summary: null,
         });
       }
@@ -606,39 +810,149 @@ async function handleGmail(req: any, res: VercelResponse, path: string) {
     if (path.endsWith('/connect')) {
       if (req.method !== 'POST') return res.status(405).json({ error: 'Method Not Allowed' });
       
-      const emailToConnect =
-        req.body?.gmail_email ||
-        req.body?.email ||
-        user?.email ||
-        'wasimssayyed@gmail.com';
+      if (!getServiceSupabase()) {
+        return res.status(500).json({
+          error: 'SUPABASE_SERVICE_ROLE_KEY is required on the server to store Gmail tokens securely in Vault.',
+        });
+      }
 
-      const { data, error } = await supabase
+      const code = typeof req.body?.code === 'string' ? req.body.code.trim() : '';
+      let accessToken =
+        typeof req.body?.access_token === 'string' ? req.body.access_token.trim() : '';
+      let refreshToken: string | null = null;
+      let expiresInSec = Number(req.body?.expires_in || 3600);
+
+      if (code) {
+        const clientId = (
+          process.env.GOOGLE_CLIENT_ID ||
+          process.env.VITE_GOOGLE_CLIENT_ID ||
+          ''
+        ).trim();
+        const clientSecret = (process.env.GOOGLE_CLIENT_SECRET || '').trim();
+        if (!clientId || !clientSecret) {
+          return res.status(400).json({
+            error: 'GOOGLE_CLIENT_SECRET is required on the server to exchange authorization codes.',
+          });
+        }
+
+        const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({
+            code,
+            client_id: clientId,
+            client_secret: clientSecret,
+            redirect_uri: 'postmessage',
+            grant_type: 'authorization_code',
+          }).toString(),
+        });
+
+        const tokenJson = (await tokenRes.json().catch(() => ({}))) as {
+          access_token?: string;
+          refresh_token?: string;
+          expires_in?: number;
+          error_description?: string;
+          error?: string;
+        };
+
+        if (!tokenRes.ok || !tokenJson.access_token) {
+          return res.status(400).json({
+            error:
+              tokenJson.error_description ||
+              tokenJson.error ||
+              'Failed to exchange Google authorization code for Gmail access.',
+          });
+        }
+
+        accessToken = tokenJson.access_token;
+        refreshToken = tokenJson.refresh_token || null;
+        expiresInSec = Number(tokenJson.expires_in || 3600);
+      }
+
+      if (!accessToken) {
+        return res.status(400).json({ error: 'Missing Gmail OAuth access token or authorization code.' });
+      }
+
+      // Step 2 Fix: Extract email strictly from the Google OAuth userinfo endpoint for the consenting account
+      let consentedEmail: string | null = null;
+
+      try {
+        const userinfoRes = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
+          headers: { Authorization: `Bearer ${accessToken}` },
+        });
+
+        if (userinfoRes.ok) {
+          const userInfo = (await userinfoRes.json().catch(() => ({}))) as { email?: string };
+          if (userInfo?.email && typeof userInfo.email === 'string') {
+            consentedEmail = userInfo.email.trim().toLowerCase();
+          }
+        }
+      } catch (err: any) {
+        console.warn('[api/gmail/connect] userinfo fetch error:', err?.message);
+      }
+
+      // Fallback/Verify with Gmail profile API if userinfo didn't return an email
+      if (!consentedEmail) {
+        try {
+          const profileRes = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/profile', {
+            headers: { Authorization: `Bearer ${accessToken}` },
+          });
+
+          if (profileRes.ok) {
+            const profileJson = (await profileRes.json().catch(() => ({}))) as { emailAddress?: string };
+            if (profileJson?.emailAddress && typeof profileJson.emailAddress === 'string') {
+              consentedEmail = profileJson.emailAddress.trim().toLowerCase();
+            }
+          }
+        } catch (err: any) {
+          console.warn('[api/gmail/connect] gmail profile fetch error:', err?.message);
+        }
+      }
+
+      if (!consentedEmail) {
+        return res.status(400).json({
+          error: 'Unable to verify the consented Gmail account from Google. Please try again.',
+        });
+      }
+
+      // Step 3: Save token payload to Supabase Vault
+      await saveGmailTokenToVault(serviceSupabase, user.id, {
+        access_token: accessToken,
+        refresh_token: refreshToken,
+        expiry: Date.now() + expiresInSec * 1000,
+      });
+
+      // Update profiles table with the consented Gmail email
+      const { error: updateErr } = await serviceSupabase
         .from('profiles')
         .update({
           gmail_connected: true,
-          gmail_email: emailToConnect,
+          gmail_email: consentedEmail,
           gmail_sync_enabled: true,
           updated_at: new Date().toISOString(),
         })
-        .eq('user_id', user?.id)
-        .select('*')
-        .maybeSingle();
+        .eq('user_id', user.id);
 
-      if (error) {
-        console.error('[api/gmail/connect] DB update error:', error.message);
-        return res.status(400).json({ error: error.message });
+      if (updateErr) {
+        console.error('[api/gmail/connect] DB update error:', updateErr.message);
+        return res.status(400).json({ error: updateErr.message });
       }
 
       return res.status(200).json({
         success: true,
         gmail_connected: true,
-        gmail_email: emailToConnect,
+        gmail_email: consentedEmail,
+        has_refresh_token: Boolean(refreshToken),
       });
     }
 
     if (path.endsWith('/disconnect')) {
       if (req.method !== 'POST') return res.status(405).json({ error: 'Method Not Allowed' });
-      await supabase
+      await deleteGmailTokenFromVault(serviceSupabase, user.id).catch((err) =>
+        console.warn('[api/gmail/disconnect] vault delete warning:', err?.message)
+      );
+
+      await serviceSupabase
         .from('profiles')
         .update({
           gmail_connected: false,
@@ -648,14 +962,14 @@ async function handleGmail(req: any, res: VercelResponse, path: string) {
           updated_at: new Date().toISOString(),
         })
         .eq('user_id', user?.id);
-      return res.status(200).json({ success: true });
+      return res.status(200).json({ success: true, gmail_connected: false });
     }
 
     if (path.endsWith('/settings') || path.endsWith('/sync-settings')) {
       if (req.method !== 'PATCH' && req.method !== 'POST') return res.status(405).json({ error: 'Method Not Allowed' });
       const syncEnabled = req.body?.sync_enabled !== undefined ? req.body.sync_enabled : req.body?.gmail_sync_enabled;
       if (syncEnabled !== undefined) {
-        await supabase
+        await serviceSupabase
           .from('profiles')
           .update({
             gmail_sync_enabled: Boolean(syncEnabled),
@@ -668,22 +982,66 @@ async function handleGmail(req: any, res: VercelResponse, path: string) {
 
     if (path.endsWith('/sync')) {
       if (req.method !== 'POST') return res.status(405).json({ error: 'Method Not Allowed' });
-      const nowIso = new Date().toISOString();
-      await supabase
-        .from('profiles')
-        .update({
-          gmail_last_synced: nowIso,
-          updated_at: nowIso,
-        })
-        .eq('user_id', user?.id);
-      return res.status(200).json({
-        success: true,
-        message: 'Sync completed',
-        synced_at: nowIso,
-        emails_processed: 0,
-        transactions_added: 0,
-        errors_count: 0,
-      });
+      if (!getServiceSupabase()) {
+        return res.status(500).json({
+          error: 'SUPABASE_SERVICE_ROLE_KEY is required on the server to run Gmail sync.',
+        });
+      }
+
+      // Enforce 5-minute manual sync cooldown
+      const { data: latestLog } = await serviceSupabase
+        .from('gmail_sync_log')
+        .select('last_synced_at')
+        .eq('user_id', user.id)
+        .order('last_synced_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (latestLog?.last_synced_at) {
+        const elapsedMs = Date.now() - new Date(latestLog.last_synced_at).getTime();
+        const cooldownMs = 5 * 60 * 1000;
+        if (elapsedMs >= 0 && elapsedMs < cooldownMs) {
+          const retryAfterSec = Math.ceil((cooldownMs - elapsedMs) / 1000);
+          res.setHeader('Retry-After', String(retryAfterSec));
+          return res.status(429).json({
+            error: `Gmail was synced recently. Please wait ${Math.ceil(retryAfterSec / 60)} minute(s) before syncing again.`,
+            retry_after_seconds: retryAfterSec,
+          });
+        }
+      }
+
+      const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
+      const supabaseUrl = getSupabaseUrl();
+      const canCallEdgeFunction =
+        supabaseUrl &&
+        !supabaseUrl.includes('placeholder') &&
+        Boolean(serviceRoleKey) &&
+        process.env.USE_SUPABASE_EDGE_GMAIL_SYNC === 'true';
+
+      if (canCallEdgeFunction) {
+        try {
+          const fnRes = await fetch(`${supabaseUrl}/functions/v1/gmail-sync`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              apikey: serviceRoleKey,
+              Authorization: `Bearer ${serviceRoleKey}`,
+            },
+            body: JSON.stringify({ user_id: user.id }),
+          });
+          if (fnRes.ok) {
+            const fnJson = await fnRes.json();
+            if (typeof fnJson?.emails_processed === 'number') {
+              return res.status(200).json(fnJson);
+            }
+          }
+        } catch {
+          // Fall back cleanly to server sync pipeline if Edge Function is not deployed/accessible
+        }
+      }
+
+      const result = await runGmailSyncForUser(serviceSupabase, user.id);
+      return res.status(200).json(result);
     }
 
     return res.status(404).json({ error: 'Gmail route not found' });
@@ -695,11 +1053,16 @@ async function handleGmail(req: any, res: VercelResponse, path: string) {
         gmail_email: null,
         gmail_last_synced: null,
         gmail_sync_enabled: false,
-        has_offline_refresh_support: true,
+        has_offline_refresh_support: Boolean(process.env.GOOGLE_CLIENT_SECRET),
         last_sync_summary: null,
       });
     }
-    return res.status(500).json({ error: err?.message || 'Internal server error in Gmail route' });
+    const message = err?.message || 'Internal server error in Gmail route';
+    const isClientErr =
+      message.includes('not connected') ||
+      message.includes('expired') ||
+      message.includes('reconnect');
+    return res.status(isClientErr ? 400 : 500).json({ error: message });
   }
 }
 

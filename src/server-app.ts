@@ -1503,24 +1503,52 @@ export async function runServer() {
           return res.status(400).json({ error: 'Missing Gmail OAuth access token or authorization code.' });
         }
 
-        // Verify token works with gmail.readonly and obtain connected Gmail address
-        const gmailProfileRes = await fetch(
-          'https://gmail.googleapis.com/gmail/v1/users/me/profile',
-          {
-            headers: { Authorization: `Bearer ${accessToken}` },
-          }
-        );
+        // Fetch userinfo from Google OAuth endpoint using the consented access token
+        let consentedEmail: string | null = null;
 
-        if (!gmailProfileRes.ok) {
-          return res.status(400).json({
-            error: 'Google token lacks Gmail read-only permission. Please grant Gmail access.',
+        try {
+          const userinfoRes = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
+            headers: { Authorization: `Bearer ${accessToken}` },
           });
+
+          if (userinfoRes.ok) {
+            const userInfo = (await userinfoRes.json().catch(() => ({}))) as { email?: string };
+            if (userInfo?.email && typeof userInfo.email === 'string') {
+              consentedEmail = userInfo.email.trim().toLowerCase();
+            }
+          }
+        } catch (err: any) {
+          console.warn('[server-app/gmail/connect] userinfo fetch error:', err?.message);
         }
 
-        const gmailProfile = (await gmailProfileRes.json().catch(() => ({}))) as {
-          emailAddress?: string;
-        };
-        const gmailEmail = gmailProfile.emailAddress?.trim().toLowerCase() || req.user!.email || null;
+        // Fallback/Verify with Gmail profile API if userinfo didn't return an email
+        if (!consentedEmail) {
+          const gmailProfileRes = await fetch(
+            'https://gmail.googleapis.com/gmail/v1/users/me/profile',
+            {
+              headers: { Authorization: `Bearer ${accessToken}` },
+            }
+          );
+
+          if (!gmailProfileRes.ok) {
+            return res.status(400).json({
+              error: 'Google token lacks Gmail read-only permission. Please grant Gmail access.',
+            });
+          }
+
+          const gmailProfile = (await gmailProfileRes.json().catch(() => ({}))) as {
+            emailAddress?: string;
+          };
+          if (gmailProfile?.emailAddress && typeof gmailProfile.emailAddress === 'string') {
+            consentedEmail = gmailProfile.emailAddress.trim().toLowerCase();
+          }
+        }
+
+        if (!consentedEmail) {
+          return res.status(400).json({
+            error: 'Unable to verify the consented Gmail account from Google. Please try again.',
+          });
+        }
 
         await saveGmailTokenToVault(serviceSupabase, userId, {
           access_token: accessToken,
@@ -1532,7 +1560,7 @@ export async function runServer() {
           .from('profiles')
           .update({
             gmail_connected: true,
-            gmail_email: gmailEmail,
+            gmail_email: consentedEmail,
             gmail_sync_enabled: true,
           })
           .eq('user_id', userId);
@@ -1540,7 +1568,7 @@ export async function runServer() {
         // Never return tokens in API response
         return res.json({
           gmail_connected: true,
-          gmail_email: gmailEmail,
+          gmail_email: consentedEmail,
           has_refresh_token: Boolean(refreshToken),
         });
       } catch (err: any) {
