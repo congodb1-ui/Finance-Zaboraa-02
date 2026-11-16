@@ -1,6 +1,9 @@
 import type { ParseResult, ColumnMapping } from '../../types/uploads';
 import { extractPDFRawData, extractStatementPeriod, type PDFExtractionResult } from './pdf';
 
+// Keep in sync with Gmail narration cleaner in api/[...all].ts
+// and src/lib/parsers/gmail/hdfc.ts
+
 const HDFC_COLUMNS = [
   'Date',
   'Narration',
@@ -86,6 +89,106 @@ function cleanNumber(str: string): number | null {
   return isNaN(num) ? null : num;
 }
 
+/**
+ * Converts a string to Title Case while preserving acronyms/initialisms
+ */
+export function toTitleCase(str: string): string {
+  if (!str) return '';
+  return str
+    .split(/\s+/)
+    .map((word) => {
+      if (!word) return '';
+      if (/^(ATM|POS|UPI|IMPS|NEFT|RTGS|FD|RD|EMI|SI|ACH|NACH|GST|TDS|BBPS|HDFC|ICICI|SBI|PNB|BOB|IDFC|KOTAK|AXIS)$/i.test(word)) {
+        return word.toUpperCase();
+      }
+      return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+    })
+    .join(' ')
+    .trim();
+}
+
+/**
+ * Cleans an HDFC narration and extracts the reference / UTR number.
+ * Follows the same merchant extraction logic used in Gmail alert cleaning.
+ */
+export function cleanHdfcNarration(
+  rawNarration: string,
+  rawChqRefCol?: string
+): { cleanDescription: string; reference: string } {
+  let text = (rawNarration || '').trim();
+  if (!text) {
+    const fallbackRef = (rawChqRefCol || '').replace(/^0+/, '').trim();
+    return { cleanDescription: 'HDFC Transaction', reference: fallbackRef };
+  }
+
+  // 1. Join wrapped lines & collapse whitespace
+  text = text.replace(/\r?\n|\r/g, ' ').replace(/\s{2,}/g, ' ');
+
+  // 2. Extract reference: 12-digit UTR from narration or fallback to refCol
+  let ref = '';
+  const utrMatch = text.match(/(?:^|[-/\s])(\d{12})(?=$|[-/\s])/);
+  if (utrMatch) {
+    ref = utrMatch[1];
+  } else {
+    // Check for alphanumeric ref e.g. NEFT N2611151234567
+    const neftMatch = text.match(/(?:NEFT|RTGS|IMPS)[-\s]+(?:[^-]+)[-\s]+([A-Z0-9]{6,22})/i);
+    const chqMatch = text.match(/CHQ[-\s]+(\d+)[-\s]+(.*)/i);
+    if (neftMatch) {
+      ref = neftMatch[1];
+    } else if (chqMatch) {
+      ref = chqMatch[1];
+    } else if (rawChqRefCol) {
+      const stripped = rawChqRefCol.trim().replace(/^0+/, '');
+      if (stripped.length > 0) {
+        ref = stripped;
+      }
+    }
+  }
+
+  // Handle CHQ pattern: CHQ-123456-SOME PAYEE
+  const chqPrefixMatch = text.match(/^CHQ[-\s]+(\d+)[-\s]+(.*)$/i);
+  if (chqPrefixMatch) {
+    if (!ref) ref = chqPrefixMatch[1];
+    text = chqPrefixMatch[2];
+  }
+
+  // 3. Strip Transaction Type Prefix from beginning
+  text = text.replace(/^(UPI|NEFT|IMPS|RTGS|FT|CHQ|ATM|ATW|POS|ACH|EMI|SI|NACH|MANDATE)[\/\-\s]+/i, '');
+
+  // 4. Strip Trailing Noise phrases
+  text = text.replace(/[-/\s]*(SENT USING PAYTM U|SENT USING PAYTM|SENT USING PAYT M U|SENT USING GPAY|SENT USING PHONEPE|SENT USING BHIM|VIA NETBANKING|INTERNET BANKING|MOBILE BANKING|UPI MANDATE)[-/\s]*/gi, '');
+
+  // 5. Strip VPA, masked accounts, IFSC, and UTR suffixes
+  // Strip from first occurrence of:
+  // - Masked account: -[*]{3,}
+  // - VPA separator: -[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+
+  // - IFSC code: -[A-Z]{4}0[A-Z0-9]{6}
+  // - 12 digit UTR: -\d{12}
+  // - Direct VPA: @[A-Za-z0-9.-]+
+  const splitMatch = text.match(/^(.*?)(?:-[*]{3,}|-[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+|-[A-Z]{4}0[A-Z0-9]{6}|-\d{12}|@[a-zA-Z0-9.-]+)/);
+  if (splitMatch && splitMatch[1] && splitMatch[1].trim().length > 0) {
+    text = splitMatch[1];
+  }
+
+  // For NEFT / RTGS with trailing ref: strip the ref from end of text
+  if (ref && text.endsWith(`-${ref}`)) {
+    text = text.slice(0, -(ref.length + 1));
+  }
+
+  // Clean trailing hyphens, slashes, spaces, and "-NA" or "NA"
+  text = text.replace(/-(?:NA|N A)$/i, '');
+  text = text.replace(/[-/\s]+$/, '').replace(/^[-/\s]+/, '').trim();
+
+  if (!text || text.toUpperCase() === 'NA') {
+    text = (rawNarration || '').replace(/^(UPI|NEFT|IMPS|RTGS|FT|CHQ|ATM|ATW|POS|ACH|EMI|SI|NACH|MANDATE)[\/\-\s]+/i, '').trim() || 'HDFC Transaction';
+  }
+
+  return {
+    cleanDescription: text,
+    reference: ref,
+  };
+}
+
 interface PreParsedRow {
   date: string;
   narration: string;
@@ -105,57 +208,166 @@ export async function parsePDFHDFC(
 
   const rawCandidates: PreParsedRow[] = [];
 
-  for (const page of pdfData.pages) {
-    for (const gridRow of page.gridRows) {
-      if (isHDFCHeaderOrFooter(gridRow)) continue;
+  const hasTextItems = pdfData.pages.some((p) => p.textItems && p.textItems.length > 0);
 
-      if (gridRow.length < 3) continue;
-      const firstCell = gridRow[0].trim();
-      const dateMatch = firstCell.match(/^(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{2,4})/);
-      if (!dateMatch) continue;
+  if (hasTextItems) {
+    for (const page of pdfData.pages) {
+      if (!page.textItems || page.textItems.length === 0) continue;
 
-      let narration = '';
-      let valueDt = '';
-      let refNo = '';
-      let rawDebit = '';
-      let rawCredit = '';
-      let rawAmount = '';
-      let rawBalance = '';
+      // Group text items into visual lines by y-coordinate (tolerance 3.5px)
+      const lines: Array<{ y: number; items: typeof page.textItems }> = [];
+      const sortedItems = [...page.textItems].sort((a, b) => b.y - a.y || a.x - b.x);
 
-      if (gridRow.length >= 7) {
-        narration = gridRow[1] || '';
-        valueDt = gridRow[2] || '';
-        refNo = gridRow[3] || '';
-        rawDebit = gridRow[4] || '';
-        rawCredit = gridRow[5] || '';
-        rawBalance = gridRow[6] || '';
-      } else if (gridRow.length === 6) {
-        narration = gridRow[1] || '';
-        valueDt = gridRow[2] || '';
-        refNo = gridRow[3] || '';
-        rawAmount = gridRow[4] || '';
-        rawBalance = gridRow[5] || '';
-      } else if (gridRow.length === 5) {
-        narration = gridRow[1] || '';
-        refNo = gridRow[2] || '';
-        rawAmount = gridRow[3] || '';
-        rawBalance = gridRow[4] || '';
-      } else {
-        narration = gridRow[1] || '';
-        rawBalance = gridRow[gridRow.length - 1] || '';
-        rawAmount = gridRow[gridRow.length - 2] || '';
+      for (const item of sortedItems) {
+        if (!item.text || !item.text.trim()) continue;
+        const line = lines.find((l) => Math.abs(l.y - item.y) <= 3.5);
+        if (line) {
+          line.items.push(item);
+        } else {
+          lines.push({ y: item.y, items: [item] });
+        }
       }
 
-      rawCandidates.push({
-        date: firstCell,
-        narration: narration.trim(),
-        valueDt: valueDt.trim(),
-        refNo: refNo.trim(),
-        rawDebit,
-        rawCredit,
-        rawAmount,
-        rawBalance,
-      });
+      // Process each visual line
+      let currentTxn: {
+        date: string;
+        narrationParts: string[];
+        valueDt: string;
+        refNo: string;
+        rawDebit: string;
+        rawCredit: string;
+        rawAmount: string;
+        rawBalance: string;
+      } | null = null;
+
+      for (const line of lines) {
+        line.items.sort((a, b) => a.x - b.x);
+        const lineText = line.items.map((i) => i.text).join(' ');
+        if (isHDFCHeaderOrFooter([lineText])) continue;
+
+        // Assign items to columns based on x coordinates:
+        // Date: 25..65
+        // Narration: 65..285
+        // Chq/Ref: 285..355
+        // Value Dt: 355..400
+        // Debit: 400..480
+        // Credit: 480..555
+        // Balance: 555..630
+        const dateItems = line.items.filter((i) => i.x >= 25 && i.x < 65);
+        const narrItems = line.items.filter((i) => i.x >= 65 && i.x < 285);
+        const refItems = line.items.filter((i) => i.x >= 285 && i.x < 355);
+        const valDtItems = line.items.filter((i) => i.x >= 355 && i.x < 400);
+        const debitItems = line.items.filter((i) => i.x >= 400 && i.x < 480);
+        const creditItems = line.items.filter((i) => i.x >= 480 && i.x < 555);
+        const balItems = line.items.filter((i) => i.x >= 555 && i.x < 630);
+
+        const dateStr = dateItems.map((i) => i.text).join('').trim();
+        const narrStr = narrItems.map((i) => i.text).join('').trim();
+        const refStr = refItems.map((i) => i.text).join('').trim();
+        const valDtStr = valDtItems.map((i) => i.text).join('').trim();
+        const debitStr = debitItems.map((i) => i.text).join('').trim();
+        const creditStr = creditItems.map((i) => i.text).join('').trim();
+        const balStr = balItems.map((i) => i.text).join('').trim();
+
+        const dateMatch = dateStr.match(/^(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{2,4})/);
+
+        if (dateMatch) {
+          if (currentTxn) {
+            rawCandidates.push({
+              date: currentTxn.date,
+              narration: currentTxn.narrationParts.join(' '),
+              valueDt: currentTxn.valueDt,
+              refNo: currentTxn.refNo,
+              rawDebit: currentTxn.rawDebit,
+              rawCredit: currentTxn.rawCredit,
+              rawAmount: currentTxn.rawAmount,
+              rawBalance: currentTxn.rawBalance,
+            });
+          }
+
+          currentTxn = {
+            date: dateStr,
+            narrationParts: narrStr ? [narrStr] : [],
+            valueDt: valDtStr,
+            refNo: refStr,
+            rawDebit: debitStr,
+            rawCredit: creditStr,
+            rawAmount: '',
+            rawBalance: balStr,
+          };
+        } else if (currentTxn && narrStr) {
+          // Wrapped multi-line narration continuation
+          currentTxn.narrationParts.push(narrStr);
+        }
+      }
+
+      if (currentTxn) {
+        rawCandidates.push({
+          date: currentTxn.date,
+          narration: currentTxn.narrationParts.join(' '),
+          valueDt: currentTxn.valueDt,
+          refNo: currentTxn.refNo,
+          rawDebit: currentTxn.rawDebit,
+          rawCredit: currentTxn.rawCredit,
+          rawAmount: currentTxn.rawAmount,
+          rawBalance: currentTxn.rawBalance,
+        });
+      }
+    }
+  } else {
+    // Fallback: Grid rows based extraction
+    for (const page of pdfData.pages) {
+      for (const gridRow of page.gridRows) {
+        if (isHDFCHeaderOrFooter(gridRow)) continue;
+
+        if (gridRow.length < 3) continue;
+        const firstCell = gridRow[0].trim();
+        const dateMatch = firstCell.match(/^(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{2,4})/);
+        if (!dateMatch) continue;
+
+        let narration = '';
+        let valueDt = '';
+        let refNo = '';
+        let rawDebit = '';
+        let rawCredit = '';
+        let rawAmount = '';
+        let rawBalance = '';
+
+        if (gridRow.length >= 7) {
+          narration = gridRow[1] || '';
+          valueDt = gridRow[2] || '';
+          refNo = gridRow[3] || '';
+          rawDebit = gridRow[4] || '';
+          rawCredit = gridRow[5] || '';
+          rawBalance = gridRow[6] || '';
+        } else if (gridRow.length === 6) {
+          narration = gridRow[1] || '';
+          valueDt = gridRow[2] || '';
+          refNo = gridRow[3] || '';
+          rawAmount = gridRow[4] || '';
+          rawBalance = gridRow[5] || '';
+        } else if (gridRow.length === 5) {
+          narration = gridRow[1] || '';
+          refNo = gridRow[2] || '';
+          rawAmount = gridRow[3] || '';
+          rawBalance = gridRow[4] || '';
+        } else {
+          narration = gridRow[1] || '';
+          rawBalance = gridRow[gridRow.length - 1] || '';
+          rawAmount = gridRow[gridRow.length - 2] || '';
+        }
+
+        rawCandidates.push({
+          date: firstCell,
+          narration: narration.trim(),
+          valueDt: valueDt.trim(),
+          refNo: refNo.trim(),
+          rawDebit,
+          rawCredit,
+          rawAmount,
+          rawBalance,
+        });
+      }
     }
   }
 
@@ -240,11 +452,13 @@ export async function parsePDFHDFC(
       balanceStr = String(runningBalance);
     }
 
+    const { cleanDescription, reference } = cleanHdfcNarration(candidate.narration, candidate.refNo);
+
     const rowObj: Record<string, string> = {
       Date: candidate.date,
-      Narration: candidate.narration,
+      Narration: cleanDescription,
       'Value Dt': candidate.valueDt,
-      'Ref No./Cheque No.': candidate.refNo,
+      'Ref No./Cheque No.': reference || candidate.refNo,
       Debit: debitStr,
       Credit: creditStr,
       Balance: balanceStr,

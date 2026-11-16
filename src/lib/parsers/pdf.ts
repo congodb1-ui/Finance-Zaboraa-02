@@ -40,7 +40,10 @@ export interface PDFExtractionResult {
 export async function extractPDFRawData(
   buffer: ArrayBuffer | Uint8Array
 ): Promise<PDFExtractionResult> {
-  const data = buffer instanceof ArrayBuffer ? new Uint8Array(buffer) : buffer;
+  const data =
+    buffer instanceof Uint8Array
+      ? new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength)
+      : new Uint8Array(buffer);
 
   let pdfDoc: pdfjsLib.PDFDocumentProxy;
   try {

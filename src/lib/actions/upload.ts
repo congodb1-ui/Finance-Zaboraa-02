@@ -286,6 +286,7 @@ export async function processStatementUpload(
       txn_date: normalizeDate(rawDate || ''),
       description: desc,
       raw_description: rawJson,
+      reference_number: refNo,
       upi_ref_no,
       imps_ref_no,
       source: 'statement_import' as const,
