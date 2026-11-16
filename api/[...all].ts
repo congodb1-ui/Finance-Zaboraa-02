@@ -1,7 +1,6 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { createClient as createSupabaseClient } from '@supabase/supabase-js';
 import crypto from 'node:crypto';
-import { runGmailSyncForUser } from '../src/lib/gmail-sync-service';
 
 // --- Inlined Crypto Helper for Serverless runtime ---
 const CIPHER_PREFIX = 'zbf:v1:';
@@ -235,6 +234,564 @@ async function getValidGmailAccessToken(
 
   await saveGmailTokenToVault(serviceSupabase, userId, nextPayload);
   return nextPayload.access_token;
+}
+
+// --- Inlined Gmail Alert Parsers & Sync Engine ---
+export interface GmailSyncResult {
+  emails_processed: number;
+  transactions_added: number;
+  errors_count: number;
+  last_synced_at: string;
+}
+
+const GMAIL_ALERT_QUERY =
+  'from:(alerts@hdfcbank.bank.in OR alerts@hdfcbank.net OR mahaalert@mahabank.co.in OR mahaalerts@bankofmaharashtra.bank.in OR HO.starsandesh@bankofindia.co.in)';
+
+const MONTH_MAP: Record<string, string> = {
+  JAN: '01',
+  FEB: '02',
+  MAR: '03',
+  APR: '04',
+  MAY: '05',
+  JUN: '06',
+  JUL: '07',
+  AUG: '08',
+  SEP: '09',
+  OCT: '10',
+  NOV: '11',
+  DEC: '12',
+};
+
+function truncate200(text: string): string {
+  return (text || '').replace(/\s+/g, ' ').trim().slice(0, 200);
+}
+
+function parseAmount(raw?: string | null): number | null {
+  if (!raw) return null;
+  const num = Number.parseFloat(raw.replace(/,/g, '').trim());
+  return Number.isFinite(num) ? Math.round(num * 100) / 100 : null;
+}
+
+function normalizeDate(dateStr?: string | null, internalDateMs?: string): string {
+  if (dateStr) {
+    const trimmed = dateStr.trim();
+    const mon = trimmed.match(/^(\d{2})-([A-Za-z]{3})-(\d{4})$/);
+    if (mon && MONTH_MAP[mon[2].toUpperCase()]) {
+      return `${mon[3]}-${MONTH_MAP[mon[2].toUpperCase()]}-${mon[1]}`;
+    }
+    const short = trimmed.match(/^(\d{2})[-\/](\d{2})[-\/](\d{2})$/);
+    if (short) return `20${short[3]}-${short[2]}-${short[1]}`;
+    const full = trimmed.match(/^(\d{2})[-\/](\d{2})[-\/](\d{4})$/);
+    if (full) return `${full[3]}-${full[2]}-${full[1]}`;
+  }
+  const ms = internalDateMs && /^\d+$/.test(internalDateMs) ? Number(internalDateMs) : Date.now();
+  return new Date(ms + 5.5 * 3600 * 1000).toISOString().slice(0, 10);
+}
+
+function decodeBase64Url(data: string): string {
+  if (!data) return '';
+  const b64 = data.replace(/-/g, '+').replace(/_/g, '/');
+  return Buffer.from(b64, 'base64').toString('utf-8');
+}
+
+function stripHtml(html: string): string {
+  return html
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function extractBody(payload: any, fallbackSnippet = ''): string {
+  const plain: string[] = [];
+  const html: string[] = [];
+  const walk = (part: any) => {
+    if (!part) return;
+    const mime = String(part.mimeType || '').toLowerCase();
+    if (mime === 'text/plain' && part.body?.data) plain.push(decodeBase64Url(part.body.data));
+    if (mime === 'text/html' && part.body?.data) html.push(decodeBase64Url(part.body.data));
+    if (Array.isArray(part.parts)) part.parts.forEach(walk);
+  };
+  walk(payload);
+  if (plain.length > 0) return plain.join(' ').replace(/\s+/g, ' ').trim();
+  if (html.length > 0) return stripHtml(html.join(' '));
+  if (payload?.body?.data) return stripHtml(decodeBase64Url(payload.body.data));
+  return fallbackSnippet.replace(/\s+/g, ' ').trim();
+}
+
+function maskPayeeForAI(text: string, ownerName?: string): string {
+  let out = (text || '')
+    .replace(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/gi, '[EMAIL-REDACTED]')
+    .replace(/\b[A-Za-z]{5}[0-9]{4}[A-Za-z]{1}\b/g, '[PAN-REDACTED]')
+    .replace(/(?<!\d)(?:\+91[-\s]?|0)?[6-9]\d{4}[-\s]?\d{5}(?!\d)/g, '[MOBILE-REDACTED]')
+    .replace(/\b[A-Za-z]{4}0[A-Za-z0-9]{6}\b/g, '[IFSC-REDACTED]');
+
+  if (ownerName && ownerName.trim().length > 2) {
+    const escaped = ownerName.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    out = out.replace(new RegExp(`\\b${escaped}\\b`, 'gi'), '[NAME-REDACTED]');
+  }
+  return out;
+}
+
+function parseAlertEmail(msg: any) {
+  const headers: Array<{ name: string; value: string }> = msg?.payload?.headers || [];
+  const getHeader = (n: string) =>
+    headers.find((h) => h.name?.toLowerCase() === n.toLowerCase())?.value || '';
+
+  const rawFrom = getHeader('From');
+  const fromMatch = rawFrom.match(/<([^>]+)>/);
+  const fromAddress = (fromMatch ? fromMatch[1] : rawFrom).trim().toLowerCase();
+  const subject = getHeader('Subject').trim();
+  const body = extractBody(msg?.payload, msg?.snippet || '');
+
+  if (fromAddress === 'alerts@hdfcbank.bank.in' && /is debited/i.test(body)) {
+    const amount = parseAmount(body.match(/Rs\.?\s*([\d,]+\.?\d*)\s+is debited/i)?.[1]);
+    const last4 = body.match(/account ending (?:XX)?(\d{4})/i)?.[1] || '';
+    if (!amount || !last4) {
+      return { type: 'error' as const, fromAddress, subject, reason: 'HDFC_UPI_DEBIT missing amount/last4', snippet: truncate200(body) };
+    }
+    const vpa = body.match(/towards VPA\s+(\S+)/i)?.[1]?.replace(/[.,;]+$/, '') || null;
+    const payee = (body.match(/towards VPA\s+\S+\s*\(([^)]+)\)/i)?.[1] || body.match(/\(([^)]+)\)/)?.[1] || vpa || 'UPI Payment').trim();
+    const upiRef = body.match(/UPI transaction reference no\.?:?\s*(\d+)/i)?.[1] || null;
+    const date = normalizeDate(body.match(/on (\d{2}-\d{2}-\d{2}|\d{2}-\d{2}-\d{4})/i)?.[1], msg.internalDate);
+    return { type: 'tx' as const, bank: 'HDFC', method: 'UPI' as const, direction: 'debit' as const, amount, last4, date, payee, upiRef, impsRef: null, balanceAfter: null, rawDesc: upiRef ? `UPI/${upiRef}/${payee}` : `UPI/${payee}`, fromAddress, subject };
+  }
+
+  if (fromAddress === 'alerts@hdfcbank.net' && /added to your account/i.test(body)) {
+    const amount = parseAmount(body.match(/Rs\.?\s*INR\s*([\d,]+\.?\d*)\s+has been successfully added/i)?.[1]);
+    const last4 = body.match(/account ending (?:XX)?(\d{4})/i)?.[1] || '';
+    if (!amount || !last4) {
+      return { type: 'error' as const, fromAddress, subject, reason: 'HDFC_IMPS_CREDIT missing amount/last4', snippet: truncate200(body) };
+    }
+    const impsRef = body.match(/IMPS-(\d+)-/i)?.[1] || null;
+    const payee = body.match(/IMPS-\d+-([^-]+)-/i)?.[1]?.trim() || 'IMPS Sender';
+    const balanceAfter = parseAmount(body.match(/available balance.*?(?:Rs\.?\s*INR|Rs\.?|INR)\s*([\d,]+\.?\d*)/i)?.[1]);
+    const date = normalizeDate(body.match(/on (\d{2}-[A-Z]{3}-\d{4})/i)?.[1], msg.internalDate);
+    return { type: 'tx' as const, bank: 'HDFC', method: 'IMPS' as const, direction: 'credit' as const, amount, last4, date, payee, upiRef: null, impsRef, balanceAfter, rawDesc: impsRef ? `IMPS-${impsRef}-${payee}` : `IMPS-${payee}`, fromAddress, subject };
+  }
+
+  if (fromAddress === 'alerts@hdfcbank.net' && /deducted from your account/i.test(body)) {
+    const amount = parseAmount(body.match(/Rs\.?\s*INR\s*([\d,]+\.?\d*)\s+is deducted/i)?.[1]);
+    const last4 = body.match(/account ending (?:XX)?(\d{4})/i)?.[1] || '';
+    if (!amount || !last4) {
+      return { type: 'error' as const, fromAddress, subject, reason: 'HDFC_IMPS_DEBIT missing amount/last4', snippet: truncate200(body) };
+    }
+    const impsRef = body.match(/IMPS-(\d+)-/i)?.[1] || null;
+    const payee = (body.match(/added to IMPS-\d+-([^-]+)-/i)?.[1] || body.match(/IMPS-\d+-([^-]+)-/i)?.[1] || 'IMPS Recipient').trim();
+    const balanceAfter = parseAmount(body.match(/available balance.*?(?:Rs\.?\s*INR|Rs\.?|INR)\s*([\d,]+\.?\d*)/i)?.[1]);
+    const date = normalizeDate(body.match(/on (\d{2}-[A-Z]{3}-\d{4})/i)?.[1], msg.internalDate);
+    return { type: 'tx' as const, bank: 'HDFC', method: 'IMPS' as const, direction: 'debit' as const, amount, last4, date, payee, upiRef: null, impsRef, balanceAfter, rawDesc: impsRef ? `IMPS-${impsRef}-${payee}` : `IMPS-${payee}`, fromAddress, subject };
+  }
+
+  if (fromAddress === 'alerts@hdfcbank.net' && /available balance/i.test(body)) {
+    const last4 = body.match(/account ending (?:XX)?(\d{4})/i)?.[1] || '';
+    const balanceAfter = parseAmount(body.match(/available balance.*?(?:Rs\.?|INR)\s*([\d,]+\.?\d*)/i)?.[1]);
+    if (!last4 || balanceAfter === null) {
+      return { type: 'error' as const, fromAddress, subject, reason: 'HDFC_BALANCE_ALERT missing last4/balance', snippet: truncate200(body) };
+    }
+    return { type: 'balance' as const, last4, balanceAfter, fromAddress, subject };
+  }
+
+  if (fromAddress === 'mahaalert@mahabank.co.in' || fromAddress === 'mahaalerts@bankofmaharashtra.bank.in') {
+    const last4 = body.match(/A\/c No [Xx*]*(\d{4})/i)?.[1] || '';
+    const dir = body.match(/credited|debited/i)?.[0]?.toLowerCase() || '';
+    const amount = parseAmount(body.match(/by INR\s*([\d,]+\.?\d*)/i)?.[1]);
+    if (!last4 || !dir || !amount) {
+      return { type: 'error' as const, fromAddress, subject, reason: 'BOM_IMPS missing required fields', snippet: truncate200(body) };
+    }
+    const direction = dir === 'credited' ? ('credit' as const) : ('debit' as const);
+    const impsRef = body.match(/by IMPS (\d+)/i)?.[1] || null;
+    const payee = body.match(/from ([A-Za-z0-9 .&-]+?)(?:\.|\s+A\/c|\s*$)/i)?.[1]?.trim() || 'BOM IMPS';
+    const balanceAfter = parseAmount(body.match(/A\/c Bal(?:ance)? (?:is )?(?:INR\s*|Rs\.?\s*)?([\d,]+\.?\d*)/i)?.[1]);
+    const date = normalizeDate(body.match(/on (\d{2}-[A-Z]{3}-\d{4}|\d{2}[-\/]\d{2}[-\/]\d{2,4})/i)?.[1], msg.internalDate);
+    return { type: 'tx' as const, bank: 'BOM', method: 'IMPS' as const, direction, amount, last4, date, payee, upiRef: null, impsRef, balanceAfter, rawDesc: impsRef ? `IMPS/${impsRef}/${payee}` : `BOM/${payee}`, fromAddress, subject };
+  }
+
+  if (fromAddress === 'ho.starsandesh@bankofindia.co.in') {
+    const last4 = body.match(/A\/c[.\s]+[Xx*]+(\d{4})/i)?.[1] || '';
+    const dir = body.match(/credited|debited|\bCR\b|\bDR\b/i)?.[0]?.toLowerCase() || '';
+    const amount = parseAmount(body.match(/(?:INR|Rs\.?)\s*([\d,]+\.?\d*)/i)?.[1]);
+    if (!last4 || !dir || !amount) {
+      return { type: 'error' as const, fromAddress, subject, reason: 'BOI_IMPS could not extract required fields', snippet: truncate200(body) };
+    }
+    const direction = dir === 'credited' || dir === 'cr' ? ('credit' as const) : ('debit' as const);
+    const impsRef = body.match(/IMPS[\/\s]?(?:Ref)?[.:\s]+(\d{12})/i)?.[1] || null;
+    const balanceAfter = parseAmount(body.match(/(?:Bal|Balance)[.:\s]+(?:Rs\.?\s*|INR\s*)?([\d,]+\.?\d*)/i)?.[1]);
+    const date = normalizeDate(body.match(/(\d{2}[-\/]\d{2}[-\/]\d{4}|\d{2}-[A-Z]{3}-\d{4})/i)?.[1], msg.internalDate);
+    const payee = impsRef ? `BOI IMPS ${impsRef}` : 'BOI IMPS Transfer';
+    return { type: 'tx' as const, bank: 'BOI', method: 'IMPS' as const, direction, amount, last4, date, payee, upiRef: null, impsRef, balanceAfter, rawDesc: impsRef ? `BOI/IMPS/${impsRef}` : `BOI IMPS ${direction}`, fromAddress, subject };
+  }
+
+  return { type: 'error' as const, fromAddress, subject, reason: 'Unrecognised bank alert format', snippet: truncate200(body) };
+}
+
+async function listGmailAlertMessages(
+  accessToken: string,
+  afterUnixSec: number
+): Promise<Array<{ id: string }>> {
+  const query = `${GMAIL_ALERT_QUERY} after:${afterUnixSec}`;
+  const collected: Array<{ id: string }> = [];
+  let pageToken: string | undefined;
+
+  do {
+    const url = new URL('https://gmail.googleapis.com/gmail/v1/users/me/messages');
+    url.searchParams.set('q', query);
+    url.searchParams.set('maxResults', '100');
+    if (pageToken) {
+      url.searchParams.set('pageToken', pageToken);
+    }
+
+    const res = await fetch(url.toString(), {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+
+    if (!res.ok) {
+      const errBody = await res.text().catch(() => '');
+      throw new Error(`Gmail API list messages failed (${res.status}): ${errBody.slice(0, 200)}`);
+    }
+
+    const json = (await res.json()) as {
+      messages?: Array<{ id: string }>;
+      nextPageToken?: string;
+    };
+
+    if (Array.isArray(json.messages)) {
+      collected.push(...json.messages);
+    }
+    pageToken = json.nextPageToken;
+  } while (pageToken);
+
+  return collected;
+}
+
+async function fetchFullGmailMessage(
+  accessToken: string,
+  messageId: string
+): Promise<any> {
+  const url = `https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(
+    messageId
+  )}?format=full`;
+
+  const res = await fetch(url, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+
+  if (!res.ok) {
+    throw new Error(`Gmail API get message ${messageId} failed (${res.status})`);
+  }
+
+  return await res.json();
+}
+
+async function runGmailSyncForUser(
+  serviceSupabase: any,
+  userId: string
+): Promise<GmailSyncResult> {
+  if (!serviceSupabase) {
+    throw new Error('SUPABASE_SERVICE_ROLE_KEY is required to run Gmail sync.');
+  }
+
+  // 1 & 2. Load token from Vault & refresh if expired
+  const accessToken = await getValidGmailAccessToken(serviceSupabase, userId);
+
+  // Load user profile, accounts, rules, categories, and AI settings
+  const [
+    { data: profileRow },
+    { data: accounts },
+    { data: rules },
+    { data: categories },
+    { data: aiSettingsRow },
+  ] = await Promise.all([
+    serviceSupabase
+      .from('profiles')
+      .select('gmail_last_synced, owner_full_name, full_name')
+      .eq('user_id', userId)
+      .maybeSingle(),
+    serviceSupabase
+      .from('accounts')
+      .select('id, account_number_last4, account_type')
+      .eq('user_id', userId),
+    serviceSupabase
+      .from('transaction_rules')
+      .select('*')
+      .eq('user_id', userId)
+      .eq('is_active', true)
+      .order('priority', { ascending: true }),
+    serviceSupabase
+      .from('categories')
+      .select('*')
+      .or(`user_id.eq.${userId},is_system.eq.true`),
+    serviceSupabase
+      .from('ai_settings')
+      .select('ai_enabled')
+      .eq('user_id', userId)
+      .maybeSingle(),
+  ]);
+
+  const lastSyncedMs = profileRow?.gmail_last_synced
+    ? new Date(profileRow.gmail_last_synced).getTime()
+    : NaN;
+  const afterUnixSec = Number.isFinite(lastSyncedMs)
+    ? Math.max(0, Math.floor(lastSyncedMs / 1000) - 60)
+    : Math.floor(Date.now() / 1000) - 30 * 86400;
+
+  const ownerName: string | undefined =
+    profileRow?.owner_full_name || profileRow?.full_name || undefined;
+  const aiEnabled = aiSettingsRow ? Boolean(aiSettingsRow.ai_enabled) : true;
+  const geminiKey = process.env.GEMINI_API_KEY || '';
+  const flashModel = process.env.GEMINI_MODEL_FLASH || 'gemini-1.5-flash';
+
+  const accountByLast4 = new Map<string, { id: string; account_type: string }>();
+  for (const acc of accounts || []) {
+    if (acc.account_number_last4) {
+      accountByLast4.set(String(acc.account_number_last4).trim(), {
+        id: acc.id,
+        account_type: acc.account_type || 'savings',
+      });
+    }
+  }
+
+  // 3. Query Gmail API
+  const messageRefs = await listGmailAlertMessages(accessToken, afterUnixSec);
+
+  let emailsProcessed = 0;
+  let transactionsAdded = 0;
+  let errorsCount = 0;
+
+  // 4 & 5. Fetch & parse each message -> dedup -> categorise -> insert
+  for (const ref of messageRefs) {
+    emailsProcessed++;
+    try {
+      const fullMsg = await fetchFullGmailMessage(accessToken, ref.id);
+      const outcome = parseAlertEmail(fullMsg);
+
+      if (outcome.type === 'error') {
+        errorsCount++;
+        await serviceSupabase.from('email_parse_errors').insert({
+          user_id: userId,
+          gmail_msg_id: ref.id,
+          from_address: outcome.fromAddress,
+          subject: outcome.subject,
+          error_reason: outcome.reason,
+          raw_snippet: truncate200(outcome.snippet),
+        });
+        continue;
+      }
+
+      // Match account by last4
+      const matchedAccount = accountByLast4.get(outcome.last4);
+      if (!matchedAccount) {
+        errorsCount++;
+        await serviceSupabase.from('email_parse_errors').insert({
+          user_id: userId,
+          gmail_msg_id: ref.id,
+          from_address: outcome.fromAddress,
+          subject: outcome.subject,
+          error_reason: `No account matched last4 ${outcome.last4}`,
+          raw_snippet: truncate200(
+            outcome.type === 'tx' ? outcome.rawDesc : `Balance alert Rs.${outcome.balanceAfter}`
+          ),
+        });
+        continue;
+      }
+
+      // Balance alert: update accounts.current_balance ONLY
+      if (outcome.type === 'balance') {
+        if (outcome.balanceAfter !== null && outcome.balanceAfter !== undefined) {
+          await serviceSupabase
+            .from('accounts')
+            .update({
+              current_balance: outcome.balanceAfter,
+              updated_at: new Date().toISOString(),
+            })
+            .eq('id', matchedAccount.id)
+            .eq('user_id', userId);
+        }
+        continue;
+      }
+
+      // Transaction dedup check (UPI / IMPS ref)
+      if (outcome.upiRef) {
+        const { data: existingUpi } = await serviceSupabase
+          .from('transactions')
+          .select('id')
+          .eq('upi_ref_no', outcome.upiRef)
+          .eq('user_id', userId)
+          .limit(1)
+          .maybeSingle();
+
+        if (existingUpi) {
+          continue; // Silent dedup skip
+        }
+      } else if (outcome.impsRef) {
+        const { data: existingImps } = await serviceSupabase
+          .from('transactions')
+          .select('id')
+          .eq('imps_ref_no', outcome.impsRef)
+          .eq('user_id', userId)
+          .limit(1)
+          .maybeSingle();
+
+        if (existingImps) {
+          continue; // Silent dedup skip
+        }
+      }
+
+      // Step 6: Rules BEFORE AI categorisation
+      const debit = outcome.direction === 'debit' ? outcome.amount : null;
+      const credit = outcome.direction === 'credit' ? outcome.amount : null;
+      let txnType: 'expense' | 'income' | 'transfer' | 'refund' =
+        outcome.direction === 'debit' ? 'expense' : 'income';
+      let categoryId: string | null = null;
+      let workspaceId: string | null = null;
+      let tags: string[] | null = null;
+      let status: 'confirmed' | 'review' = 'review';
+
+      const matchedRule = (rules || []).find((r: any) => {
+        if (r.match_field === 'description') {
+          return outcome.payee.toLowerCase().includes(String(r.match_value || '').toLowerCase());
+        }
+        return false;
+      });
+
+      if (matchedRule) {
+        if (matchedRule.set_category) categoryId = matchedRule.set_category;
+        if (matchedRule.set_workspace) workspaceId = matchedRule.set_workspace;
+        if (matchedRule.set_txn_type) txnType = matchedRule.set_txn_type;
+        if (matchedRule.set_tags && Array.isArray(matchedRule.set_tags) && matchedRule.set_tags.length > 0) {
+          tags = [...matchedRule.set_tags];
+        }
+        status = 'confirmed';
+      } else if (aiEnabled && geminiKey && (categories || []).length > 0) {
+        try {
+          const aiPayload = {
+            payee_name: maskPayeeForAI(outcome.payee, ownerName) || 'Merchant',
+            amount: outcome.amount,
+            method: outcome.method,
+            account_type: matchedAccount.account_type,
+          };
+          const catList = (categories || []).map((c: any) => ({
+            id: c.id,
+            name: c.name,
+            type: c.is_income ? 'income' : 'expense',
+          }));
+
+          const prompt = `Categorise this single Indian bank transaction into one of the provided categories. Return ONLY valid JSON: { "category_id": "<id_or_null>", "confidence": <0.0_to_1.0> }\nCategories: ${JSON.stringify(catList)}\nTransaction: ${JSON.stringify(aiPayload)}`;
+          const gRes = await fetch(
+            `https://generativelanguage.googleapis.com/v1beta/models/${flashModel}:generateContent?key=${encodeURIComponent(geminiKey)}`,
+            {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                contents: [{ parts: [{ text: prompt }] }],
+                generationConfig: { responseMimeType: 'application/json' },
+              }),
+            }
+          );
+          if (gRes.ok) {
+            const gJson = await gRes.json();
+            const txt = gJson?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+            const cleaned = txt.replace(/```(?:json)?/gi, '').replace(/```/g, '').trim();
+            const parsed = JSON.parse(cleaned) as { category_id?: string | null; confidence?: number };
+            if (parsed.category_id && (categories || []).some((c: any) => c.id === parsed.category_id)) {
+              categoryId = parsed.category_id;
+              status = (parsed.confidence || 0) > 0.75 ? 'confirmed' : 'review';
+            }
+          }
+        } catch {
+          // Fall back gracefully
+        }
+      }
+
+      // Step 7: Insert transaction
+      const { data: insertedTx, error: insertErr } = await serviceSupabase
+        .from('transactions')
+        .insert({
+          user_id: userId,
+          account_id: matchedAccount.id,
+          txn_date: outcome.date,
+          description: outcome.payee,
+          raw_description: outcome.rawDesc,
+          debit,
+          credit,
+          balance: outcome.balanceAfter,
+          balance_after: outcome.balanceAfter,
+          reference_number: outcome.upiRef || outcome.impsRef,
+          upi_ref_no: outcome.upiRef,
+          imps_ref_no: outcome.impsRef,
+          source: 'gmail_auto',
+          status,
+          category_id: categoryId,
+          workspace_id: workspaceId,
+          txn_type: txnType,
+          is_transfer: false,
+          is_self_transfer: false,
+          is_manual: false,
+          tags,
+        })
+        .select('id')
+        .single();
+
+      if (insertErr || !insertedTx) {
+        errorsCount++;
+        await serviceSupabase.from('email_parse_errors').insert({
+          user_id: userId,
+          gmail_msg_id: ref.id,
+          from_address: outcome.fromAddress,
+          subject: outcome.subject,
+          error_reason: `DB insert error: ${insertErr?.message || 'unknown'}`,
+          raw_snippet: truncate200(outcome.rawDesc),
+        });
+        continue;
+      }
+
+      transactionsAdded++;
+
+      // Step 8: Update account current_balance if balanceAfter was extracted
+      if (outcome.balanceAfter !== null && outcome.balanceAfter !== undefined) {
+        await serviceSupabase
+          .from('accounts')
+          .update({
+            current_balance: outcome.balanceAfter,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', matchedAccount.id)
+          .eq('user_id', userId);
+      }
+    } catch (msgErr: any) {
+      errorsCount++;
+      await serviceSupabase.from('email_parse_errors').insert({
+        user_id: userId,
+        gmail_msg_id: ref.id,
+        from_address: 'unknown',
+        subject: 'Fetch error',
+        error_reason: msgErr?.message || 'Failed to fetch/parse message',
+        raw_snippet: truncate200(String(msgErr)),
+      });
+    }
+  }
+
+  const nowIso = new Date().toISOString();
+  await Promise.all([
+    serviceSupabase.from('gmail_sync_log').insert({
+      user_id: userId,
+      last_synced_at: nowIso,
+      emails_processed: emailsProcessed,
+      transactions_added: transactionsAdded,
+      errors_count: errorsCount,
+    }),
+    serviceSupabase.from('profiles').update({ gmail_last_synced: nowIso }).eq('user_id', userId),
+  ]);
+
+  return {
+    emails_processed: emailsProcessed,
+    transactions_added: transactionsAdded,
+    errors_count: errorsCount,
+    last_synced_at: nowIso,
+  };
 }
 
 // --- Inlined Cors & Auth Helpers ---
