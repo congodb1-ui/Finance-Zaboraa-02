@@ -15,7 +15,7 @@ declare const Deno: {
 };
 
 const GMAIL_ALERT_QUERY =
-  'from:(alerts@hdfcbank.bank.in OR alerts@hdfcbank.net OR mahaalert@mahabank.co.in OR mahaalerts@bankofmaharashtra.bank.in OR HO.starsandesh@bankofindia.co.in)';
+  'from:(alerts@hdfcbank.bank.in OR alerts@hdfcbank.net OR mahaalert@mahabank.co.in OR mahaalerts@bankofmaharashtra.bank.in OR HO.starsandesh@bankofindia.co.in) (subject:(UPI OR RTGS OR NEFT OR IMPS OR EFT OR credited OR debited OR "account credit" OR "account debit" OR "RTGS Credit" OR "NEFT Credit" OR "IMPS Credit"))';
 
 const MONTH_MAP: Record<string, string> = {
   JAN: '01',
@@ -186,39 +186,73 @@ function parseAlertEmail(msg: any) {
     return { type: 'tx' as const, bank: 'HDFC', method: 'UPI' as const, direction: 'debit' as const, amount, last4, date, payee, upiRef, impsRef: null, balanceAfter: null, rawDesc: upiRef ? `UPI/${upiRef}/${payee}` : `UPI/${payee}`, fromAddress, subject };
   }
 
-  if (fromAddress === 'alerts@hdfcbank.net' && /added to your account/i.test(body)) {
-    const amount = parseAmount(body.match(/Rs\.?\s*INR\s*([\d,]+\.?\d*)\s+has been successfully added/i)?.[1]);
-    const last4 = body.match(/account ending (?:XX)?(\d{4})/i)?.[1] || '';
-    if (!amount || !last4) {
-      return { type: 'error' as const, fromAddress, subject, reason: 'HDFC_IMPS_CREDIT missing amount/last4', snippet: truncate200(body) };
+  if (fromAddress === 'alerts@hdfcbank.net' || fromAddress === 'alerts@hdfcbank.bank.in') {
+    if (/rtgs/i.test(body)) {
+      const isCredit = /credited|added to/i.test(body) || /credited|credit/i.test(subject);
+      const amount = parseAmount(body.match(/(?:Rs\.?\s*INR|Rs\.?|INR)\s*([\d,]+\.?\d*)/i)?.[1]);
+      const last4 = body.match(/account ending (?:XX)?(\d{4})/i)?.[1] || body.match(/A\/c (?:No )?[Xx*]*(\d{4})/i)?.[1] || '';
+      if (!amount || !last4) {
+        return { type: 'error' as const, fromAddress, subject, reason: 'HDFC_RTGS missing amount/last4', snippet: truncate200(body) };
+      }
+      const utrMatch = body.match(/(?:UTR|Ref(?:erence)?(?:\s+No)?)[.:\s]+([A-Z0-9]{12,26})/i) || body.match(/RTGS[-\s]+(?:CR|DR)?[-\s]*[A-Z0-9]*[-\s]+.*?([A-Z0-9]{16,26})/i);
+      const utrRef = utrMatch?.[1]?.trim() || null;
+      const balanceAfter = parseAmount(body.match(/available balance.*?(?:Rs\.?\s*INR|Rs\.?|INR)\s*([\d,]+\.?\d*)/i)?.[1]);
+      const date = normalizeDate(body.match(/on (\d{2}-[A-Z]{3}-\d{4}|\d{2}[-\/]\d{2}[-\/]\d{2,4})/i)?.[1], msg.internalDate);
+      const senderMatch = body.match(/(?:from|by|to)\s+([A-Za-z0-9 .&-]+?)(?:\s+with\s+UTR|\s+having|\s+towards|\.|\s*$)/i);
+      const payee = senderMatch?.[1]?.trim() || (isCredit ? 'RTGS Sender' : 'RTGS Recipient');
+      return { type: 'tx' as const, bank: 'HDFC', method: 'RTGS' as const, direction: isCredit ? ('credit' as const) : ('debit' as const), amount, last4, date, payee, upiRef: null, impsRef: null, rtgsRef: utrRef, refNo: utrRef, balanceAfter, rawDesc: utrRef ? `RTGS-${utrRef}-${payee}` : `RTGS-${payee}`, fromAddress, subject };
     }
-    const impsRef = body.match(/IMPS-(\d+)-/i)?.[1] || null;
-    const payee = body.match(/IMPS-\d+-([^-]+)-/i)?.[1]?.trim() || 'IMPS Sender';
-    const balanceAfter = parseAmount(body.match(/available balance.*?(?:Rs\.?\s*INR|Rs\.?|INR)\s*([\d,]+\.?\d*)/i)?.[1]);
-    const date = normalizeDate(body.match(/on (\d{2}-[A-Z]{3}-\d{4})/i)?.[1], msg.internalDate);
-    return { type: 'tx' as const, bank: 'HDFC', method: 'IMPS' as const, direction: 'credit' as const, amount, last4, date, payee, upiRef: null, impsRef, balanceAfter, rawDesc: impsRef ? `IMPS-${impsRef}-${payee}` : `IMPS-${payee}`, fromAddress, subject };
-  }
 
-  if (fromAddress === 'alerts@hdfcbank.net' && /deducted from your account/i.test(body)) {
-    const amount = parseAmount(body.match(/Rs\.?\s*INR\s*([\d,]+\.?\d*)\s+is deducted/i)?.[1]);
-    const last4 = body.match(/account ending (?:XX)?(\d{4})/i)?.[1] || '';
-    if (!amount || !last4) {
-      return { type: 'error' as const, fromAddress, subject, reason: 'HDFC_IMPS_DEBIT missing amount/last4', snippet: truncate200(body) };
+    if (/neft/i.test(body)) {
+      const isCredit = /credited|added to/i.test(body) || /credited|credit/i.test(subject);
+      const amount = parseAmount(body.match(/(?:Rs\.?\s*INR|Rs\.?|INR)\s*([\d,]+\.?\d*)/i)?.[1]);
+      const last4 = body.match(/account ending (?:XX)?(\d{4})/i)?.[1] || body.match(/A\/c (?:No )?[Xx*]*(\d{4})/i)?.[1] || '';
+      if (!amount || !last4) {
+        return { type: 'error' as const, fromAddress, subject, reason: 'HDFC_NEFT missing amount/last4', snippet: truncate200(body) };
+      }
+      const neftMatch = body.match(/(?:NEFT|UTR|Ref(?:erence)?(?:\s+No)?)[.:\s]+([A-Z0-9]{10,22})/i);
+      const neftRef = neftMatch?.[1]?.trim() || null;
+      const balanceAfter = parseAmount(body.match(/available balance.*?(?:Rs\.?\s*INR|Rs\.?|INR)\s*([\d,]+\.?\d*)/i)?.[1]);
+      const date = normalizeDate(body.match(/on (\d{2}-[A-Z]{3}-\d{4}|\d{2}[-\/]\d{2}[-\/]\d{2,4})/i)?.[1], msg.internalDate);
+      const senderMatch = body.match(/(?:from|by|to)\s+([A-Za-z0-9 .&-]+?)(?:\s+with\s+UTR|\s+having|\s+towards|\.|\s*$)/i);
+      const payee = senderMatch?.[1]?.trim() || (isCredit ? 'NEFT Sender' : 'NEFT Recipient');
+      return { type: 'tx' as const, bank: 'HDFC', method: 'NEFT' as const, direction: isCredit ? ('credit' as const) : ('debit' as const), amount, last4, date, payee, upiRef: null, impsRef: null, neftRef, refNo: neftRef, balanceAfter, rawDesc: neftRef ? `NEFT-${neftRef}-${payee}` : `NEFT-${payee}`, fromAddress, subject };
     }
-    const impsRef = body.match(/IMPS-(\d+)-/i)?.[1] || null;
-    const payee = (body.match(/added to IMPS-\d+-([^-]+)-/i)?.[1] || body.match(/IMPS-\d+-([^-]+)-/i)?.[1] || 'IMPS Recipient').trim();
-    const balanceAfter = parseAmount(body.match(/available balance.*?(?:Rs\.?\s*INR|Rs\.?|INR)\s*([\d,]+\.?\d*)/i)?.[1]);
-    const date = normalizeDate(body.match(/on (\d{2}-[A-Z]{3}-\d{4})/i)?.[1], msg.internalDate);
-    return { type: 'tx' as const, bank: 'HDFC', method: 'IMPS' as const, direction: 'debit' as const, amount, last4, date, payee, upiRef: null, impsRef, balanceAfter, rawDesc: impsRef ? `IMPS-${impsRef}-${payee}` : `IMPS-${payee}`, fromAddress, subject };
-  }
 
-  if (fromAddress === 'alerts@hdfcbank.net' && /available balance/i.test(body)) {
-    const last4 = body.match(/account ending (?:XX)?(\d{4})/i)?.[1] || '';
-    const balanceAfter = parseAmount(body.match(/available balance.*?(?:Rs\.?|INR)\s*([\d,]+\.?\d*)/i)?.[1]);
-    if (!last4 || balanceAfter === null) {
-      return { type: 'error' as const, fromAddress, subject, reason: 'HDFC_BALANCE_ALERT missing last4/balance', snippet: truncate200(body) };
+    if (/added to your account/i.test(body)) {
+      const amount = parseAmount(body.match(/Rs\.?\s*INR\s*([\d,]+\.?\d*)\s+has been successfully added/i)?.[1]);
+      const last4 = body.match(/account ending (?:XX)?(\d{4})/i)?.[1] || '';
+      if (!amount || !last4) {
+        return { type: 'error' as const, fromAddress, subject, reason: 'HDFC_IMPS_CREDIT missing amount/last4', snippet: truncate200(body) };
+      }
+      const impsRef = body.match(/IMPS-(\d+)-/i)?.[1] || null;
+      const payee = body.match(/IMPS-\d+-([^-]+)-/i)?.[1]?.trim() || 'IMPS Sender';
+      const balanceAfter = parseAmount(body.match(/available balance.*?(?:Rs\.?\s*INR|Rs\.?|INR)\s*([\d,]+\.?\d*)/i)?.[1]);
+      const date = normalizeDate(body.match(/on (\d{2}-[A-Z]{3}-\d{4})/i)?.[1], msg.internalDate);
+      return { type: 'tx' as const, bank: 'HDFC', method: 'IMPS' as const, direction: 'credit' as const, amount, last4, date, payee, upiRef: null, impsRef, refNo: impsRef, balanceAfter, rawDesc: impsRef ? `IMPS-${impsRef}-${payee}` : `IMPS-${payee}`, fromAddress, subject };
     }
-    return { type: 'balance' as const, last4, balanceAfter, fromAddress, subject };
+
+    if (/deducted from your account/i.test(body)) {
+      const amount = parseAmount(body.match(/Rs\.?\s*INR\s*([\d,]+\.?\d*)\s+is deducted/i)?.[1]);
+      const last4 = body.match(/account ending (?:XX)?(\d{4})/i)?.[1] || '';
+      if (!amount || !last4) {
+        return { type: 'error' as const, fromAddress, subject, reason: 'HDFC_IMPS_DEBIT missing amount/last4', snippet: truncate200(body) };
+      }
+      const impsRef = body.match(/IMPS-(\d+)-/i)?.[1] || null;
+      const payee = (body.match(/added to IMPS-\d+-([^-]+)-/i)?.[1] || body.match(/IMPS-\d+-([^-]+)-/i)?.[1] || 'IMPS Recipient').trim();
+      const balanceAfter = parseAmount(body.match(/available balance.*?(?:Rs\.?\s*INR|Rs\.?|INR)\s*([\d,]+\.?\d*)/i)?.[1]);
+      const date = normalizeDate(body.match(/on (\d{2}-[A-Z]{3}-\d{4})/i)?.[1], msg.internalDate);
+      return { type: 'tx' as const, bank: 'HDFC', method: 'IMPS' as const, direction: 'debit' as const, amount, last4, date, payee, upiRef: null, impsRef, refNo: impsRef, balanceAfter, rawDesc: impsRef ? `IMPS-${impsRef}-${payee}` : `IMPS-${payee}`, fromAddress, subject };
+    }
+
+    if (/available balance/i.test(body)) {
+      const last4 = body.match(/account ending (?:XX)?(\d{4})/i)?.[1] || '';
+      const balanceAfter = parseAmount(body.match(/available balance.*?(?:Rs\.?|INR)\s*([\d,]+\.?\d*)/i)?.[1]);
+      if (!last4 || balanceAfter === null) {
+        return { type: 'error' as const, fromAddress, subject, reason: 'HDFC_BALANCE_ALERT missing last4/balance', snippet: truncate200(body) };
+      }
+      return { type: 'balance' as const, last4, balanceAfter, fromAddress, subject };
+    }
   }
 
   if (fromAddress === 'mahaalert@mahabank.co.in' || fromAddress === 'mahaalerts@bankofmaharashtra.bank.in') {
@@ -387,11 +421,15 @@ async function gmailSyncForUser(supabase: any, userId: string) {
       continue;
     }
 
-    if (parsed.upiRef) {
-      const { data: dup } = await supabase.from('transactions').select('id').eq('upi_ref_no', parsed.upiRef).eq('user_id', userId).limit(1).maybeSingle();
-      if (dup) continue;
-    } else if (parsed.impsRef) {
-      const { data: dup } = await supabase.from('transactions').select('id').eq('imps_ref_no', parsed.impsRef).eq('user_id', userId).limit(1).maybeSingle();
+    const refNum = parsed.upiRef || parsed.impsRef || (parsed as any).rtgsRef || (parsed as any).neftRef || (parsed as any).refNo || null;
+    if (refNum) {
+      const { data: dup } = await supabase
+        .from('transactions')
+        .select('id')
+        .eq('user_id', userId)
+        .or(`reference_number.eq.${refNum},upi_ref_no.eq.${refNum},imps_ref_no.eq.${refNum}`)
+        .limit(1)
+        .maybeSingle();
       if (dup) continue;
     }
 
@@ -457,7 +495,7 @@ async function gmailSyncForUser(supabase: any, userId: string) {
       credit,
       balance: parsed.balanceAfter,
       balance_after: parsed.balanceAfter,
-      reference_number: parsed.upiRef || parsed.impsRef,
+      reference_number: refNum,
       upi_ref_no: parsed.upiRef,
       imps_ref_no: parsed.impsRef,
       source: 'gmail_auto',

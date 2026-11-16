@@ -4,6 +4,8 @@ import {
   parseHdfcImpsCredit,
   parseHdfcImpsDebit,
   parseHdfcUpiDebit,
+  parseHdfcRtgsAlert,
+  parseHdfcNeftAlert,
 } from './hdfc';
 import { parseBomImps } from './bom';
 import { parseBoiImps } from './boi';
@@ -123,16 +125,31 @@ export function identifyGmailEmailType(
   const from = extractEmailAddress(fromAddress);
   const normalizedBody = body || '';
 
-  if (from === 'alerts@hdfcbank.bank.in' && /is debited/i.test(normalizedBody)) {
-    return 'HDFC_UPI_DEBIT';
-  }
-
-  if (from === 'alerts@hdfcbank.net') {
+  if (
+    from === 'alerts@hdfcbank.bank.in' ||
+    from === 'alerts@hdfcbank.net'
+  ) {
+    if (/rtgs/i.test(normalizedBody)) {
+      return /credited|added to/i.test(normalizedBody)
+        ? 'HDFC_RTGS_CREDIT'
+        : 'HDFC_RTGS_DEBIT';
+    }
+    if (/neft/i.test(normalizedBody)) {
+      return /credited|added to/i.test(normalizedBody)
+        ? 'HDFC_NEFT_CREDIT'
+        : 'HDFC_NEFT_DEBIT';
+    }
+    if (/is debited/i.test(normalizedBody) && /upi/i.test(normalizedBody)) {
+      return 'HDFC_UPI_DEBIT';
+    }
     if (/added to your account/i.test(normalizedBody)) {
       return 'HDFC_IMPS_CREDIT';
     }
     if (/deducted from your account/i.test(normalizedBody)) {
       return 'HDFC_IMPS_DEBIT';
+    }
+    if (/is debited/i.test(normalizedBody)) {
+      return 'HDFC_UPI_DEBIT';
     }
     if (/available balance/i.test(normalizedBody)) {
       return 'HDFC_BALANCE_ALERT';
@@ -179,6 +196,24 @@ export function parseGmailTransactionEmail(message: GmailMessage): GmailParseOut
       });
     case 'HDFC_IMPS_DEBIT':
       return parseHdfcImpsDebit({
+        msgId: message.id,
+        fromAddress,
+        subject,
+        body,
+        internalDate: message.internalDate,
+      });
+    case 'HDFC_RTGS_CREDIT':
+    case 'HDFC_RTGS_DEBIT':
+      return parseHdfcRtgsAlert({
+        msgId: message.id,
+        fromAddress,
+        subject,
+        body,
+        internalDate: message.internalDate,
+      });
+    case 'HDFC_NEFT_CREDIT':
+    case 'HDFC_NEFT_DEBIT':
+      return parseHdfcNeftAlert({
         msgId: message.id,
         fromAddress,
         subject,

@@ -1,0 +1,438 @@
+export type BankTransactionType =
+  | 'UPI'
+  | 'RTGS'
+  | 'NEFT'
+  | 'IMPS'
+  | 'EFT'
+  | 'ATM'
+  | 'POS'
+  | 'CHQ'
+  | 'OTHER';
+
+export interface ParsedBankNarration {
+  description: string;
+  reference: string;
+  transactionType: BankTransactionType;
+}
+
+const PRESERVED_ACRONYMS = new Set([
+  'ATM',
+  'POS',
+  'UPI',
+  'IMPS',
+  'NEFT',
+  'RTGS',
+  'EFT',
+  'FT',
+  'INB',
+  'FD',
+  'RD',
+  'EMI',
+  'SI',
+  'ACH',
+  'NACH',
+  'GST',
+  'TDS',
+  'BBPS',
+  'HDFC',
+  'ICICI',
+  'SBI',
+  'PNB',
+  'BOB',
+  'IDFC',
+  'KOTAK',
+  'AXIS',
+  'NSE',
+  'BSE',
+  'CLI',
+  'LLP',
+  'PVT',
+  'LTD',
+]);
+
+/**
+ * Converts a string to Title Case while preserving financial/banking acronyms.
+ */
+export function toTitleCase(str: string): string {
+  if (!str) return '';
+  return str
+    .split(/\s+/)
+    .map((word) => {
+      if (!word) return '';
+      const cleanWord = word.replace(/[^a-zA-Z0-9]/g, '');
+      if (PRESERVED_ACRONYMS.has(cleanWord.toUpperCase())) {
+        return word.toUpperCase();
+      }
+      if (/^[A-Z0-9]{4,}/.test(cleanWord) && !/[a-z]/.test(word)) {
+        // Keep acronyms/all-caps codes intact if already uppercase
+        return word;
+      }
+      return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+    })
+    .join(' ')
+    .trim();
+}
+
+function cleanRef(ref?: string | null): string {
+  if (!ref) return '';
+  const trimmed = ref.trim();
+  // Strip leading zeros from numeric-only references
+  if (/^\d+$/.test(trimmed)) {
+    return trimmed.replace(/^0+/, '') || '0';
+  }
+  return trimmed;
+}
+
+const INVALID_STANDALONE_DESCRIPTIONS = new Set([
+  'CR',
+  'DR',
+  'RTGS',
+  'NEFT',
+  'IMPS',
+  'UPI',
+  'EFT',
+  'FT',
+  'INB',
+  'ATM',
+  'POS',
+  'CHQ',
+  'NA',
+  'N A',
+]);
+
+/**
+ * Single source of truth parser for Indian bank transaction narrations
+ * (PDF statement lines and bank email alert texts).
+ */
+export function parseBankNarration(
+  rawNarration: string,
+  rawChqRefCol?: string
+): ParsedBankNarration {
+  let text = (rawNarration || '').trim();
+  const fallbackRef = cleanRef(rawChqRefCol);
+
+  if (!text) {
+    return {
+      description: 'Bank Transaction',
+      reference: fallbackRef,
+      transactionType: 'OTHER',
+    };
+  }
+
+  // 1. Normalize line-breaks, mid-word line-breaks, and collapse whitespace
+  text = text.replace(/([a-zA-Z])-\s*\r?\n\s*([a-zA-Z])/g, '$1$2');
+  text = text.replace(/\r?\n|\r/g, ' ').replace(/\s{2,}/g, ' ').trim();
+
+  // Fix common PDF wrapped split words e.g. "LIM ITED" -> "LIMITED"
+  text = text.replace(/\bLIM\s+ITED\b/gi, 'LIMITED');
+
+  // ==========================================
+  // 2. RTGS
+  // Format: RTGS CR-<BANK_CODE>-<NAME>-<NAME>-<UTR> or RTGS DR-...
+  // ==========================================
+  if (/^RTGS[\/\-\s]/i.test(text)) {
+    // Strip RTGS prefix and direction if present
+    let working = text.replace(/^RTGS[\/\-\s]+(?:CR|DR)?[\/\-\s]*/i, '').trim();
+
+    // Look for bank code / IFSC pattern at start: [A-Z]{4}[0-9]{7} or [A-Z]{4}0[A-Z0-9]{6}
+    const bankCodeMatch = working.match(/^([A-Z]{4}[0-9A-Z]{7})[\/\-\s]+/i);
+    if (bankCodeMatch) {
+      working = working.slice(bankCodeMatch[0].length).trim();
+    }
+
+    // Split remaining tokens by hyphen
+    const segments = working.split('-').map((s) => s.trim()).filter(Boolean);
+
+    let extractedRef = fallbackRef;
+    let descParts = [...segments];
+
+    // If last segment looks like a UTR (12+ alphanumeric or starts with bank code e.g. KKBKR...)
+    if (segments.length >= 2) {
+      const lastSeg = segments[segments.length - 1];
+      const cleanedLastSeg = lastSeg.replace(/\s+/g, '');
+      if (
+        /^[A-Z0-9]{12,26}$/i.test(cleanedLastSeg) ||
+        /^\d{12}$/.test(cleanedLastSeg) ||
+        (fallbackRef && cleanedLastSeg === fallbackRef)
+      ) {
+        extractedRef = cleanedLastSeg;
+        descParts = segments.slice(0, -1);
+      }
+    } else if (segments.length === 1) {
+      // Check if reference is attached or if refCol has it
+      const trailingRefMatch = working.match(/[-/\s]([A-Z0-9]{16,26})$/i);
+      if (trailingRefMatch) {
+        extractedRef = trailingRefMatch[1].replace(/\s+/g, '');
+        descParts = [working.slice(0, -trailingRefMatch[0].length).trim()];
+      }
+    }
+
+    const description = descParts.join(' - ').trim();
+
+    if (description && !INVALID_STANDALONE_DESCRIPTIONS.has(description.toUpperCase())) {
+      return {
+        description: description,
+        reference: extractedRef || fallbackRef,
+        transactionType: 'RTGS',
+      };
+    }
+  }
+
+  // ==========================================
+  // 3. NEFT
+  // Format: NEFT CR-<BANK_CODE>-<MERCHANT>-<UTR> or NEFT-<UTR>-<MERCHANT>
+  // ==========================================
+  if (/^NEFT[\/\-\s]/i.test(text)) {
+    let working = text.replace(/^NEFT[\/\-\s]+(?:CR|DR)?[\/\-\s]*/i, '').trim();
+
+    const bankCodeMatch = working.match(/^([A-Z]{4}[0-9A-Z]{7})[\/\-\s]+/i);
+    if (bankCodeMatch) {
+      working = working.slice(bankCodeMatch[0].length).trim();
+    }
+
+    const segments = working.split('-').map((s) => s.trim()).filter(Boolean);
+    let extractedRef = fallbackRef;
+    let descParts = [...segments];
+
+    if (segments.length >= 2) {
+      const firstSeg = segments[0].replace(/\s+/g, '');
+      const lastSeg = segments[segments.length - 1];
+      const cleanedLastSeg = lastSeg.replace(/\s+/g, '');
+
+      // Format: NEFT-<UTR>-<MERCHANT>
+      if (/^(?:N\d{10,20}|\d{12}|[A-Z0-9]{12,22})$/i.test(firstSeg) && !/^[A-Z\s]+$/.test(firstSeg)) {
+        extractedRef = firstSeg;
+        descParts = segments.slice(1);
+      } else if (
+        /^(?:N\d{10,20}|\d{12}|[A-Z0-9]{12,22})$/i.test(cleanedLastSeg) ||
+        (fallbackRef && cleanedLastSeg === fallbackRef)
+      ) {
+        extractedRef = cleanedLastSeg;
+        descParts = segments.slice(0, -1);
+      }
+    }
+
+    const description = descParts.join(' - ').trim();
+    if (description && !INVALID_STANDALONE_DESCRIPTIONS.has(description.toUpperCase())) {
+      return {
+        description: description,
+        reference: extractedRef || fallbackRef,
+        transactionType: 'NEFT',
+      };
+    }
+  }
+
+  // ==========================================
+  // 4. IMPS
+  // Format: IMPS-<12-digit UTR>-<MERCHANT>-<BANK> or IMPS CR-<MERCHANT>-<UTR>
+  // ==========================================
+  if (/^IMPS[\/\-\s]/i.test(text)) {
+    let working = text.replace(/^IMPS[\/\-\s]+(?:CR|DR)?[\/\-\s]*/i, '').trim();
+
+    const segments = working.split('-').map((s) => s.trim()).filter(Boolean);
+    let extractedRef = fallbackRef;
+    let desc = '';
+
+    if (segments.length >= 2) {
+      // Check if first segment is 12-digit UTR
+      if (/^\d{12}$/.test(segments[0])) {
+        extractedRef = segments[0];
+        desc = segments[1];
+      } else {
+        const lastSeg = segments[segments.length - 1];
+        if (/^\d{12}$/.test(lastSeg) || /^[A-Z0-9]{10,22}$/i.test(lastSeg)) {
+          extractedRef = lastSeg;
+          desc = segments.slice(0, -1).join(' - ');
+        } else {
+          desc = segments.join(' - ');
+        }
+      }
+    } else {
+      desc = working;
+    }
+
+    if (desc && !INVALID_STANDALONE_DESCRIPTIONS.has(desc.toUpperCase())) {
+      return {
+        description: desc,
+        reference: extractedRef || fallbackRef,
+        transactionType: 'IMPS',
+      };
+    }
+  }
+
+  // ==========================================
+  // 5. EFT / FT / INB
+  // ==========================================
+  if (/^(?:EFT|FT|INB)[\/\-\s]/i.test(text)) {
+    let working = text.replace(/^(?:EFT|FT|INB)[\/\-\s]+/i, '').trim();
+    const segments = working.split('-').map((s) => s.trim()).filter(Boolean);
+    let extractedRef = fallbackRef;
+    let desc = working;
+
+    if (segments.length >= 2) {
+      const lastSeg = segments[segments.length - 1];
+      if (/^\d{6,22}$/.test(lastSeg) || /^[A-Z0-9]{8,22}$/i.test(lastSeg)) {
+        extractedRef = lastSeg;
+        desc = segments.slice(0, -1).join(' - ');
+      }
+    }
+
+    return {
+      description: desc || 'EFT Transfer',
+      reference: extractedRef || fallbackRef,
+      transactionType: 'EFT',
+    };
+  }
+
+  // ==========================================
+  // 6. ATM / ATW
+  // ==========================================
+  if (/^(?:ATM|ATW)[\/\-\s]/i.test(text)) {
+    let working = text.replace(/^(?:ATM|ATW)[\/\-\s]+/i, '').trim();
+    const utrMatch = working.match(/[-/\s](\d{10,16})$/);
+    let extractedRef = fallbackRef;
+    if (utrMatch) {
+      extractedRef = utrMatch[1];
+      working = working.slice(0, -utrMatch[0].length).trim();
+    }
+    return {
+      description: working || 'ATM Withdrawal',
+      reference: extractedRef || fallbackRef,
+      transactionType: 'ATM',
+    };
+  }
+
+  // ==========================================
+  // 7. POS
+  // ==========================================
+  if (/^POS[\/\-\s]/i.test(text)) {
+    let working = text.replace(/^POS[\/\-\s]+/i, '').trim();
+    const segments = working.split('-').map((s) => s.trim()).filter(Boolean);
+    let extractedRef = fallbackRef;
+    let desc = working;
+
+    if (segments.length >= 3) {
+      const lastSeg = segments[segments.length - 1];
+      if (/^\d{6,22}$/.test(lastSeg) || /^[A-Z0-9]{8,22}$/i.test(lastSeg)) {
+        extractedRef = lastSeg;
+        desc = segments[0];
+      }
+    } else if (segments.length === 2) {
+      const lastSeg = segments[segments.length - 1];
+      if (/^\d{6,22}$/.test(lastSeg) || /^[A-Z0-9]{8,22}$/i.test(lastSeg)) {
+        extractedRef = lastSeg;
+        desc = segments[0];
+      }
+    } else {
+      const utrMatch = working.match(/[-/\s](\d{10,16})$/);
+      if (utrMatch) {
+        extractedRef = utrMatch[1];
+        desc = working.slice(0, -utrMatch[0].length).trim();
+      }
+    }
+
+    return {
+      description: desc || 'POS Purchase',
+      reference: extractedRef || fallbackRef,
+      transactionType: 'POS',
+    };
+  }
+
+  // ==========================================
+  // 8. CHQ
+  // ==========================================
+  if (/^CHQ[\/\-\s]/i.test(text)) {
+    let working = text.replace(/^CHQ[\/\-\s]+/i, '').trim();
+    const chqMatch = working.match(/^(\d+)[\/\-\s]+(.*)$/);
+    let extractedRef = fallbackRef;
+    let payee = working;
+    if (chqMatch) {
+      extractedRef = cleanRef(chqMatch[1]);
+      payee = chqMatch[2].trim();
+    }
+    return {
+      description: payee || 'Cheque Payment',
+      reference: extractedRef || fallbackRef,
+      transactionType: 'CHQ',
+    };
+  }
+
+  // ==========================================
+  // 9. UPI
+  // Format: UPI-<NAME>-<MASKED>@BANK-<IFSC>-<UTR>-<SUFFIX>
+  // ==========================================
+  if (/^UPI[\/\-\s]/i.test(text)) {
+    let working = text.replace(/^UPI[\/\-\s]+/i, '').trim();
+
+    // 1. Extract 12-digit UTR
+    let extractedRef = fallbackRef;
+    const utrMatch = text.match(/(?:^|[-/\s])(\d{12})(?=$|[-/\s])/);
+    if (utrMatch) {
+      extractedRef = utrMatch[1];
+    }
+
+    // 2. Strip noise phrases
+    working = working.replace(
+      /[-/\s]*(SENT USING PAYTM U|SENT USING PAYTM|SENT USING PAYT M U|SENT USING GPAY|SENT USING PHONEPE|SENT USING BHIM|VIA NETBANKING|INTERNET BANKING|MOBILE BANKING|UPI MANDATE|PAY TO BHARATPE ME|VERIFIED PAYTM MER|EXECUTION TEST)[-/\s]*/gi,
+      ''
+    );
+
+    // 3. Strip VPA, masked accounts, IFSC, and UTR suffixes
+    const splitMatch = working.match(
+      /^(.*?)(?:-[*]{3,}|-[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+|-[A-Z]{4}0[A-Z0-9]{6}|-\d{12}|@[a-zA-Z0-9.-]+)/
+    );
+    if (splitMatch && splitMatch[1] && splitMatch[1].trim().length > 0) {
+      working = splitMatch[1];
+    }
+
+    // Clean trailing hyphens, slashes, spaces, and "-NA" or "NA"
+    working = working.replace(/-(?:NA|N A)$/i, '');
+    working = working.replace(/[-/\s]+$/, '').replace(/^[-/\s]+/, '').trim();
+
+    if (!working || INVALID_STANDALONE_DESCRIPTIONS.has(working.toUpperCase())) {
+      working = 'UPI Payment';
+    }
+
+    return {
+      description: working,
+      reference: extractedRef || fallbackRef,
+      transactionType: 'UPI',
+    };
+  }
+
+  // ==========================================
+  // 10. NACH / ACH / SI / EMI / MANDATE
+  // ==========================================
+  if (/^(?:NACH|ACH|SI|EMI|MANDATE)[\/\-\s]/i.test(text)) {
+    let working = text.replace(/^(?:NACH|ACH|SI|EMI|MANDATE)[\/\-\s]+/i, '').trim();
+    const splitMatch = working.match(/^(.*?)(?:-[*]{3,}|-\d{10,})/);
+    if (splitMatch && splitMatch[1]) {
+      working = splitMatch[1].trim();
+    }
+    return {
+      description: working || 'Mandate Payment',
+      reference: fallbackRef,
+      transactionType: 'OTHER',
+    };
+  }
+
+  // ==========================================
+  // 11. Fallback (no recognized prefix)
+  // ==========================================
+  let extractedRef = fallbackRef;
+  const utrMatch = text.match(/(?:^|[-/\s])(\d{12})(?=$|[-/\s])/);
+  if (utrMatch) {
+    extractedRef = utrMatch[1];
+  }
+
+  let desc = text.slice(0, 100).trim();
+  if (!desc || INVALID_STANDALONE_DESCRIPTIONS.has(desc.toUpperCase())) {
+    desc = 'Bank Transaction';
+  }
+
+  return {
+    description: desc,
+    reference: extractedRef || fallbackRef,
+    transactionType: 'OTHER',
+  };
+}

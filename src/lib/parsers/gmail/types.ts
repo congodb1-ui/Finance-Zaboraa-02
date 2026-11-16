@@ -1,13 +1,20 @@
 export type GmailEmailKind =
   | 'HDFC_UPI_DEBIT'
+  | 'HDFC_UPI_CREDIT'
   | 'HDFC_IMPS_CREDIT'
   | 'HDFC_IMPS_DEBIT'
+  | 'HDFC_RTGS_CREDIT'
+  | 'HDFC_RTGS_DEBIT'
+  | 'HDFC_NEFT_CREDIT'
+  | 'HDFC_NEFT_DEBIT'
+  | 'HDFC_EFT_CREDIT'
+  | 'HDFC_EFT_DEBIT'
   | 'HDFC_BALANCE_ALERT'
   | 'BOM_IMPS'
   | 'BOI_IMPS'
   | 'UNKNOWN';
 
-export type GmailTransferMethod = 'UPI' | 'IMPS' | 'BALANCE_ALERT';
+export type GmailTransferMethod = 'UPI' | 'IMPS' | 'RTGS' | 'NEFT' | 'EFT' | 'BALANCE_ALERT';
 
 export interface GmailHeader {
   name: string;
@@ -47,8 +54,8 @@ export interface ParsedEmailTransaction {
   record_type: 'transaction';
   gmail_msg_id: string;
   from_address: string;
-  bank: 'HDFC' | 'BOM' | 'BOI';
-  method: 'UPI' | 'IMPS';
+  bank: string;
+  method: 'UPI' | 'IMPS' | 'RTGS' | 'NEFT' | 'EFT';
   direction: 'debit' | 'credit';
   amount: number;
   account_last4: string;
@@ -57,6 +64,9 @@ export interface ParsedEmailTransaction {
   payee_vpa: string | null;
   upi_ref_no: string | null;
   imps_ref_no: string | null;
+  rtgs_ref_no?: string | null;
+  neft_ref_no?: string | null;
+  reference_number?: string | null;
   balance_after: number | null;
   description_raw: string;
 }

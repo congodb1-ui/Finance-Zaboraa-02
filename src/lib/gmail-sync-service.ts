@@ -20,12 +20,12 @@ export interface GmailSyncResult {
 }
 
 const GMAIL_ALERT_QUERY_BASE =
-  'from:(alerts@hdfcbank.bank.in OR alerts@hdfcbank.net OR mahaalert@mahabank.co.in OR mahaalerts@bankofmaharashtra.bank.in OR HO.starsandesh@bankofindia.co.in)';
+  'from:(alerts@hdfcbank.bank.in OR alerts@hdfcbank.net OR mahaalert@mahabank.co.in OR mahaalerts@bankofmaharashtra.bank.in OR HO.starsandesh@bankofindia.co.in) (subject:(UPI OR RTGS OR NEFT OR IMPS OR EFT OR credited OR debited OR "account credit" OR "account debit" OR "RTGS Credit" OR "NEFT Credit" OR "IMPS Credit"))';
 
 async function categoriseSingleGmailTransaction(params: {
   payeeName: string;
   amount: number;
-  method: 'UPI' | 'IMPS';
+  method: string;
   accountType: string;
   categories: Category[];
   profileName?: string;
@@ -266,30 +266,28 @@ export async function runGmailSyncForUser(
         continue;
       }
 
-      // Transaction dedup check (UPI / IMPS ref)
+      // Transaction dedup check (UPI / IMPS / RTGS / NEFT ref or cross-source reference)
       const parsedTx: ParsedEmailTransaction = outcome;
-      if (parsedTx.upi_ref_no) {
-        const { data: existingUpi } = await serviceSupabase
+      const refNumber =
+        parsedTx.upi_ref_no ||
+        parsedTx.imps_ref_no ||
+        parsedTx.rtgs_ref_no ||
+        parsedTx.neft_ref_no ||
+        parsedTx.reference_number ||
+        null;
+
+      if (refNumber) {
+        const { data: existingTx } = await serviceSupabase
           .from('transactions')
           .select('id')
-          .eq('upi_ref_no', parsedTx.upi_ref_no)
           .eq('user_id', userId)
+          .or(
+            `reference_number.eq.${refNumber},upi_ref_no.eq.${refNumber},imps_ref_no.eq.${refNumber}`
+          )
           .limit(1)
           .maybeSingle();
 
-        if (existingUpi) {
-          continue; // Silent dedup skip
-        }
-      } else if (parsedTx.imps_ref_no) {
-        const { data: existingImps } = await serviceSupabase
-          .from('transactions')
-          .select('id')
-          .eq('imps_ref_no', parsedTx.imps_ref_no)
-          .eq('user_id', userId)
-          .limit(1)
-          .maybeSingle();
-
-        if (existingImps) {
+        if (existingTx) {
           continue; // Silent dedup skip
         }
       }
@@ -306,7 +304,7 @@ export async function runGmailSyncForUser(
 
       const matchedRule = findFirstMatchingRule((rules || []) as TransactionRule[], {
         description: parsedTx.payee_name,
-        reference_number: parsedTx.upi_ref_no || parsedTx.imps_ref_no,
+        reference_number: refNumber || undefined,
         debit,
         credit,
         txn_type: txnType,
@@ -348,7 +346,7 @@ export async function runGmailSyncForUser(
           credit,
           balance: parsedTx.balance_after,
           balance_after: parsedTx.balance_after,
-          reference_number: parsedTx.upi_ref_no || parsedTx.imps_ref_no,
+          reference_number: refNumber,
           upi_ref_no: parsedTx.upi_ref_no,
           imps_ref_no: parsedTx.imps_ref_no,
           source: 'gmail_auto',

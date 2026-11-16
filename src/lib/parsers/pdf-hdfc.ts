@@ -1,5 +1,6 @@
 import type { ParseResult, ColumnMapping } from '../../types/uploads';
 import { extractPDFRawData, extractStatementPeriod, type PDFExtractionResult } from './pdf';
+import { parseBankNarration } from './bank-transaction';
 
 // Keep in sync with Gmail narration cleaner in api/[...all].ts
 // and src/lib/parsers/gmail/hdfc.ts
@@ -108,6 +109,9 @@ export function joinNarrationLines(lines: string[]): string {
     // Hyphen followed by letter without asterisks/bank code separators
     if (/([a-zA-Z])-$/.test(joined) && /^[a-zA-Z]/.test(line) && !/^\*{2,}/.test(line) && !/^[A-Z]{4}0/.test(line)) {
       joined = joined.slice(0, -1) + line;
+    } else if (/[a-zA-Z0-9]$/.test(joined) && /^[0-9]+$/.test(line) && /[A-Z0-9]{4,}$/.test(joined)) {
+      // Continuation of alphanumeric reference/code split across lines without space
+      joined = joined + line;
     } else {
       joined = joined + ' ' + line;
     }
@@ -135,84 +139,16 @@ export function toTitleCase(str: string): string {
 
 /**
  * Cleans an HDFC narration and extracts the reference / UTR number.
- * Follows the same merchant extraction logic used in Gmail alert cleaning.
+ * Single source of truth delegates to parseBankNarration.
  */
 export function cleanHdfcNarration(
   rawNarration: string,
   rawChqRefCol?: string
 ): { cleanDescription: string; reference: string } {
-  let text = (rawNarration || '').trim();
-  if (!text) {
-    const fallbackRef = (rawChqRefCol || '').replace(/^0+/, '').trim();
-    return { cleanDescription: 'HDFC Transaction', reference: fallbackRef };
-  }
-
-  // 1. Join wrapped lines & collapse whitespace (handling mid-word line-break hyphens)
-  text = text.replace(/([a-zA-Z])-\s*\r?\n\s*([a-zA-Z])/g, '$1$2');
-  text = text.replace(/\r?\n|\r/g, ' ').replace(/\s{2,}/g, ' ');
-
-  // 2. Extract reference: 12-digit UTR from narration or fallback to refCol
-  let ref = '';
-  const utrMatch = text.match(/(?:^|[-/\s])(\d{12})(?=$|[-/\s])/);
-  if (utrMatch) {
-    ref = utrMatch[1];
-  } else {
-    // Check for alphanumeric ref e.g. NEFT N2611151234567
-    const neftMatch = text.match(/(?:NEFT|RTGS|IMPS)[-\s]+(?:[^-]+)[-\s]+([A-Z0-9]{6,22})/i);
-    const chqMatch = text.match(/CHQ[-\s]+(\d+)[-\s]+(.*)/i);
-    if (neftMatch) {
-      ref = neftMatch[1];
-    } else if (chqMatch) {
-      ref = chqMatch[1];
-    } else if (rawChqRefCol) {
-      const stripped = rawChqRefCol.trim().replace(/^0+/, '');
-      if (stripped.length > 0) {
-        ref = stripped;
-      }
-    }
-  }
-
-  // Handle CHQ pattern: CHQ-123456-SOME PAYEE
-  const chqPrefixMatch = text.match(/^CHQ[-\s]+(\d+)[-\s]+(.*)$/i);
-  if (chqPrefixMatch) {
-    if (!ref) ref = chqPrefixMatch[1];
-    text = chqPrefixMatch[2];
-  }
-
-  // 3. Strip Transaction Type Prefix from beginning
-  text = text.replace(/^(UPI|NEFT|IMPS|RTGS|FT|CHQ|ATM|ATW|POS|ACH|EMI|SI|NACH|MANDATE)[\/\-\s]+/i, '');
-
-  // 4. Strip Trailing Noise phrases
-  text = text.replace(/[-/\s]*(SENT USING PAYTM U|SENT USING PAYTM|SENT USING PAYT M U|SENT USING GPAY|SENT USING PHONEPE|SENT USING BHIM|VIA NETBANKING|INTERNET BANKING|MOBILE BANKING|UPI MANDATE)[-/\s]*/gi, '');
-
-  // 5. Strip VPA, masked accounts, IFSC, and UTR suffixes
-  // Strip from first occurrence of:
-  // - Masked account: -[*]{3,}
-  // - VPA separator: -[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+
-  // - IFSC code: -[A-Z]{4}0[A-Z0-9]{6}
-  // - 12 digit UTR: -\d{12}
-  // - Direct VPA: @[A-Za-z0-9.-]+
-  const splitMatch = text.match(/^(.*?)(?:-[*]{3,}|-[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+|-[A-Z]{4}0[A-Z0-9]{6}|-\d{12}|@[a-zA-Z0-9.-]+)/);
-  if (splitMatch && splitMatch[1] && splitMatch[1].trim().length > 0) {
-    text = splitMatch[1];
-  }
-
-  // For NEFT / RTGS with trailing ref: strip the ref from end of text
-  if (ref && text.endsWith(`-${ref}`)) {
-    text = text.slice(0, -(ref.length + 1));
-  }
-
-  // Clean trailing hyphens, slashes, spaces, and "-NA" or "NA"
-  text = text.replace(/-(?:NA|N A)$/i, '');
-  text = text.replace(/[-/\s]+$/, '').replace(/^[-/\s]+/, '').trim();
-
-  if (!text || text.toUpperCase() === 'NA') {
-    text = (rawNarration || '').replace(/^(UPI|NEFT|IMPS|RTGS|FT|CHQ|ATM|ATW|POS|ACH|EMI|SI|NACH|MANDATE)[\/\-\s]+/i, '').trim() || 'HDFC Transaction';
-  }
-
+  const parsed = parseBankNarration(rawNarration, rawChqRefCol);
   return {
-    cleanDescription: text,
-    reference: ref,
+    cleanDescription: parsed.description,
+    reference: parsed.reference,
   };
 }
 
@@ -260,7 +196,7 @@ export async function parsePDFHDFC(
         date: string;
         narrationParts: string[];
         valueDt: string;
-        refNo: string;
+        refNoParts: string[];
         rawDebit: string;
         rawCredit: string;
         rawAmount: string;
@@ -274,15 +210,15 @@ export async function parsePDFHDFC(
 
         // Assign items to columns based on x coordinates:
         // Date: 25..65
-        // Narration: 65..285
-        // Chq/Ref: 285..355
+        // Narration: 65..280
+        // Chq/Ref: 280..355
         // Value Dt: 355..400
         // Debit: 400..480
         // Credit: 480..555
         // Balance: 555..630
         const dateItems = line.items.filter((i) => i.x >= 25 && i.x < 65);
-        const narrItems = line.items.filter((i) => i.x >= 65 && i.x < 285);
-        const refItems = line.items.filter((i) => i.x >= 285 && i.x < 355);
+        const narrItems = line.items.filter((i) => i.x >= 65 && i.x < 280);
+        const refItems = line.items.filter((i) => i.x >= 280 && i.x < 355);
         const valDtItems = line.items.filter((i) => i.x >= 355 && i.x < 400);
         const debitItems = line.items.filter((i) => i.x >= 400 && i.x < 480);
         const creditItems = line.items.filter((i) => i.x >= 480 && i.x < 555);
@@ -304,7 +240,7 @@ export async function parsePDFHDFC(
               date: currentTxn.date,
               narration: joinNarrationLines(currentTxn.narrationParts),
               valueDt: currentTxn.valueDt,
-              refNo: currentTxn.refNo,
+              refNo: currentTxn.refNoParts.join('').trim(),
               rawDebit: currentTxn.rawDebit,
               rawCredit: currentTxn.rawCredit,
               rawAmount: currentTxn.rawAmount,
@@ -316,15 +252,20 @@ export async function parsePDFHDFC(
             date: dateStr,
             narrationParts: narrStr ? [narrStr] : [],
             valueDt: valDtStr,
-            refNo: refStr,
+            refNoParts: refStr ? [refStr] : [],
             rawDebit: debitStr,
             rawCredit: creditStr,
             rawAmount: '',
             rawBalance: balStr,
           };
-        } else if (currentTxn && narrStr) {
-          // Wrapped multi-line narration continuation
-          currentTxn.narrationParts.push(narrStr);
+        } else if (currentTxn) {
+          // Wrapped multi-line narration / ref continuation
+          if (narrStr) {
+            currentTxn.narrationParts.push(narrStr);
+          }
+          if (refStr) {
+            currentTxn.refNoParts.push(refStr);
+          }
         }
       }
 
@@ -333,7 +274,7 @@ export async function parsePDFHDFC(
           date: currentTxn.date,
           narration: joinNarrationLines(currentTxn.narrationParts),
           valueDt: currentTxn.valueDt,
-          refNo: currentTxn.refNo,
+          refNo: currentTxn.refNoParts.join('').trim(),
           rawDebit: currentTxn.rawDebit,
           rawCredit: currentTxn.rawCredit,
           rawAmount: currentTxn.rawAmount,
