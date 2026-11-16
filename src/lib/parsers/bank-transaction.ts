@@ -146,13 +146,13 @@ export function parseBankNarration(
     let extractedRef = fallbackRef;
     let descParts = [...segments];
 
-    // If last segment looks like a UTR (12+ alphanumeric or starts with bank code e.g. KKBKR...)
+    // The UTR is the LAST hyphen-separated segment of the narration.
+    // It must be taken verbatim with no modification.
     if (segments.length >= 2) {
       const lastSeg = segments[segments.length - 1];
-      const cleanedLastSeg = lastSeg.replace(/\s+/g, '');
+      const cleanedLastSeg = lastSeg.trim();
       if (
-        /^[A-Z0-9]{12,26}$/i.test(cleanedLastSeg) ||
-        /^\d{12}$/.test(cleanedLastSeg) ||
+        /^[A-Z0-9]{10,26}$/i.test(cleanedLastSeg) ||
         (fallbackRef && cleanedLastSeg === fallbackRef)
       ) {
         extractedRef = cleanedLastSeg;
@@ -160,9 +160,9 @@ export function parseBankNarration(
       }
     } else if (segments.length === 1) {
       // Check if reference is attached or if refCol has it
-      const trailingRefMatch = working.match(/[-/\s]([A-Z0-9]{16,26})$/i);
+      const trailingRefMatch = working.match(/[-/\s]([A-Z0-9]{12,26})$/i);
       if (trailingRefMatch) {
-        extractedRef = trailingRefMatch[1].replace(/\s+/g, '');
+        extractedRef = trailingRefMatch[1].trim();
         descParts = [working.slice(0, -trailingRefMatch[0].length).trim()];
       }
     }
