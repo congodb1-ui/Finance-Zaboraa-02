@@ -57,13 +57,25 @@ export const GmailIntegrationSection: React.FC = () => {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [infoMsg, setInfoMsg] = useState<string | null>(null);
 
+  const extractErrorMessage = (err: any, fallback: string): string => {
+    if (!err) return fallback;
+    if (typeof err === 'string') return err;
+    if (typeof err.message === 'string' && err.message.trim().length > 0) return err.message;
+    if (typeof err.error === 'string' && err.error.trim().length > 0) return err.error;
+    try {
+      const serialized = JSON.stringify(err);
+      if (serialized && serialized !== '{}') return serialized;
+    } catch {}
+    return fallback;
+  };
+
   const loadStatus = useCallback(async () => {
     setIsLoading(true);
     try {
       const data = await apiGet<GmailStatusResponse>('/api/gmail/status');
       setStatus(data);
     } catch (err: any) {
-      setErrorMsg(err?.message || 'Unable to load Gmail status.');
+      setErrorMsg(extractErrorMessage(err, 'Unable to load Gmail status.'));
     } finally {
       setIsLoading(false);
     }
@@ -95,7 +107,7 @@ export const GmailIntegrationSection: React.FC = () => {
       );
       await Promise.all([loadStatus(), refreshPreferences()]);
     } catch (err: any) {
-      setErrorMsg(err?.message || 'Failed to connect Gmail.');
+      setErrorMsg(extractErrorMessage(err, 'Failed to connect Gmail.'));
     } finally {
       setIsConnecting(false);
     }
@@ -123,7 +135,7 @@ export const GmailIntegrationSection: React.FC = () => {
       setInfoMsg(`Sync complete: ${parts.join(' · ')}.`);
       await Promise.all([loadStatus(), refreshPreferences()]);
     } catch (err: any) {
-      setErrorMsg(err?.message || 'Gmail sync failed.');
+      setErrorMsg(extractErrorMessage(err, 'Gmail sync failed.'));
     } finally {
       setIsSyncing(false);
     }
@@ -144,7 +156,7 @@ export const GmailIntegrationSection: React.FC = () => {
       );
       await refreshPreferences();
     } catch (err: any) {
-      setErrorMsg(err?.message || 'Failed to update auto-sync setting.');
+      setErrorMsg(extractErrorMessage(err, 'Failed to update auto-sync setting.'));
     } finally {
       setIsToggling(false);
     }
@@ -160,7 +172,7 @@ export const GmailIntegrationSection: React.FC = () => {
       setInfoMsg('Gmail disconnected and OAuth token removed from Vault.');
       await Promise.all([loadStatus(), refreshPreferences()]);
     } catch (err: any) {
-      setErrorMsg(err?.message || 'Failed to disconnect Gmail.');
+      setErrorMsg(extractErrorMessage(err, 'Failed to disconnect Gmail.'));
     } finally {
       setIsDisconnecting(false);
     }

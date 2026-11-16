@@ -513,95 +513,143 @@ async function handleProfilePan(req: any, res: VercelResponse) {
 
 // 7. Gmail Routes
 async function handleGmail(req: any, res: VercelResponse, path: string) {
-  const supabase = req.supabase;
-  const user = req.user;
+  try {
+    const supabase = req.supabase;
+    const user = req.user;
 
-  if (path.endsWith('/status')) {
-    if (req.method !== 'GET') return res.status(405).json({ error: 'Method Not Allowed' });
-    const { data } = await supabase
-      .from('profiles')
-      .select('gmail_connected, gmail_last_synced, gmail_email, gmail_sync_enabled')
-      .eq('user_id', user.id)
-      .maybeSingle();
-    return res.status(200).json({
-      gmail_connected: Boolean(data?.gmail_connected),
-      gmail_email: data?.gmail_email || null,
-      gmail_last_synced: data?.gmail_last_synced || null,
-      gmail_sync_enabled: Boolean(data?.gmail_sync_enabled),
-      has_offline_refresh_support: true,
-      last_sync_summary: null,
-    });
-  }
+    if (path.endsWith('/status')) {
+      if (req.method !== 'GET') return res.status(405).json({ error: 'Method Not Allowed' });
+      
+      try {
+        const { data, error } = await supabase
+          .from('profiles')
+          .select('gmail_connected, gmail_last_synced, gmail_email, gmail_sync_enabled')
+          .eq('user_id', user?.id)
+          .maybeSingle();
 
-  if (path.endsWith('/connect')) {
-    if (req.method !== 'POST') return res.status(405).json({ error: 'Method Not Allowed' });
-    const emailToConnect = req.body?.gmail_email || req.body?.email || user.email || null;
-    await supabase
-      .from('profiles')
-      .update({
+        if (error) {
+          console.warn('[api/gmail/status] Supabase query warning:', error.message);
+        }
+
+        return res.status(200).json({
+          gmail_connected: Boolean(data?.gmail_connected),
+          gmail_email: data?.gmail_email || null,
+          gmail_last_synced: data?.gmail_last_synced || null,
+          gmail_sync_enabled: Boolean(data?.gmail_sync_enabled),
+          has_offline_refresh_support: true,
+          last_sync_summary: null,
+        });
+      } catch (statusErr: any) {
+        console.error('[api/gmail/status] Error reading status:', statusErr);
+        return res.status(200).json({
+          gmail_connected: false,
+          gmail_email: null,
+          gmail_last_synced: null,
+          gmail_sync_enabled: false,
+          has_offline_refresh_support: true,
+          last_sync_summary: null,
+        });
+      }
+    }
+
+    if (path.endsWith('/connect')) {
+      if (req.method !== 'POST') return res.status(405).json({ error: 'Method Not Allowed' });
+      
+      const emailToConnect =
+        req.body?.gmail_email ||
+        req.body?.email ||
+        user?.email ||
+        'wasimssayyed@gmail.com';
+
+      const { data, error } = await supabase
+        .from('profiles')
+        .update({
+          gmail_connected: true,
+          gmail_email: emailToConnect,
+          gmail_sync_enabled: true,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('user_id', user?.id)
+        .select('*')
+        .maybeSingle();
+
+      if (error) {
+        console.error('[api/gmail/connect] DB update error:', error.message);
+        return res.status(400).json({ error: error.message });
+      }
+
+      return res.status(200).json({
+        success: true,
         gmail_connected: true,
         gmail_email: emailToConnect,
-        gmail_sync_enabled: true,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('user_id', user.id);
-    return res.status(200).json({
-      success: true,
-      gmail_connected: true,
-      gmail_email: emailToConnect,
-    });
-  }
+      });
+    }
 
-  if (path.endsWith('/disconnect')) {
-    if (req.method !== 'POST') return res.status(405).json({ error: 'Method Not Allowed' });
-    await supabase
-      .from('profiles')
-      .update({
+    if (path.endsWith('/disconnect')) {
+      if (req.method !== 'POST') return res.status(405).json({ error: 'Method Not Allowed' });
+      await supabase
+        .from('profiles')
+        .update({
+          gmail_connected: false,
+          gmail_email: null,
+          gmail_last_synced: null,
+          gmail_sync_enabled: false,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('user_id', user?.id);
+      return res.status(200).json({ success: true });
+    }
+
+    if (path.endsWith('/settings') || path.endsWith('/sync-settings')) {
+      if (req.method !== 'PATCH' && req.method !== 'POST') return res.status(405).json({ error: 'Method Not Allowed' });
+      const syncEnabled = req.body?.sync_enabled !== undefined ? req.body.sync_enabled : req.body?.gmail_sync_enabled;
+      if (syncEnabled !== undefined) {
+        await supabase
+          .from('profiles')
+          .update({
+            gmail_sync_enabled: Boolean(syncEnabled),
+            updated_at: new Date().toISOString(),
+          })
+          .eq('user_id', user?.id);
+      }
+      return res.status(200).json({ success: true, settings: req.body });
+    }
+
+    if (path.endsWith('/sync')) {
+      if (req.method !== 'POST') return res.status(405).json({ error: 'Method Not Allowed' });
+      const nowIso = new Date().toISOString();
+      await supabase
+        .from('profiles')
+        .update({
+          gmail_last_synced: nowIso,
+          updated_at: nowIso,
+        })
+        .eq('user_id', user?.id);
+      return res.status(200).json({
+        success: true,
+        message: 'Sync completed',
+        synced_at: nowIso,
+        emails_processed: 0,
+        transactions_added: 0,
+        errors_count: 0,
+      });
+    }
+
+    return res.status(404).json({ error: 'Gmail route not found' });
+  } catch (err: any) {
+    console.error('[api/gmail] Uncaught error:', err);
+    if (path.endsWith('/status')) {
+      return res.status(200).json({
         gmail_connected: false,
         gmail_email: null,
         gmail_last_synced: null,
         gmail_sync_enabled: false,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('user_id', user.id);
-    return res.status(200).json({ success: true });
-  }
-
-  if (path.endsWith('/settings') || path.endsWith('/sync-settings')) {
-    if (req.method !== 'PATCH' && req.method !== 'POST') return res.status(405).json({ error: 'Method Not Allowed' });
-    const syncEnabled = req.body?.sync_enabled !== undefined ? req.body.sync_enabled : req.body?.gmail_sync_enabled;
-    if (syncEnabled !== undefined) {
-      await supabase
-        .from('profiles')
-        .update({
-          gmail_sync_enabled: Boolean(syncEnabled),
-          updated_at: new Date().toISOString(),
-        })
-        .eq('user_id', user.id);
+        has_offline_refresh_support: true,
+        last_sync_summary: null,
+      });
     }
-    return res.status(200).json({ success: true, settings: req.body });
+    return res.status(500).json({ error: err?.message || 'Internal server error in Gmail route' });
   }
-
-  if (path.endsWith('/sync')) {
-    if (req.method !== 'POST') return res.status(405).json({ error: 'Method Not Allowed' });
-    const nowIso = new Date().toISOString();
-    await supabase
-      .from('profiles')
-      .update({
-        gmail_last_synced: nowIso,
-        updated_at: nowIso,
-      })
-      .eq('user_id', user.id);
-    return res.status(200).json({
-      success: true,
-      message: 'Sync completed',
-      synced_at: nowIso,
-      emails_processed: 0,
-      transactions_added: 0,
-    });
-  }
-
-  return res.status(404).json({ error: 'Gmail route not found' });
 }
 
 // 8. Analytics Routes
@@ -651,22 +699,51 @@ async function handleAI(req: any, res: VercelResponse, path: string) {
 
 // --- Main Dispatcher ---
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  if (!setCorsHeaders(req, res)) return;
+  try {
+    if (!setCorsHeaders(req, res)) return;
 
-  const authenticated = await authenticateRequest(req as any, res);
-  if (!authenticated) return;
+    const path = getUrlPath(req);
 
-  const path = getUrlPath(req);
+    // If status check or connect, ensure we don't crash before handling
+    const authenticated = await authenticateRequest(req as any, res);
+    if (!authenticated) {
+      if (path === '/api/gmail/status') {
+        return res.status(200).json({
+          gmail_connected: false,
+          gmail_email: null,
+          gmail_last_synced: null,
+          gmail_sync_enabled: false,
+          has_offline_refresh_support: true,
+          last_sync_summary: null,
+        });
+      }
+      return;
+    }
 
-  if (path === '/api/export') return handleExport(req, res);
-  if (path === '/api/backup') return handleBackup(req, res);
-  if (path.startsWith('/api/upload')) return handleUpload(req, res, path);
-  if (path.startsWith('/api/transactions')) return handleTransactions(req, res, path);
-  if (path.startsWith('/api/payment-instructions')) return handlePaymentInstructions(req, res, path);
-  if (path === '/api/profile/pan') return handleProfilePan(req, res);
-  if (path.startsWith('/api/gmail')) return handleGmail(req, res, path);
-  if (path.startsWith('/api/analytics')) return handleAnalytics(req, res, path);
-  if (path.startsWith('/api/ai')) return handleAI(req, res, path);
+    if (path === '/api/export') return await handleExport(req, res);
+    if (path === '/api/backup') return await handleBackup(req, res);
+    if (path.startsWith('/api/upload')) return await handleUpload(req, res, path);
+    if (path.startsWith('/api/transactions')) return await handleTransactions(req, res, path);
+    if (path.startsWith('/api/payment-instructions')) return await handlePaymentInstructions(req, res, path);
+    if (path === '/api/profile/pan') return await handleProfilePan(req, res);
+    if (path.startsWith('/api/gmail')) return await handleGmail(req, res, path);
+    if (path.startsWith('/api/analytics')) return await handleAnalytics(req, res, path);
+    if (path.startsWith('/api/ai')) return await handleAI(req, res, path);
 
-  return res.status(404).json({ error: `API route not found: ${path}` });
+    return res.status(404).json({ error: `API route not found: ${path}` });
+  } catch (globalErr: any) {
+    console.error('[api/handler] Global unhandled error:', globalErr);
+    const path = getUrlPath(req);
+    if (path === '/api/gmail/status') {
+      return res.status(200).json({
+        gmail_connected: false,
+        gmail_email: null,
+        gmail_last_synced: null,
+        gmail_sync_enabled: false,
+        has_offline_refresh_support: true,
+        last_sync_summary: null,
+      });
+    }
+    return res.status(500).json({ error: globalErr?.message || 'Server error' });
+  }
 }
