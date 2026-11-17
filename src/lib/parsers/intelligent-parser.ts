@@ -1,8 +1,11 @@
 /**
  * Intelligent Anchor-Based Bank Statement Parser
  *
- * Universal Parser Core based on Balance Chain Math, Structural Grammar extraction,
- * and zero hardcoded content values.
+ * Built on two universal invariants:
+ * INVARIANT 1: Date always comes first (starts the transaction anchor line).
+ * INVARIANT 2: Balance always comes last (last number on the transaction anchor line).
+ *
+ * Self-healing balance equation: previous_balance - debit + credit = current_balance
  */
 
 import type { ColumnMapping, ParseResult } from '../../types/uploads';
@@ -18,7 +21,6 @@ export interface ParsedTransaction {
   balance: number; // closing balance for this row
   balanceMismatch: boolean; // true if balance sequence breaks
   rawNarration: string; // original unclean narration for debugging
-  pdfRowIndex?: number; // 0-based sequence index from PDF
 }
 
 export interface IntelligentParseResult {
@@ -33,7 +35,7 @@ export interface IntelligentParseResult {
   statementPeriodEnd?: string | null;
 }
 
-// Master list of Indian States and Union Territories (Finite government list)
+// Master list of Indian States and Union Territories
 export const INDIAN_STATES = [
   'Andhra Pradesh', 'Arunachal Pradesh', 'Assam', 'Bihar', 'Chhattisgarh',
   'Goa', 'Gujarat', 'Haryana', 'Himachal Pradesh', 'Jharkhand', 'Karnataka',
@@ -43,18 +45,33 @@ export const INDIAN_STATES = [
   'Jammu', 'Kashmir', 'Ladakh', 'Puducherry', 'Chandigarh'
 ];
 
-// Structural address vocabulary keywords
-export const STRUCTURAL_ADDRESS_WORDS = [
-  'FLAT', 'PLOT', 'FLOOR', 'ROAD', 'MARG', 'NAGAR', 'COLONY', 'SECTOR', 'PHASE',
-  'BLOCK', 'BUILDING', 'TOWER', 'WING', 'CHSL', 'BLDG', 'STREET', 'AVENUE', 'COMPLEX'
+// Master list of Major Indian Cities
+export const INDIAN_CITIES = [
+  'Mumbai', 'Delhi', 'Bangalore', 'Bengaluru', 'Hyderabad', 'Ahmedabad', 'Chennai',
+  'Kolkata', 'Surat', 'Pune', 'Jaipur', 'Lucknow', 'Kanpur', 'Nagpur', 'Indore',
+  'Thane', 'Bhopal', 'Visakhapatnam', 'Patna', 'Vadodara', 'Ghaziabad', 'Ludhiana',
+  'Agra', 'Nashik', 'Faridabad', 'Meerut', 'Rajkot', 'Varanasi', 'Aurangabad',
+  'Amritsar', 'Allahabad', 'Prayagraj', 'Howrah', 'Coimbatore', 'Gwalior',
+  'Vijayawada', 'Jodhpur', 'Madurai', 'Raipur', 'Kota', 'Chandigarh', 'Guwahati',
+  'Solapur', 'Mysuru', 'Mysore', 'Gurgaon', 'Gurugram', 'Noida', 'Jamshedpur',
+  'Bhubaneswar', 'Kochi', 'Cochin', 'Dehradun', 'Nanded', 'Kolhapur', 'Ajmer',
+  'Jammu', 'Mangalore', 'Mangaluru', 'Belgaum', 'Belagavi', 'Udaipur', 'Jalgaon',
+  'Malegaon', 'Navi Mumbai', 'Vasai', 'Kalyan', 'Bhiwandi', 'Akola', 'Gulbarga',
+  'Jamnagar', 'Ujjain', 'Loni', 'Siliguri', 'Jhansi', 'Ulhasnagar', 'Sangli',
+  'Erode', 'Tiruppur', 'Salem', 'Ambattur', 'Tirunelveli', 'Gaya', 'Bareilly',
+  'Aligarh', 'Jalandhar', 'Saharanpur', 'Gorakhpur', 'Guntur', 'Bikaner', 'Amravati',
+  'Bhilai', 'Cuttack', 'Firozabad', 'Bhavnagar', 'Durgapur', 'Asansol'
 ];
+
+const INDIAN_CITIES_REGEX = INDIAN_CITIES.join('|');
+const INDIAN_STATES_REGEX = INDIAN_STATES.join('|');
 
 const PRESERVED_ACRONYMS = new Set([
   'ATM', 'POS', 'UPI', 'IMPS', 'NEFT', 'RTGS', 'EFT', 'FT', 'INB', 'FD', 'RD',
   'EMI', 'SI', 'ACH', 'NACH', 'GST', 'TDS', 'BBPS', 'HDFC', 'ICICI', 'SBI',
   'PNB', 'BOB', 'IDFC', 'KOTAK', 'AXIS', 'NSE', 'BSE', 'CLI', 'LLP', 'PVT',
   'LTD', 'OKAXIS', 'OKICICI', 'OKSBI', 'OKHDFCBANK', 'PAYTM', 'YBL', 'IBL',
-  'AXL', 'YESB', 'WDL', 'CR', 'DR', 'INR', 'NA'
+  'AXL', 'YESB', 'YESBOYBLUPI', 'WDL', 'CR', 'DR', 'INR', 'NA'
 ]);
 
 /**
@@ -92,6 +109,8 @@ export function normalizeDateToISO(dateStr: string): string {
   return `${year}-${month}-${day}`;
 }
 
+// STEP 7: NARRATION CLEANERS & JOINERS
+
 export function smartJoin(existing: string, continuation: string): string {
   if (!existing) return continuation;
   if (!continuation) return existing;
@@ -117,365 +136,309 @@ export function mergeWordFragments(name: string): string {
   return name.replace(/([A-Za-z]{4,})\s+([A-Za-z]{1,3})(?=\s|$)/g, '$1$2');
 }
 
-/**
- * Structural Footer & Disclaimer Line Detection
- */
-export function isFooterLine(line: string): boolean {
-  if (!line || typeof line !== 'string') return false;
-
-  // Statement summary block triggers
-  if (/STATEMENT\s+SUMMARY/i.test(line)) return true;
-  if (/^\s*(?:dr|cr)\.?\s*count\s*:/i.test(line)) return true;
-  if (/^\s*closing\s+bal(?:ance)?\s*:/i.test(line)) return true;
-
-  // Disclaimer phrases
-  if (/within\s+\d+\s+days/i.test(line)) return true;
-  if (/does\s+not\s+require\s+(?:any\s+)?signature/i.test(line)) return true;
-  if (/considered\s+correct/i.test(line)) return true;
-  if (/computer\s+generated/i.test(line)) return true;
-  if (/errors?\s+and\s+omissions?/i.test(line)) return true;
-  if (/contents?\s+of\s+this\s+statement/i.test(line)) return true;
-
-  // Metadata / Summary patterns
-  if (/^\s*opening\s+bal(?:ance)?\s*:/i.test(line)) return true;
-  if (/^\s*generated\s+(?:on|by)\s*:/i.test(line)) return true;
-  if (/^\s*requesting\s+branch/i.test(line)) return true;
-  if (/^\s*regd\.?\s*(?:office|address)/i.test(line)) return true;
-  if (/^\s*gst(?:n|in)?\s*:/i.test(line)) return true;
-  if (/^\s*cin\s*:/i.test(line)) return true;
-  if (/Page\s*\.?\s*No\s*\.?\s*[:\-]?\s*\d+/i.test(line)) return true;
-  if (/PageNo\s*\.?\s*\d+/i.test(line)) return true;
-
-  return false;
-}
-
-/**
- * Strips structural footer bleed from a raw narration string.
- */
-export function stripFooterBleedFromNarration(narration: string): string {
+export function stripUTRPrefix(narration: string): { narration: string; ref: string } {
+  const utrMatch = narration.match(/^(\d{10,16})\s+/);
+  let ref = '';
   let result = narration;
-
-  // Cut at disclaimer / footer phrase start
-  const cutPatterns = [
-    /\s*this\s+statement\.?.*/i,
-    /\s*contents\s+of\s+this\s+statement.*/i,
-    /\s*does\s+not\s+require\s+(?:any\s+)?signature.*/i,
-    /\s*computer\s*generated.*/i,
-    /\s*considered\s+correct\s+if.*/i,
-    /\s*within\s+\d+\s+days.*/i,
-    /\s*errors?\s+and\s+omissions?.*/i,
-    /\s*STATEMENT\s+SUMMARY.*/i,
-    /\s*Opening\s+Balance\s*:.*/i,
-    /\s*Closing\s+Bal(?:ance)?\s*:.*/i,
-    /\s*Generated\s+(?:On|By)\s*:.*/i,
-    /\s*Regd\.?\s*(?:Office|Address)\s*:.*/i,
-    /\s*GST(?:N|IN)?\s*:.*/i,
-    /\s*CIN\s*:.*/i,
-    /\bwww\.[a-z0-9.-]+\.[a-z]{2,}.*/i,
-    /Page\s*\.?\s*No\s*\.?\s*[:\-]?\s*\d+.*/i,
-    /Account\s+Branch\s*:.*/i,
-    /AddressCity.*/i,
-    /CustID.*/i,
-    /A\/C\s+Open\s+Date.*/i,
-    /Account\s+Status.*/i,
-    /RTGS\/NEFT\s+IFSC.*/i,
-    /Branch\s+Code.*/i,
-    /Account\s+Type.*/i,
-    /OD\s+Limit.*/i,
-    /Phone\s+no\..*/i,
-    /(?<=[A-Z\d])(PageNo|AccountBranch|AddressCity|CustID).*/i,
-  ];
-
-  for (const pattern of cutPatterns) {
-    result = result.replace(pattern, '');
+  if (utrMatch) {
+    ref = utrMatch[1].replace(/^0+/, '') || utrMatch[1];
+    result = result.slice(utrMatch[0].length);
   }
-
-  // Address pattern: Structural address word + 6-digit PIN code
-  const addressPinPattern = new RegExp(`\\s+\\b(?:${STRUCTURAL_ADDRESS_WORDS.join('|')})\\b.*\\b\\d{6}\\b.*`, 'i');
-  result = result.replace(addressPinPattern, '');
-
-  return result.trim();
+  result = result.replace(/^\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}\s+/, '');
+  return { narration: result.trim(), ref };
 }
 
-/**
- * PART 2 — UNIVERSAL NARRATION STRUCTURE PARSER
- * Extracts payee name using grammar position only, zero hardcoded values.
- */
-export function extractPayeeName(rawNarration: string): string {
-  // First strip leading UTR + date if present
-  let narration = rawNarration
-    .replace(/^\d{10,16}\s+/, '')               // leading UTR zeros
-    .replace(/^\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}\s+/, '') // leading date
-    .trim();
+export function extractReference(narration: string, explicitRef?: string): { ref: string; narration: string } {
+  if (explicitRef && explicitRef.trim()) {
+    const rawRef = explicitRef.trim();
+    // Strip leading zeros for numeric UTRs (keeping last 10-16 digits)
+    const cleanRef = /^\d+$/.test(rawRef) ? (rawRef.replace(/^0+/, '') || rawRef) : rawRef;
+    return { ref: cleanRef, narration: narration.replace(rawRef, '').trim() };
+  }
+  const refMatch = narration.match(/\b(\d{10,16})\b/);
+  if (refMatch) {
+    const stripped = refMatch[1].replace(/^0+/, '') || refMatch[1];
+    return {
+      ref: stripped,
+      narration: narration.replace(refMatch[0], '').trim(),
+    };
+  }
+  return { ref: '', narration };
+}
 
+export function extractPayeeName(narration: string): string {
   if (/CREDIT\s+INTEREST|INTEREST\s+CAPITALISED/i.test(narration)) {
     return 'Credit Interest Capitalised';
   }
 
-  // GRAMMAR 1: UPI
-  // Structure: UPI-{NAME}-{VPA}@{BANK}-{IFSC}-{REF}-{SUFFIX}
-  if (/^UPI[-\/]/i.test(narration)) {
-    const withoutPrefix = narration.replace(/^UPI[-\/]/i, '');
-    const atIndex = withoutPrefix.indexOf('@');
-    if (atIndex !== -1) {
-      const beforeAt = withoutPrefix.substring(0, atIndex);
-      const segments = beforeAt.split('-');
-      const nameSegments: string[] = [];
+  // Pattern 1: UPI-PAYEE NAME-VPA@BANK-IFSC-REF-UPI or UPI/PAYEE/VPA@BANK
+  const upiPrefix = narration.match(
+    /^UPI[-\/]([A-Z][A-Z0-9\s\.]{2,40}?)[-\/][A-Z0-9]+[@\-]/i
+  );
+  if (upiPrefix) {
+    const merged = mergeWordFragments(upiPrefix[1].trim());
+    return toTitleCase(merged);
+  }
 
-      for (let i = 0; i < segments.length; i++) {
-        const seg = segments[i].trim();
-        const isVPACode =
-          /^\d+$/.test(seg) ||           // pure digits: 330, 1
-          seg.length <= 1 ||              // single char
-          /\d{3,}$/.test(seg);           // ends in 3+ digits: MAHESHJAGTAP330
+  // Pattern 2: IMPS/REF/MASKED/PAYEE NAME/Purpose
+  const impsSlash = narration.match(
+    /^IMPS\/\d+\/[^\/]*\/([^\/]+)\//i
+  );
+  if (impsSlash) {
+    const merged = mergeWordFragments(impsSlash[1].trim());
+    return toTitleCase(merged);
+  }
 
-        if (isVPACode && nameSegments.length > 0) {
-          break;
-        }
-        if (!isVPACode && seg.length >= 2) {
-          nameSegments.push(seg);
-        }
-      }
-
-      if (nameSegments.length > 0) {
-        return toTitleCase(
-          mergeWordFragments(nameSegments.join(' ').replace(/\./g, ' ').trim())
-        );
-      }
-    }
-    // No @ found — return cleaned prefix content
-    const firstSeg = withoutPrefix.split('-')[0].trim();
-    if (firstSeg.length >= 2) {
-      return toTitleCase(mergeWordFragments(firstSeg));
+  // Pattern 3: VPA@BANK without UPI prefix: take before @, take after last -
+  const atSign = narration.match(/^(.*?)@/);
+  if (atSign) {
+    const beforeAt = atSign[1];
+    const parts = beforeAt.split('-');
+    const username = parts[parts.length - 1];
+    if (username && username.length > 2) {
+      const merged = mergeWordFragments(username.replace(/\./g, ' ').replace(/\d+$/, '').trim());
+      return toTitleCase(merged);
     }
   }
 
-  // GRAMMAR 2: IMPS
-  // Structure: IMPS/{REF}/{MASKED_ACCT}/{NAME}/{PURPOSE} or IMPS/48/{REF}/{MASKED}/{NAME}/{MEMO}
-  if (/^IMPS/i.test(narration)) {
-    const parts = narration.split('/').map((p) => p.trim());
-    for (let i = parts.length - 1; i >= 0; i--) {
-      const part = parts[i];
-      if (
-        part.length >= 3 &&
-        !/^\d+$/.test(part) &&
-        !/^[X\*]+\d*$/i.test(part) &&   // not masked account
-        !/^[A-Z]{4}\d{7}$/i.test(part) // not IFSC
-      ) {
-        return toTitleCase(mergeWordFragments(part));
-      }
-    }
+  // Pattern 4: NEFT/RTGS — name after transfer type
+  const neft = narration.match(
+    /^(?:NEFT|RTGS|IMPS)[-\/\s]+(.+?)(?:[-\/]\d{6,}|$)/i
+  );
+  if (neft) {
+    const merged = mergeWordFragments(neft[1].trim());
+    return toTitleCase(merged);
   }
 
-  // GRAMMAR 3: NEFT / RTGS
-  // Structure: NEFT/{NAME}/{REF} or RTGS CR {NAME} {REF} or {REF} {NAME}
-  if (/^(NEFT|RTGS)/i.test(narration)) {
-    const parts = narration.split('/');
-    if (parts.length >= 2) {
-      const candidate = parts[1].trim();
-      if (candidate.length >= 3 && !/^\d+$/.test(candidate)) {
-        return toTitleCase(mergeWordFragments(candidate));
-      }
-    }
-    const afterType = narration.replace(/^(NEFT|RTGS)\s*(CR|DR)?\s*/i, '');
-    const dashParts = afterType.split('-');
-    if (dashParts[0].trim().length >= 3) {
-      return toTitleCase(mergeWordFragments(dashParts[0].trim()));
-    }
-  }
-
-  // GRAMMAR 6: Inward transfer with CR- or DR- prefix
-  // Structure: CR-{BANKIFSC}-{SENDER NAME}-{RECEIVER}-{REF}-{MEMO}
-  // or: CR-{BANKIFSC}-{SENDER NAME}-{RECEIVER}
-  if (/^(CR|DR)-/i.test(narration)) {
-    const withoutPrefix = narration.replace(/^(CR|DR)-/i, '');
-    const segments = withoutPrefix.split('-');
-    // segment[0] is IFSC/bank code (e.g. dohb0000001)
-    // segment[1] is Sender Name (e.g. ebla Computer Consul Tancy)
-    // segment[2] is Receiver (e.g. wasim Salim Sayyed)
-    if (segments.length >= 2) {
-      const senderCandidate = segments[1].trim();
-      if (
-        senderCandidate.length >= 2 &&
-        !/^[A-Z]{4}[0-9A-Z]{7}$/i.test(senderCandidate) &&
-        !/^\d+$/.test(senderCandidate)
-      ) {
-        return toTitleCase(mergeWordFragments(senderCandidate));
-      }
-    }
-    const nameSegments: string[] = [];
-    for (let i = 1; i < segments.length; i++) {
-      const seg = segments[i].trim();
-      if (
-        /^[A-Z]{4}[0-9A-Z]{7}$/i.test(seg) || // IFSC code
-        /^[Xx*]{4,}/.test(seg) ||               // masked account
-        /^\d{6,}$/.test(seg) ||                 // long reference number
-        /^\d+\s+[A-Za-z]+/i.test(seg) ||        // memo like '1 Employees'
-        /^[A-Z]{4}\d{10}$/i.test(seg) ||        // transaction ref like DOHBH2627300472
-        /^(salary|shorte|sep|oct|nov|dec|jan|feb|mar|apr|may|jun|jul|aug|payment|memo)/i.test(seg)
-      ) {
-        if (nameSegments.length > 0) break;
-        continue;
-      }
-      if (seg.length >= 2) nameSegments.push(seg);
-      if (nameSegments.length >= 4) break;
-    }
-    if (nameSegments.length > 0) {
-      return toTitleCase(mergeWordFragments(nameSegments.join(' ').trim()));
-    }
-  }
-
-  // GRAMMAR 7: Reference-first inward transfer
-  // Structure: {REF}-{NAME}-{BANK}-{MASKED ACCT}-{MEMO}
-  if (/^\d{9,16}-/.test(narration)) {
-    const withoutRef = narration.replace(/^\d{9,16}-/, '');
-    const segments = withoutRef.split('-');
-    const nameSegments: string[] = [];
-    for (let i = 0; i < segments.length; i++) {
-      const seg = segments[i].trim();
-      if (
-        /^[A-Z]{4}[0-9A-Z]{7}$/i.test(seg) ||
-        /^[Xx*]{4,}/.test(seg) ||
-        /^\d{6,}$/.test(seg) ||
-        /^[A-Za-z]{3,4}$/i.test(seg) ||           // bank codes like HSBC or HDFC
-        /^[A-Za-z]{3}\s+[A-Za-z]$/i.test(seg) || // bank short codes like 'hdf C' or 'mah B'
-        seg.length <= 2
-      ) {
-        if (nameSegments.length > 0) break;
-        continue;
-      }
-      if (seg.length >= 2) nameSegments.push(seg);
-      if (nameSegments.length >= 4) break;
-    }
-    if (nameSegments.length > 0) {
-      return toTitleCase(mergeWordFragments(nameSegments.join(' ').trim()));
-    }
-  }
-
-  // GRAMMAR 4: Inward transfer with amount in narration
-  const amountAtStart = narration.match(/^[\d,]+\.\d{2}\s+/);
-  if (amountAtStart) {
-    narration = narration.substring(amountAtStart[0].length).trim();
-    return extractPayeeName(narration);
-  }
-
-  // GRAMMAR 5: Reference number followed by name
-  if (narration.length >= 2) {
-    const cleaned = narration
-      .replace(/\b[A-Z]{4}\d{7}\b/g, '')
-      .replace(/\b\d{6,}\b/g, '')      // remaining long numbers
-      .replace(/[-\/]+/g, ' ')          // dashes and slashes to spaces
-      .trim();
-    if (cleaned.length >= 2) {
-      return toTitleCase(mergeWordFragments(cleaned));
-    }
-  }
-
-  return 'UNREADABLE_NARRATION';
+  return mergeWordFragments(narration);
 }
 
-/**
- * Structural noise stripper
- */
-export function stripStructuralNoise(narration: string): string {
-  let text = narration;
-
-  // 1. Remove VPA domain suffixes
-  text = text.replace(/@[a-zA-Z0-9.-]+\b/g, '');
-
-  // 2. Remove structural codes
-  text = text.replace(/\b[A-Z]{4}0[A-Z0-9]{6}\b/g, ''); // IFSC code
-  text = text.replace(/\b\d{10,16}\b/g, '');            // 10-16 digit UTR/Ref
-  text = text.replace(/\b[X\*]{4,}\d*\b/gi, '');         // Masked account numbers
-
-  // 3. Remove structural suffix patterns
-  text = text
-    .replace(/-\s*SAVING(?:-UPI)?(?:\s*PAYMENT)?/gi, '')
-    .replace(/-\s*UPI\s*PAYMENT/gi, '')
-    .replace(/-\s*NA\b/gi, '')
-    .replace(/-\s*OID\d+/gi, '')
-    .replace(/-\s*[A-Z0-9]{8,15}\b/gi, '') // trailing alphanumeric hashes
-    .replace(/\s{2,}/g, ' ')
+export function stripNoiseSuffixes(narration: string): string {
+  return narration
+    .replace(/-SAVING-UPI\s*PA?\s*YMENT/gi, '')
+    .replace(/-UPI\s*PA?\s*YMENT/gi, '')
+    .replace(/-UPI\s*PAYMENT/gi, '')
+    .replace(/\s*-\s*NA\s*$/gi, '')
+    .replace(/-OID\d+/gi, '')
+    .replace(/-PYTM\d+\b/gi, '')
+    .replace(/-PAYTM\d+\b/gi, '')
+    .replace(/@PAY\s*$/gi, '')
+    .replace(/YESBOYBLUPI/gi, '')
+    .replace(/\s*-\s*SAVING/gi, '')
     .trim();
-
-  return text;
 }
 
-/**
- * Final description sanitizer
- */
-export function sanitizeFinalDescription(narration: string, rawNarration: string): string {
-  let cleaned = narration.trim();
+export function stripFooterBleed(narration: string): string {
+  const CUT_PATTERNS = [
+    // Universal disclaimer phrases
+    /\s*this statement\.?.*/i,
+    /\s*contents of this statement.*/i,
+    /\s*not require[s]? signature.*/i,
+    /\s*computer.?generated.*/i,
+    /\s*considered correct if no.*/i,
+    /\s*within \d+ days.*/i,
+    /\s*errors? and omissions?.*/i,
+    /\s*subject to realis.*/i,
 
-  const upper = cleaned.toUpperCase();
-  if (
-    /^[X\*]+\d*$/.test(upper) ||          // XXXXX or XXXXX0921
-    /^[X\*]{3,}\d{0,6}$/.test(upper) ||   // at least 3 X chars with optional digits
-    /^\d+$/.test(upper) ||                 // pure digits
-    /^[-\/\s]+$/.test(upper) ||            // only punctuation
-    /^(NA|NULL|UNDEFINED|UNKNOWN|UPI)$/.test(upper) ||
-    upper.length === 0
-  ) {
-    return 'UNREADABLE_NARRATION';
+    // Universal summary block keywords
+    /\s*STATEMENT\s+SUMMARY.*/i,
+    /\s*Opening\s+Balance\s*:.*/i,
+    /\s*Closing\s+Bal(?:ance)?\s*:.*/i,
+    /\s*Generated\s+On\s*:.*/i,
+    /\s*Generated\s+By\s*:.*/i,
+    /\s*Requesting\s+Branch\s+Code\s*:.*/i,
+    /\s*Dr\.?\s*Count\s*:.*/i,
+    /\s*Cr\.?\s*Count\s*:.*/i,
+
+    // Universal metadata labels
+    /\s*Address\s*:.*/i,
+    /\s*Regd\.?\s*(?:Office|Address)\s*:.*/i,
+    /\s*GST(?:N|IN)?\s*:.*/i,
+    /\s*CIN\s*:.*/i,
+    /\s*www\.[a-z].*/i,
+
+    // Address pattern: 6-digit PIN code signals end of real narration
+    /\s*\b\d{6}\b.*/,
+
+    // City + State pattern
+    new RegExp(
+      '\\s+(?:' + INDIAN_CITIES_REGEX + ')\\s+(?:' + INDIAN_STATES_REGEX + ').*',
+      'i'
+    ),
+  ];
+
+  let result = narration;
+  for (const pattern of CUT_PATTERNS) {
+    result = result.replace(pattern, '');
   }
-
-  // If extraction left noise or was too short (< 2 chars), fallback to raw cleaned
-  if (!cleaned || cleaned === 'UNREADABLE_NARRATION' || cleaned.length < 2) {
-    cleaned = rawNarration
-      .replace(/^\d{10,16}\s+/, '')
-      .replace(/^\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}\s+/, '')
-      .replace(/[-\/]+/g, ' ')
-      .replace(/\s+/g, ' ')
-      .trim();
-  }
-
-  // Remove lingering @ symbols or trailing dashes
-  cleaned = cleaned.replace(/@/g, '').replace(/[-_]+$/, '').trim();
-
-  return toTitleCase(cleaned);
+  return result.trim();
 }
 
-/**
- * Narration keyword fallback detection
- */
-const CREDIT_PATTERNS = [
-  /\bCR\b/i,
+export function cleanNarrationPipeline(rawNarration: string, explicitRef?: string): { cleanDescription: string; reference: string } {
+  const strippedFooter = stripFooterBleed(rawNarration);
+  const { narration: strippedUtr, ref: utrRef } = stripUTRPrefix(strippedFooter);
+  const { ref: extractedRef, narration: narrWithoutRef } = extractReference(strippedUtr, explicitRef);
+  const payeeExtracted = extractPayeeName(narrWithoutRef);
+  const cleanDescription = stripNoiseSuffixes(payeeExtracted);
+  const finalRef = utrRef || extractedRef || (explicitRef ? (/^\d+$/.test(explicitRef.trim()) ? explicitRef.trim().replace(/^0+/, '') : explicitRef.trim()) : '');
+
+  return {
+    cleanDescription: cleanDescription || rawNarration.trim(),
+    reference: finalRef,
+  };
+}
+
+// STEP 10: SUMMARY STOP
+export const UNIVERSAL_SUMMARY_STOP = [
+  /STATEMENT\s+SUMMARY/i,
+  /^\s*Dr\.?\s*Count\s*:/i,
+  /^\s*Cr\.?\s*Count\s*:/i,
+  /^\s*Closing\s+Bal(?:ance)?\s*:/i,
+  /^\s*Generated\s+On\s*:/i,
+  /^\s*Generated\s+By\s*:/i,
+  /^\s*Requesting\s+Branch\s+Code\s*:/i,
+  /Grand\s+Total/i,
+];
+
+export function isSummaryStop(line: string): boolean {
+  if (!line || typeof line !== 'string') return false;
+  return UNIVERSAL_SUMMARY_STOP.some((p) => p.test(line));
+}
+
+// STEP 9: BANK PROFILES
+export interface BankProfile {
+  name: string;
+  hasSrNo: boolean;
+  hasChannel: boolean;
+  hasValueDate: boolean;
+  debitLabel: RegExp;
+  creditLabel: RegExp;
+  summaryStopPattern: RegExp;
+}
+
+export const BANK_PROFILES: Record<string, BankProfile> = {
+  HDFC: {
+    name: 'HDFC Bank',
+    hasSrNo: false,
+    hasChannel: false,
+    hasValueDate: true,
+    debitLabel: /Withdrawal\s*Amt/i,
+    creditLabel: /Deposit\s*Amt/i,
+    summaryStopPattern: /STATEMENT\s+SUMMARY/i,
+  },
+  BOM: {
+    name: 'Bank of Maharashtra',
+    hasSrNo: true,
+    hasChannel: true,
+    hasValueDate: false,
+    debitLabel: /Debit/i,
+    creditLabel: /Credit/i,
+    summaryStopPattern: /Total\s*(?:Debit|Credit|Transaction)/i,
+  },
+  BOI: {
+    name: 'Bank of India',
+    hasSrNo: false,
+    hasChannel: false,
+    hasValueDate: false,
+    debitLabel: /Amt\s*Withdrawn/i,
+    creditLabel: /Amt\s*Deposited/i,
+    summaryStopPattern: /Total\s*(?:Debit|Credit|Transaction)/i,
+  },
+  SBI: {
+    name: 'State Bank of India',
+    hasSrNo: false,
+    hasChannel: false,
+    hasValueDate: true,
+    debitLabel: /Debit/i,
+    creditLabel: /Credit/i,
+    summaryStopPattern: /Grand\s*Total/i,
+  },
+  ICICI: {
+    name: 'ICICI Bank',
+    hasSrNo: false,
+    hasChannel: false,
+    hasValueDate: true,
+    debitLabel: /Withdrawal/i,
+    creditLabel: /Deposit/i,
+    summaryStopPattern: /Statement\s+Summary/i,
+  },
+  AXIS: {
+    name: 'Axis Bank',
+    hasSrNo: false,
+    hasChannel: false,
+    hasValueDate: true,
+    debitLabel: /Debit/i,
+    creditLabel: /Credit/i,
+    summaryStopPattern: /Total\s*(?:Debit|Credit)/i,
+  },
+  UNKNOWN: {
+    name: 'Unknown Bank',
+    hasSrNo: false,
+    hasChannel: false,
+    hasValueDate: false,
+    debitLabel: /Debit|Withdrawal|Dr/i,
+    creditLabel: /Credit|Deposit|Cr/i,
+    summaryStopPattern: /Total|Summary|Closing/i,
+  },
+};
+
+export function detectBankProfile(lines: string[]): BankProfile {
+  const headerText = lines.slice(0, 30).join(' ');
+  if (/HDFC\s*BANK/i.test(headerText)) return BANK_PROFILES.HDFC;
+  if (/Bank\s*of\s*Maharashtra/i.test(headerText)) return BANK_PROFILES.BOM;
+  if (/Bank\s*of\s*India/i.test(headerText)) return BANK_PROFILES.BOI;
+  if (/State\s*Bank\s*of\s*India/i.test(headerText)) return BANK_PROFILES.SBI;
+  if (/ICICI\s*Bank/i.test(headerText)) return BANK_PROFILES.ICICI;
+  if (/Axis\s*Bank/i.test(headerText)) return BANK_PROFILES.AXIS;
+  if (/Kotak/i.test(headerText)) return BANK_PROFILES.AXIS;
+  if (/Punjab\s*National/i.test(headerText)) return BANK_PROFILES.BOI;
+  return BANK_PROFILES.UNKNOWN;
+}
+
+const CREDIT_KEYWORDS = [
   /CREDIT\s+INTEREST/i,
   /INTEREST\s+CAPITALISED/i,
   /INTEREST\s+CREDIT/i,
-  /\bNEFT\s+CR\b/i,
-  /\bRTGS\s+CR\b/i,
-  /\bIMPS\s+CR\b/i,
+  /NEFT\s+CR/i,
+  /RTGS\s+CR/i,
+  /IMPS\s+CR/i,
+  /UPI\s+CR/i,
   /BY\s+TRANSFER/i,
   /BY\s+CLEARING/i,
+  /BY\s+CASH/i,
+  /SALARY\s+CREDIT/i,
   /SALARY\s+CR/i,
-  /\bREFUND\b/i,
-  /\bREVERSAL\b/i,
-  /\bCASHBACK\b/i,
+  /REFUND/i,
+  /REVERSAL/i,
+  /CASHBACK/i,
   /MATURITY\s+PROCEEDS/i,
-  /\bDIVIDEND\b/i,
+  /DIVIDEND/i,
+  /CREDIT\s+ADJUSTMENT/i,
+  /MISCELLANEOUS\s+CREDIT/i,
+  /INB\s+CR/i,
+  /ATM\s+CR/i,
   /FD\s+MATURITY/i,
   /RD\s+MATURITY/i,
-  /INWARD\s+REMITTANCE/i,
+  /\bCR\b/i,
 ];
 
-const DEBIT_PATTERNS = [
-  /\bDR\b/i,
-  /\bATM\s+WDL\b/i,
-  /\bATM\s+CASH\b/i,
-  /\bPOS\s+/i,
-  /\bEMI\b/i,
-  /SERVICE\s+CHARGE/i,
+const DEBIT_KEYWORDS = [
+  /UPI\s+DR/i,
+  /NEFT\s+DR/i,
+  /RTGS\s+DR/i,
+  /IMPS\s+DR/i,
+  /ATM\s+WDL/i,
+  /ATM\s+CASH/i,
+  /POS\s+/i,
+  /BILL\s+PAYMENT/i,
+  /LOAN\s+EMI/i,
+  /EMI\s+DEBIT/i,
   /ANNUAL\s+FEE/i,
-  /LOAN\s+INSTALLMENT/i,
+  /SERVICE\s+CHARGE/i,
+  /CHARGES/i,
+  /DEBIT\s+ADJUSTMENT/i,
+  /\bDR\b/i,
 ];
-
-export function detectTypeFromKeywords(narration: string): 'debit' | 'credit' {
-  const isCredit = CREDIT_PATTERNS.some((p) => p.test(narration));
-  const isDebit = DEBIT_PATTERNS.some((p) => p.test(narration));
-  if (isCredit && !isDebit) return 'credit';
-  return 'debit'; // Default to debit
-}
 
 export function cleanNumber(str: string): number | null {
   if (!str) return null;
@@ -486,23 +449,29 @@ export function cleanNumber(str: string): number | null {
 }
 
 /**
- * Universal Anchor Parsing Engine based on Balance Chain Math
+ * Parses raw extracted PDF data using Intelligent Anchor-Based parsing.
+ * Preserves dynamic column x-positions and raw line structures.
  */
 export async function parsePDFIntelligent(
   buffer: ArrayBuffer | Uint8Array | PDFExtractionResult,
   options?: { bankHint?: string; preExtracted?: PDFExtractionResult } | string
 ): Promise<ParseResult> {
   let pdfData: PDFExtractionResult;
+  let bankHint: string | undefined;
 
   if (buffer && typeof buffer === 'object' && 'pages' in buffer) {
     pdfData = buffer as PDFExtractionResult;
+    bankHint = typeof options === 'string' ? options : options?.bankHint;
   } else {
     const rawBuffer = buffer as ArrayBuffer | Uint8Array;
     const opts = typeof options === 'object' ? options : undefined;
     pdfData = opts?.preExtracted || (await extractPDFRawData(rawBuffer));
+    bankHint = typeof options === 'string' ? options : opts?.bankHint;
   }
 
-  // Interface for Visual Line with text items
+  const rawLines: string[] = [];
+  let summaryReached = false;
+
   interface VisualLine {
     y: number;
     text: string;
@@ -510,7 +479,6 @@ export async function parsePDFIntelligent(
   }
 
   const allVisualLines: VisualLine[] = [];
-  let summaryReached = false;
 
   for (const page of pdfData.pages) {
     if (summaryReached) break;
@@ -527,17 +495,50 @@ export async function parsePDFIntelligent(
         }
       }
 
+      // Check header row for dynamic column positions
+      let pageDebitX: number | null = null;
+      let pageCreditX: number | null = null;
+      let pageBalanceX: number | null = null;
+
       for (const line of linesMap) {
         line.items.sort((a, b) => a.x - b.x);
         line.text = line.items.map((i) => i.text).join(' ');
-        if (isFooterLine(line.text) && !/^\s*\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}/.test(line.text)) {
+        const isHeader =
+          line.items.some((i) => /narration|particulars|description/i.test(i.text)) &&
+          line.items.some((i) => /debit|withdrawal/i.test(i.text));
+        if (isHeader) {
+          const w = line.items.find((i) => /withdrawal|debit/i.test(i.text));
+          const d = line.items.find((i) => /deposit|credit/i.test(i.text));
+          const b = line.items.find((i) => /balance/i.test(i.text));
+          if (w) pageDebitX = w.x;
+          if (d) pageCreditX = d.x;
+          if (b) pageBalanceX = b.x;
+        }
+      }
+
+      for (const line of linesMap) {
+        if (isSummaryStop(line.text) && !/^\s*\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}/.test(line.text)) {
           summaryReached = true;
           break;
         }
         allVisualLines.push(line);
+        rawLines.push(line.text);
+      }
+    } else {
+      // Grid rows fallback
+      for (const gRow of page.gridRows) {
+        const rowStr = gRow.join(' ');
+        if (isSummaryStop(rowStr) && !/^\s*\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}/.test(rowStr)) {
+          summaryReached = true;
+          break;
+        }
+        rawLines.push(rowStr);
       }
     }
   }
+
+  // Detect bank profile
+  const profile = (bankHint && BANK_PROFILES[bankHint.toUpperCase()]) || detectBankProfile(rawLines);
 
   // Group into raw transaction blocks by Date Anchor (Invariant 1)
   interface RawAnchorBlock {
@@ -561,22 +562,22 @@ export async function parsePDFIntelligent(
       const text = vLine.text.trim();
       if (!text) continue;
 
-    let dateMatch = text.match(DATE_REGEX);
-    let dateFound = dateMatch ? dateMatch[0].trim() : '';
-    if (!dateMatch) {
-      const srMatch = text.match(SR_NO_DATE_REGEX);
-      if (srMatch) {
-        dateFound = srMatch[1].trim();
-        dateMatch = srMatch;
+      let dateMatch = text.match(DATE_REGEX);
+      let dateFound = dateMatch ? dateMatch[0].trim() : '';
+      if (!dateMatch && profile.hasSrNo) {
+        const srMatch = text.match(SR_NO_DATE_REGEX);
+        if (srMatch) {
+          dateFound = srMatch[1].trim();
+          dateMatch = srMatch;
+        }
       }
-    }
 
-    const dateItem = vLine.items.find((i) => {
-      const t = i.text.trim();
-      return (/^\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}/.test(t) || /^\d{1,4}$/.test(t)) && i.x < 120;
-    });
+      // Check if this line is an Anchor (Invariant 1)
+      const dateItem = vLine.items.find(
+        (i) => i.x < 100 && /^\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}/.test(i.text.trim())
+      );
 
-    if (dateMatch && (dateItem || vLine.items.length > 0)) {
+      if (dateMatch && (dateItem || !hasVisualItems)) {
         if (currentBlock) {
           blocks.push(currentBlock);
         }
@@ -588,10 +589,41 @@ export async function parsePDFIntelligent(
           dateStr: dateFound || (dateItem ? dateItem.text.trim() : ''),
         };
       } else if (currentBlock) {
-        if (!isFooterLine(text)) {
-          currentBlock.continuationLines.push(vLine);
-          currentBlock.continuationTexts.push(text);
+        currentBlock.continuationLines.push(vLine);
+        currentBlock.continuationTexts.push(text);
+      }
+    }
+    if (currentBlock) {
+      blocks.push(currentBlock);
+    }
+  } else {
+    // String line based anchor extraction
+    for (const lineText of rawLines) {
+      const text = lineText.trim();
+      if (!text) continue;
+      let dateMatch = text.match(DATE_REGEX);
+      let dateFound = dateMatch ? dateMatch[0].trim() : '';
+      if (!dateMatch && profile.hasSrNo) {
+        const srMatch = text.match(SR_NO_DATE_REGEX);
+        if (srMatch) {
+          dateFound = srMatch[1].trim();
+          dateMatch = srMatch;
         }
+      }
+
+      if (dateMatch) {
+        if (currentBlock) {
+          blocks.push(currentBlock);
+        }
+        currentBlock = {
+          anchorLine: null,
+          anchorText: text,
+          continuationLines: [],
+          continuationTexts: [],
+          dateStr: dateFound,
+        };
+      } else if (currentBlock) {
+        currentBlock.continuationTexts.push(text);
       }
     }
     if (currentBlock) {
@@ -599,12 +631,9 @@ export async function parsePDFIntelligent(
     }
   }
 
-  // Parse transactions using PART 1 — BALANCE CHAIN MATH
+  // Parse transactions from Anchor blocks
   const parsedTxns: ParsedTransaction[] = [];
-  let prevBalance: number | null = pdfData.openingBalance ?? null;
-
-  // Number regex for Indian currency format
-  const NUMBER_REGEX = /\b\d{1,3}(?:,\d{2,3})*(?:\.\d{1,2})?\b/g;
+  let runningBalance: number | null = pdfData.openingBalance ?? null;
 
   for (let i = 0; i < blocks.length; i++) {
     const block = blocks[i];
@@ -614,131 +643,154 @@ export async function parsePDFIntelligent(
     let debit = 0;
     let credit = 0;
     let balance = 0;
-    let resolved = false;
+    let explicitRef = '';
 
-    // STEP 1 — Extract all numbers from anchor line
-    const anchorTextWithoutDate = block.anchorText
-      .replace(/^\s*(?:\d{1,4}\s+)?\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}\s*/, '')
-      .replace(/\b\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}\b/g, '');
-    const numMatches = Array.from(anchorTextWithoutDate.matchAll(NUMBER_REGEX));
+    const allBlockTexts = [block.anchorText, ...block.continuationTexts];
+    const joinedRawNarration = allBlockTexts.join(' ');
 
-    interface ExtractedNum {
-      val: number;
-      raw: string;
-      index: number;
-    }
+    if (block.anchorLine && block.anchorLine.items.length > 0) {
+      const items = [...block.anchorLine.items].sort((a, b) => a.x - b.x);
 
-    const extractedNums: ExtractedNum[] = [];
-    for (const match of numMatches) {
-      const raw = match[0];
-      // Ignore isolated 1-2 digit numbers that are likely date components or tokens without decimals
-      if (/^\d{1,2}$/.test(raw) && !raw.includes('.')) continue;
-      const val = cleanNumber(raw);
-      if (val !== null) {
-        extractedNums.push({ val, raw, index: match.index ?? 0 });
+      // Date item
+      const dateItm = items.find((it) => it.x < 100 && /^\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}/.test(it.text.trim()));
+
+      // Narration items on anchor line
+      const narrItms = items.filter((it) => it.x >= 65 && it.x < 280);
+      const refItms = items.filter((it) => it.x >= 280 && it.x < 355);
+
+      if (refItms.length > 0) {
+        explicitRef = refItms.map((it) => it.text).join('').trim();
       }
-    }
 
-    // STEP 2 — Identify balance using chain math (evaluating candidates from right-to-left)
-    if (prevBalance !== null && extractedNums.length >= 2) {
-      for (let nIdx = extractedNums.length - 1; nIdx >= 0; nIdx--) {
-        const N = extractedNums[nIdx].val; // Balance candidate (prefer rightmost number)
-        for (let aIdx = 0; aIdx < extractedNums.length; aIdx++) {
-          if (nIdx === aIdx) continue;
-          const A = extractedNums[aIdx].val; // Amount candidate
+      // Amounts items (x >= 380)
+      const amountItems = items.filter((it) => it !== dateItm && it.x >= 380);
 
-          const debitCheck = Math.abs(prevBalance - A - N);
-          const creditCheck = Math.abs(prevBalance + A - N);
-
-          if (debitCheck < 0.05) {
-            debit = A;
-            balance = N;
-            resolved = true;
-            break;
-          }
-          if (creditCheck < 0.05) {
-            credit = A;
-            balance = N;
-            resolved = true;
-            break;
-          }
-        }
-        if (resolved) break;
+      // Extract numbers with their X coordinates
+      interface AmtItem {
+        num: number;
+        x: number;
       }
-    }
-
-    // STEP 4 — Fallback if chain math does not resolve (first row or opening balance unknown)
-    if (!resolved && extractedNums.length >= 2) {
-      balance = extractedNums[extractedNums.length - 1].val;
-      const amount = extractedNums[extractedNums.length - 2].val;
-      const type = detectTypeFromKeywords(block.anchorText);
-      if (type === 'credit') credit = amount;
-      else debit = amount;
-      resolved = true;
-    } else if (!resolved && extractedNums.length === 1) {
-      // STEP 5 — Amount on continuation line
-      balance = extractedNums[0].val;
-
-      // Scan continuation lines for amount
-      let contAmount: number | null = null;
-      for (const cText of block.continuationTexts) {
-        const cMatches = Array.from(cText.matchAll(NUMBER_REGEX));
-        if (cMatches.length > 0) {
-          contAmount = cleanNumber(cMatches[0][0]);
-          if (contAmount !== null) break;
+      const extractedAmts: AmtItem[] = [];
+      for (const it of amountItems) {
+        const n = cleanNumber(it.text);
+        if (n !== null) {
+          extractedAmts.push({ num: n, x: it.x });
         }
       }
 
-      if (contAmount !== null) {
-        if (prevBalance !== null) {
-          const debitCheck = Math.abs(prevBalance - contAmount - balance);
-          const creditCheck = Math.abs(prevBalance + contAmount - balance);
-          if (creditCheck < debitCheck) credit = contAmount;
-          else debit = contAmount;
+      // INVARIANT 2: Balance always comes last (highest x or last item in array)
+      if (extractedAmts.length > 0) {
+        const balItem = extractedAmts[extractedAmts.length - 1];
+        balance = balItem.num;
+
+        const candidateAmounts = extractedAmts.slice(0, extractedAmts.length - 1);
+
+        if (candidateAmounts.length === 1) {
+          const amt = candidateAmounts[0];
+          // PRIORITY 1: X-position check (HDFC standard debit ~417, credit ~492)
+          if (amt.x < 460) {
+            debit = amt.num;
+          } else if (amt.x >= 460 && amt.x < 535) {
+            credit = amt.num;
+          } else {
+            // PRIORITY 2: Balance math
+            if (runningBalance !== null) {
+              const dDiff = Math.abs(runningBalance - amt.num - balance);
+              const cDiff = Math.abs(runningBalance + amt.num - balance);
+              if (cDiff < dDiff || cDiff < 0.05) credit = amt.num;
+              else debit = amt.num;
+            } else {
+              // PRIORITY 3: Narration keyword fallback
+              const isCr = CREDIT_KEYWORDS.some((kw) => kw.test(joinedRawNarration));
+              if (isCr) credit = amt.num;
+              else debit = amt.num;
+            }
+          }
+        } else if (candidateAmounts.length >= 2) {
+          // If two amount candidates exist (e.g. Debit col and Credit col)
+          const first = candidateAmounts[0];
+          const second = candidateAmounts[1];
+          if (first.num > 0 && second.num === 0) debit = first.num;
+          else if (second.num > 0 && first.num === 0) credit = second.num;
+          else {
+            if (first.x < 460) debit = first.num;
+            if (second.x >= 460) credit = second.num;
+          }
+        }
+      }
+
+      // Collect narration from anchor items + continuation lines using smartJoin
+      const anchorNarr = narrItms.map((it) => it.text).join(' ');
+      let rawFullNarr = anchorNarr;
+      for (const cl of block.continuationLines) {
+        const cNarrItms = cl.items.filter((it) => it.x >= 50 && it.x < 360);
+        const cText = cNarrItms.map((it) => it.text).join(' ').trim();
+        if (cText) {
+          rawFullNarr = smartJoin(rawFullNarr, cText);
+        }
+      }
+      if (!rawFullNarr) rawFullNarr = joinedRawNarration;
+      const { cleanDescription, reference } = cleanNarrationPipeline(rawFullNarr, explicitRef);
+
+      parsedTxns.push({
+        date: isoDate,
+        rawDate: dateStr,
+        narration: cleanDescription,
+        reference,
+        debit,
+        credit,
+        balance,
+        balanceMismatch: false,
+        rawNarration: rawFullNarr,
+      });
+
+      runningBalance = balance;
+    } else {
+      // String/Grid based fallback
+      // Extract numbers matching pattern
+      const numMatches = block.anchorText.match(/\b(?:\d{1,3}(?:,\d{2,3})*(?:\.\d{1,2})?|\d+\.\d{2})\b/g) || [];
+      const nums = numMatches.map((s) => cleanNumber(s)).filter((n): n is number => n !== null);
+
+      if (nums.length >= 2) {
+        // INVARIANT 2: Balance always comes last
+        balance = nums[nums.length - 1];
+        const amt = nums[nums.length - 2];
+
+        // PRIORITY 2: Balance direction math
+        if (runningBalance !== null) {
+          const dDiff = Math.abs(runningBalance - amt - balance);
+          const cDiff = Math.abs(runningBalance + amt - balance);
+          if (cDiff < dDiff || cDiff < 0.05) credit = amt;
+          else debit = amt;
         } else {
-          const type = detectTypeFromKeywords(block.anchorText + ' ' + block.continuationTexts.join(' '));
-          if (type === 'credit') credit = contAmount;
-          else debit = contAmount;
+          // PRIORITY 3: Narration keyword fallback
+          const isCr = CREDIT_KEYWORDS.some((kw) => kw.test(joinedRawNarration));
+          if (isCr) credit = amt;
+          else debit = amt;
         }
+      } else if (nums.length === 1) {
+        balance = nums[0];
       }
-      resolved = true;
+
+      const { cleanDescription, reference } = cleanNarrationPipeline(joinedRawNarration);
+
+      parsedTxns.push({
+        date: isoDate,
+        rawDate: dateStr,
+        narration: cleanDescription,
+        reference,
+        debit,
+        credit,
+        balance,
+        balanceMismatch: false,
+        rawNarration: joinedRawNarration,
+      });
+
+      runningBalance = balance;
     }
-
-    prevBalance = balance > 0 ? balance : prevBalance;
-
-    // STEP 6 — Extract and clean narration
-    let rawFullNarr = block.anchorText;
-    for (const cText of block.continuationTexts) {
-      rawFullNarr = smartJoin(rawFullNarr, cText);
-    }
-
-    // Strip footer bleed first
-    const strippedFooter = stripFooterBleedFromNarration(rawFullNarr);
-
-    // Extract reference
-    const utrMatch = strippedFooter.match(/\b(\d{10,16})\b/);
-    const reference = utrMatch ? utrMatch[1].replace(/^0+/, '') || utrMatch[1] : '';
-
-    // Extract Payee Name via grammar
-    const payee = extractPayeeName(strippedFooter);
-    const payeeStripped = stripStructuralNoise(payee);
-    const finalNarration = sanitizeFinalDescription(payeeStripped, strippedFooter);
-
-    parsedTxns.push({
-      date: isoDate,
-      rawDate: dateStr,
-      narration: finalNarration,
-      reference,
-      debit,
-      credit,
-      balance,
-      balanceMismatch: false,
-      rawNarration: rawFullNarr,
-      pdfRowIndex: i,
-    });
   }
 
-  // STEP 8 — BALANCE CONTINUITY VERIFICATION
+  // STEP 8: BALANCE CONTINUITY VERIFICATION
   for (let i = 1; i < parsedTxns.length; i++) {
     const prev = parsedTxns[i - 1];
     const curr = parsedTxns[i];
@@ -760,7 +812,6 @@ export async function parsePDFIntelligent(
     Debit: t.debit > 0 ? t.debit.toFixed(2) : '',
     Credit: t.credit > 0 ? t.credit.toFixed(2) : '',
     Balance: t.balance > 0 ? t.balance.toFixed(2) : '',
-    pdf_row_index: String(t.pdfRowIndex ?? 0),
     ...(t.balanceMismatch ? { needs_review: 'true' } : {}),
   }));
 
@@ -792,8 +843,8 @@ export async function parsePDFIntelligent(
   return {
     headers,
     rows,
-    parser_version: 'universal-chain-math-v2',
-    detected_bank: 'Universal Parser',
+    parser_version: 'intelligent-anchor-v1',
+    detected_bank: profile.name,
     confidence: 'high',
     suggested_mapping,
     opening_balance: pdfData.openingBalance,

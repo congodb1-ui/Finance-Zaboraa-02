@@ -94,7 +94,7 @@ export const RuleCard: React.FC<RuleCardProps> = ({
                 {rule.match_field}
               </code>
               <span className="font-medium text-indigo-600 dark:text-indigo-400">
-                {rule.match_type.replace('_', ' ')}
+                {(rule.match_type || 'contains').replace(/_/g, ' ')}
               </span>
               <code className="font-mono text-slate-900 dark:text-white font-semibold px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700">
                 "{rule.match_value}"

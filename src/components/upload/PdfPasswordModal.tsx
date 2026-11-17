@@ -5,8 +5,9 @@ import { Button } from '../ui/Button';
 interface PdfPasswordModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onSubmit: (password: string) => Promise<void> | void;
+  onSubmit: (password: string, saveLocally?: boolean) => Promise<void> | void;
   fileName?: string;
+  accountName?: string;
   error?: string | null;
   isLoading?: boolean;
 }
@@ -16,11 +17,13 @@ export const PdfPasswordModal: React.FC<PdfPasswordModalProps> = ({
   onClose,
   onSubmit,
   fileName,
+  accountName,
   error,
   isLoading = false,
 }) => {
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
+  const [saveLocally, setSaveLocally] = useState(true);
   const [showHints, setShowHints] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -28,6 +31,7 @@ export const PdfPasswordModal: React.FC<PdfPasswordModalProps> = ({
     if (isOpen) {
       setPassword('');
       setShowPassword(false);
+      setSaveLocally(true);
       // Auto-focus password input after modal opens
       setTimeout(() => {
         inputRef.current?.focus();
@@ -40,7 +44,7 @@ export const PdfPasswordModal: React.FC<PdfPasswordModalProps> = ({
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!password.trim()) return;
-    onSubmit(password.trim());
+    onSubmit(password.trim(), saveLocally);
   };
 
   return (
@@ -135,6 +139,23 @@ export const PdfPasswordModal: React.FC<PdfPasswordModalProps> = ({
               </button>
             </div>
           </div>
+
+          {/* Save Locally Option */}
+          <label className="flex items-start gap-2.5 p-3 rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700/80 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={saveLocally}
+              onChange={(e) => setSaveLocally(e.target.checked)}
+              disabled={isLoading}
+              className="mt-0.5 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+            />
+            <span className="text-[11px] leading-relaxed text-slate-600 dark:text-slate-300">
+              <span className="font-semibold text-slate-800 dark:text-slate-100 block">
+                Save PDF password locally for {accountName || 'this account'}
+              </span>
+              Stored only in this browser&apos;s local storage so future PDF uploads auto-unlock without prompting.
+            </span>
+          </label>
 
           {/* Hints Accordion */}
           {showHints && (

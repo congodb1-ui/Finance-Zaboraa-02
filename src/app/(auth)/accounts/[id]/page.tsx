@@ -13,6 +13,10 @@ import { getAccountLedgerWithRunningBalance } from '../../../../lib/actions/tran
 import { getCategories } from '../../../../lib/actions/categories';
 import { getUploads } from '../../../../lib/actions/upload';
 import type { AccountFormData, AccountWithBalance } from '../../../../types/accounts';
+import {
+  getAccountLocalPrefs,
+  hasSavedAccountPdfPassword,
+} from '../../../../lib/account-local-prefs';
 import type { Category } from '../../../../types/categories';
 import type { StatementUpload } from '../../../../types/uploads';
 import type { Transaction } from '../../../../types/transactions';
@@ -114,7 +118,7 @@ export default function AccountDetailPage({
     }
   };
 
-  const handleEditSubmit = async (formData: AccountFormData) => {
+  const handleEditSubmit = async (formData: AccountFormData): Promise<AccountWithBalance | void> => {
     if (!account) return;
     setIsSavingEdit(true);
     setSaveNotice(null);
@@ -125,6 +129,7 @@ export default function AccountDetailPage({
       await loadAccountData();
       setSaveNotice('Account details updated successfully.');
       setTimeout(() => setSaveNotice(null), 4000);
+      return updated;
     } finally {
       setIsSavingEdit(false);
     }
@@ -212,7 +217,7 @@ export default function AccountDetailPage({
           <Button
             variant="primary"
             size="sm"
-            onClick={() => (window.location.hash = 'upload')}
+            onClick={() => (window.location.hash = account ? `upload?account=${account.id}` : 'upload')}
           >
             Upload Statement
           </Button>
@@ -263,7 +268,7 @@ export default function AccountDetailPage({
         {/* Details & Purpose */}
         <Card className="p-4">
           <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400 block mb-1">
-            Account Metadata
+            Account Metadata &amp; Local Vault
           </span>
           <div className="text-xs space-y-1 font-mono text-slate-700 dark:text-slate-300">
             <div>Holder: {account?.account_holder_name || 'Not specified'}</div>
@@ -278,6 +283,32 @@ export default function AccountDetailPage({
             <div>
               Self-Transfer Eligible: {account?.operated_by_owner === false ? 'No (Family Member)' : 'Yes (Owner Operated)'}
             </div>
+            {account && (
+              <div className="pt-1 flex items-center justify-between gap-2">
+                <span>
+                  PDF Password:{' '}
+                  <strong
+                    className={
+                      hasSavedAccountPdfPassword(account.id)
+                        ? 'text-emerald-600 dark:text-emerald-400'
+                        : 'text-amber-600 dark:text-amber-400'
+                    }
+                  >
+                    {hasSavedAccountPdfPassword(account.id) ? 'Saved Locally' : 'Not Saved'}
+                  </strong>
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setIsEditOpen(true)}
+                  className="text-indigo-600 dark:text-indigo-400 hover:underline font-sans cursor-pointer"
+                >
+                  {hasSavedAccountPdfPassword(account.id) ? 'Update' : 'Set Password'}
+                </button>
+              </div>
+            )}
+            {account && getAccountLocalPrefs(account.id).customerIdOrCrn && (
+              <div>Cust ID / CRN: {getAccountLocalPrefs(account.id).customerIdOrCrn}</div>
+            )}
           </div>
         </Card>
       </div>

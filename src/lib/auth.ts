@@ -2,6 +2,11 @@ import { useEffect, useState, useCallback } from 'react';
 import { supabase } from './supabase/client';
 import { disableGoogleAutoSelect } from './google-gis';
 import { mapSupabaseUserToProfile, type UserProfile, type AuthState } from '../types/auth';
+import {
+  clearSandboxSession,
+  getSandboxSession,
+  setSandboxSession,
+} from './sandbox-auth'; // SANDBOX-ONLY: remove before production
 
 export function getGoogleClientId(): string {
   const fromVite =
@@ -93,10 +98,67 @@ export async function signInWithGoogle(_redirectTo?: string) {
 }
 
 /**
+ * SANDBOX-ONLY: Authenticates with a temporary local password via /api/auth/local-login.
+ * Remove this helper and endpoint before production deployment.
+ */
+export async function exchangeLocalPassword(password: string) {
+  const res = await fetch('/api/auth/local-login', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+    },
+    body: JSON.stringify({ password }),
+  });
+
+  const payload = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const errorMessage =
+      payload?.error || `Local sign-in failed with status ${res.status}`;
+    throw new Error(typeof errorMessage === 'string' ? errorMessage : 'Local sign-in failed.');
+  }
+
+  const accessToken = payload?.session?.access_token;
+  const refreshToken = payload?.session?.refresh_token;
+  if (!accessToken || !refreshToken) {
+    throw new Error('Server did not return a valid session.');
+  }
+
+  if (payload?.mode === 'sandbox') {
+    setSandboxSession({
+      access_token: accessToken,
+      refresh_token: refreshToken,
+      expires_at: Number(payload?.session?.expires_at || Math.floor(Date.now() / 1000) + 86400),
+      user: payload.user,
+    });
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new Event('auth-state-change'));
+    }
+    return payload.user;
+  }
+
+  const { data, error } = await supabase.auth.setSession({
+    access_token: accessToken,
+    refresh_token: refreshToken,
+  });
+
+  if (error) {
+    throw new Error(error.message || 'Failed to activate Supabase session.');
+  }
+
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new Event('auth-state-change'));
+  }
+
+  return data.user;
+}
+
+/**
  * Signs the user out, clears Supabase + GIS state, and redirects to landing page
  */
 export async function signOut(redirectTo: string = '/') {
   disableGoogleAutoSelect();
+  clearSandboxSession(); // SANDBOX-ONLY: remove before production
 
   if (typeof window !== 'undefined') {
     localStorage.removeItem('zaboraa_preview_session');
@@ -126,6 +188,7 @@ export async function signOut(redirectTo: string = '/') {
 export function useAuth(): AuthState & {
   signInWithGoogle: (redirectTo?: string) => Promise<any>;
   exchangeGoogleIdToken: (credential: string) => Promise<any>;
+  exchangeLocalPassword: (password: string) => Promise<any>;
   signOut: (redirectTo?: string) => Promise<void>;
   refreshSession: () => Promise<void>;
 } {
@@ -147,6 +210,16 @@ export function useAuth(): AuthState & {
       // Supabase is offline or unconfigured
     }
 
+    // SANDBOX-ONLY: fallback check for local sandbox session when Supabase is placeholder
+    if (isSupabasePlaceholder()) {
+      const sandbox = getSandboxSession();
+      if (sandbox?.user) {
+        setUser(mapSupabaseUserToProfile(sandbox.user));
+        setIsLoading(false);
+        return;
+      }
+    }
+
     setUser(null);
     setIsLoading(false);
   }, []);
@@ -156,9 +229,11 @@ export function useAuth(): AuthState & {
 
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, session) => {
+    } = supabase.auth.onAuthStateChange((_event: any, session: any) => {
       if (session?.user) {
         setUser(mapSupabaseUserToProfile(session.user));
+      } else if (isSupabasePlaceholder() && getSandboxSession()?.user) {
+        setUser(mapSupabaseUserToProfile(getSandboxSession()!.user));
       } else {
         setUser(null);
       }
@@ -184,6 +259,7 @@ export function useAuth(): AuthState & {
     isAuthenticated: !!user,
     signInWithGoogle,
     exchangeGoogleIdToken,
+    exchangeLocalPassword,
     signOut,
     refreshSession,
   };

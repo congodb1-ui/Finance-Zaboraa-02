@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { Card } from '../ui/Card';
 import { Button } from '../ui/Button';
 import { AccountHealthDot } from '../ui/AccountHealthDot';
@@ -8,17 +8,19 @@ import {
   ACCOUNT_TYPE_LABELS,
 } from '../../types/accounts';
 import {
-  Building2,
+  getAccountLocalPrefs,
+  hasSavedAccountPdfPassword,
+} from '../../lib/account-local-prefs';
+import {
   CreditCard,
   Wallet,
   Landmark,
   Pencil,
   Trash2,
-  Calendar,
-  AlertCircle,
-  Clock,
   ToggleLeft,
   ToggleRight,
+  KeyRound,
+  UploadCloud,
 } from 'lucide-react';
 
 interface AccountCardProps {
@@ -40,6 +42,16 @@ export const AccountCard: React.FC<AccountCardProps> = ({
 }) => {
   const isCreditCard = account.account_type === 'credit_card';
   const colorHex = CATEGORY_PALETTE[account.color_index ?? 0] || '#6366F1';
+  const [, setPrefsTick] = useState(0);
+
+  useEffect(() => {
+    const onPrefsChanged = () => setPrefsTick((t) => t + 1);
+    window.addEventListener('zaboraa-account-prefs-changed', onPrefsChanged);
+    return () => window.removeEventListener('zaboraa-account-prefs-changed', onPrefsChanged);
+  }, []);
+
+  const localPrefs = getAccountLocalPrefs(account.id);
+  const hasPdfPwd = hasSavedAccountPdfPassword(account.id);
 
   // Compute days since last import for AccountHealthDot
   let daysAgo: number | undefined = undefined;
@@ -107,6 +119,11 @@ export const AccountCard: React.FC<AccountCardProps> = ({
                     •••• {account.account_number_last4}
                   </span>
                 )}
+                {account.currency && account.currency !== 'INR' && (
+                  <span className="font-mono ml-1.5 px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-[10px] text-slate-600 dark:text-slate-300">
+                    {account.currency}
+                  </span>
+                )}
               </p>
             </div>
           </div>
@@ -124,17 +141,46 @@ export const AccountCard: React.FC<AccountCardProps> = ({
           </div>
         </div>
 
-        {/* Account Type Badge & Notes */}
+        {/* Account Type Badge, Purpose, Local PDF Vault & Notes */}
         <div className="flex items-center flex-wrap gap-2 mb-4">
           <span className="px-2.5 py-1 rounded-md text-xs font-medium border bg-slate-50 dark:bg-slate-800/60 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700">
             {ACCOUNT_TYPE_LABELS[account.account_type] || account.account_type}
           </span>
+          {account.purpose && (
+            <span className="px-2 py-1 rounded-md text-[11px] font-medium capitalize bg-indigo-50 dark:bg-indigo-950/40 text-indigo-700 dark:text-indigo-300 border border-indigo-200/70 dark:border-indigo-800/50">
+              {account.purpose}
+            </span>
+          )}
+          {hasPdfPwd && (
+            <span
+              className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-medium bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border border-emerald-200/80 dark:border-emerald-800/60"
+              title="Statement PDF password saved locally on this device"
+            >
+              <KeyRound className="w-3 h-3" />
+              <span>PDF Password Saved</span>
+            </span>
+          )}
           {account.notes && (
             <span className="text-xs text-slate-500 italic truncate max-w-[200px]" title={account.notes}>
               {account.notes}
             </span>
           )}
         </div>
+
+        {/* Optional Banking & Rate Metadata Strip */}
+        {(account.ifsc ||
+          account.upi_id ||
+          localPrefs.interestRatePct !== undefined ||
+          localPrefs.maturityDate) && (
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] font-mono text-slate-500 dark:text-slate-400 mb-3">
+            {account.ifsc && <span>IFSC: {account.ifsc}</span>}
+            {account.upi_id && <span>UPI: {account.upi_id}</span>}
+            {localPrefs.interestRatePct !== undefined && (
+              <span>Rate: {localPrefs.interestRatePct}% p.a.</span>
+            )}
+            {localPrefs.maturityDate && <span>Matures: {localPrefs.maturityDate}</span>}
+          </div>
+        )}
 
         {/* Balance Display with Tabular Figures */}
         <div className="p-3.5 rounded-lg bg-slate-50 dark:bg-slate-800/50 border border-slate-100 dark:border-slate-800/80 mb-4">
@@ -203,7 +249,7 @@ export const AccountCard: React.FC<AccountCardProps> = ({
         )}
       </div>
 
-      {/* Footer Actions: Active Toggle, Edit, Delete */}
+      {/* Footer Actions: Active Toggle, Upload, Ledger, Edit, Delete */}
       <div className="pt-3 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between text-xs text-slate-500">
         <button
           type="button"
@@ -224,6 +270,17 @@ export const AccountCard: React.FC<AccountCardProps> = ({
         </button>
 
         <div className="flex items-center gap-1 flex-wrap justify-end">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              window.location.hash = `upload?account=${account.id}`;
+            }}
+            aria-label={`Upload statement for ${account.name}`}
+          >
+            <UploadCloud className="w-3.5 h-3.5 mr-1" />
+            Upload
+          </Button>
           <Button
             variant="outline"
             size="sm"

@@ -1,5 +1,6 @@
 import { supabase } from './supabase/client';
 import { signOut } from './auth';
+import { getSandboxAccessToken } from './sandbox-auth'; // SANDBOX-ONLY: remove before production
 
 /**
  * Zaboraa Finance — Authenticated API Client
@@ -16,6 +17,10 @@ async function getAuthHeader(): Promise<Record<string, string>> {
     }
   } catch (err) {
     console.warn('Failed to retrieve Supabase session token:', err);
+  }
+  const sandboxToken = getSandboxAccessToken();
+  if (sandboxToken) {
+    return { Authorization: `Bearer ${sandboxToken}` };
   }
   return {};
 }

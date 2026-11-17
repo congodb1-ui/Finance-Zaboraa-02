@@ -50,6 +50,14 @@ import {
 } from './lib/gmail-vault';
 import { runGmailSyncForUser } from './lib/gmail-sync-service';
 import { generateAnalyticsReport, listAnalyticsReports } from './lib/analytics/generate';
+import {
+  getSandboxAuthUser,
+  isSandboxPasswordEnabled,
+  signSandboxToken,
+  verifySandboxPassword,
+  verifySandboxToken,
+} from './lib/sandbox-auth-server'; // SANDBOX-ONLY: remove before production
+import { createSandboxSupabaseClient } from './lib/sandbox-supabase'; // SANDBOX-ONLY: remove before production
 import type { Transaction } from './types/transactions';
 import type { ColumnMapping, ParseResult } from './types/uploads';
 
@@ -99,6 +107,17 @@ async function requireAuth(
 
     const token = authHeader.slice(7).trim();
     if (!token) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    // SANDBOX-ONLY: accept signed local sandbox bearer tokens when enabled
+    if (token.startsWith('sandbox.')) {
+      const sandboxCheck = verifySandboxToken(token);
+      if (sandboxCheck.valid && sandboxCheck.user) {
+        req.user = sandboxCheck.user;
+        req.supabase = createSandboxSupabaseClient(sandboxCheck.user);
+        return next();
+      }
       return res.status(401).json({ error: 'Unauthorized' });
     }
 
@@ -421,6 +440,89 @@ export async function runServer() {
     } catch (err) {
       console.error('Google auth route error:', err);
       return res.status(500).json({ error: 'Authentication failed. Please try again.' });
+    }
+  });
+
+  // --- SANDBOX-ONLY: Local Password Login (Remove before production) ---
+  app.get('/api/auth/sandbox-status', (_req: Request, res: Response) => {
+    return res.json({ enabled: isSandboxPasswordEnabled() });
+  });
+
+  app.post('/api/auth/local-login', authLimiter, async (req: Request, res: Response) => {
+    try {
+      if (!isSandboxPasswordEnabled()) {
+        return res.status(404).json({ error: 'Local sandbox login is disabled.' });
+      }
+
+      const password = typeof req.body?.password === 'string' ? req.body.password : '';
+      if (!password || !verifySandboxPassword(password)) {
+        return res.status(401).json({ error: 'Invalid sandbox password.' });
+      }
+
+      const sandboxUser = getSandboxAuthUser();
+      const hasRealSupabase =
+        Boolean(SUPABASE_URL) &&
+        !SUPABASE_URL.includes('placeholder') &&
+        Boolean(SUPABASE_ANON_KEY) &&
+        !SUPABASE_ANON_KEY.includes('placeholder') &&
+        Boolean(process.env.SUPABASE_SERVICE_ROLE_KEY);
+
+      if (hasRealSupabase) {
+        const serviceSupabase = getServiceSupabase()!;
+        const { data: linkData, error: linkError } = await serviceSupabase.auth.admin.generateLink({
+          type: 'magiclink',
+          email: sandboxUser.email!,
+        });
+
+        if (!linkError && linkData?.properties?.hashed_token) {
+          const anonClient = createSupabaseClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+            auth: {
+              persistSession: false,
+              autoRefreshToken: false,
+              detectSessionInUrl: false,
+            },
+          });
+
+          const { data: otpData, error: otpError } = await anonClient.auth.verifyOtp({
+            token_hash: linkData.properties.hashed_token,
+            type: 'magiclink',
+          });
+
+          if (!otpError && otpData?.session) {
+            const authedUser = otpData.user || linkData.user;
+            if (authedUser?.id) {
+              await ensureBatch2bBootstrap(serviceSupabase, authedUser).catch(() => {});
+            }
+            return res.json({
+              mode: 'supabase',
+              session: {
+                access_token: otpData.session.access_token,
+                refresh_token: otpData.session.refresh_token,
+                expires_in: otpData.session.expires_in,
+                expires_at: otpData.session.expires_at,
+                token_type: otpData.session.token_type,
+              },
+              user: otpData.user,
+            });
+          }
+        }
+      }
+
+      const { token, expiresAt } = signSandboxToken(sandboxUser);
+      return res.json({
+        mode: 'sandbox',
+        session: {
+          access_token: token,
+          refresh_token: 'sandbox-refresh',
+          expires_in: 24 * 60 * 60,
+          expires_at: expiresAt,
+          token_type: 'bearer',
+        },
+        user: sandboxUser,
+      });
+    } catch (err) {
+      console.error('Sandbox local login error:', err);
+      return res.status(500).json({ error: 'Local login failed. Please try again.' });
     }
   });
 

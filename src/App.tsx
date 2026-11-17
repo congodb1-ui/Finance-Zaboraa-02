@@ -79,7 +79,7 @@ export default function App() {
         if (idMatch) setSelectedAccountId(idMatch[1]);
         setCurrentRoute('/account-detail');
       }
-      else if (hash === 'upload') setCurrentRoute('/upload');
+      else if (hash === 'upload' || hash.startsWith('upload?')) setCurrentRoute('/upload');
       else if (hash === 'transactions') setCurrentRoute('/transactions');
       else if (invoiceEditMatch) {
         setSelectedInvoiceId(invoiceEditMatch[1]);
@@ -223,6 +223,9 @@ export default function App() {
     } else if (targetRoute === '/ai') {
       setCurrentRoute('/ai');
       window.location.hash = 'ai';
+    } else if (targetRoute.startsWith('/upload?')) {
+      setCurrentRoute('/upload');
+      window.location.hash = targetRoute.replace('/', '');
     } else {
       setCurrentRoute(targetRoute as any);
       window.location.hash = targetRoute === '/' ? '' : targetRoute.replace('/', '');
@@ -230,17 +233,7 @@ export default function App() {
   };
 
   const handleLogin = async () => {
-    if (getGoogleClientId()) {
-      setIsGoogleSignInOpen(true);
-      return;
-    }
-
-    try {
-      await signInWithGoogle();
-    } catch (err: any) {
-      setAuthNotice(err?.message || 'Unable to initiate Google sign-in.');
-      setTimeout(() => setAuthNotice(null), 5000);
-    }
+    setIsGoogleSignInOpen(true);
   };
 
   return (

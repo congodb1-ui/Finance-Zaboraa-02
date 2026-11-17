@@ -63,7 +63,6 @@ export interface StagedTransaction {
   reference_number: string | null;
   upi_ref_no?: string | null;
   imps_ref_no?: string | null;
-  pdf_row_index?: number | string | null;
   source?: 'manual_upload' | 'gmail_auto' | 'statement_import';
   is_duplicate: boolean;
   duplicate_of_id: string | null;

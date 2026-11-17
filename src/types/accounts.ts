@@ -34,7 +34,6 @@ export interface Account {
   credit_limit: number | null;
   billing_cycle_day: number | null;
   payment_due_day: number | null;
-  pdf_password?: string | null;
   created_at: string;
   updated_at: string;
 }

@@ -11,6 +11,14 @@ import {
   ACCOUNT_TYPE_LABELS,
 } from '../../types/accounts';
 import {
+  getAccountLocalPrefs,
+  setAccountLocalPrefs,
+  STATEMENT_FORMAT_OPTIONS,
+  STATEMENT_FREQUENCY_OPTIONS,
+  type StatementFormatHint,
+  type StatementFrequency,
+} from '../../lib/account-local-prefs';
+import {
   X,
   Check,
   Landmark,
@@ -20,11 +28,15 @@ import {
   Briefcase,
   PiggyBank,
   AlertCircle,
+  Lock,
+  Eye,
+  EyeOff,
+  FileSpreadsheet,
 } from 'lucide-react';
 
 interface AccountFormProps {
   initialData?: AccountWithBalance | null;
-  onSubmit: (data: AccountFormData) => Promise<void>;
+  onSubmit: (data: AccountFormData) => Promise<AccountWithBalance | void>;
   onCancel: () => void;
   isLoading?: boolean;
 }
@@ -37,6 +49,17 @@ const ICON_OPTIONS = [
   { id: 'Briefcase', label: 'Work', Icon: Briefcase },
   { id: 'PiggyBank', label: 'Savings', Icon: PiggyBank },
 ] as const;
+
+const CURRENCY_OPTIONS = [
+  { value: 'INR', label: 'INR (₹ Indian Rupee)' },
+  { value: 'USD', label: 'USD ($ US Dollar)' },
+  { value: 'EUR', label: 'EUR (€ Euro)' },
+  { value: 'GBP', label: 'GBP (£ British Pound)' },
+  { value: 'AED', label: 'AED (د.إ UAE Dirham)' },
+  { value: 'SGD', label: 'SGD (S$ Singapore Dollar)' },
+  { value: 'AUD', label: 'AUD (A$ Australian Dollar)' },
+  { value: 'CAD', label: 'CAD (C$ Canadian Dollar)' },
+];
 
 export const AccountForm: React.FC<AccountFormProps> = ({
   initialData,
@@ -51,11 +74,11 @@ export const AccountForm: React.FC<AccountFormProps> = ({
   const [accountType, setAccountType] = useState<AccountType>(
     initialData?.account_type || 'savings'
   );
+  const [currency, setCurrency] = useState<string>(initialData?.currency || 'INR');
   const [purpose, setPurpose] = useState<string>(initialData?.purpose || 'personal');
   const [last4, setLast4] = useState(initialData?.account_number_last4 || '');
   const [ifsc, setIfsc] = useState(initialData?.ifsc || '');
   const [upiId, setUpiId] = useState(initialData?.upi_id || '');
-  const [pdfPassword, setPdfPassword] = useState(initialData?.pdf_password || '');
   const [accountHolderName, setAccountHolderName] = useState(
     initialData?.account_holder_name || ''
   );
@@ -84,6 +107,29 @@ export const AccountForm: React.FC<AccountFormProps> = ({
     initialData?.payment_due_day ? String(initialData.payment_due_day) : ''
   );
 
+  // Local device statement & account vault preferences (stored in localStorage only)
+  const initialLocal = initialData?.id ? getAccountLocalPrefs(initialData.id) : {};
+  const [pdfPassword, setPdfPassword] = useState<string>(initialLocal.pdfPassword || '');
+  const [showPdfPassword, setShowPdfPassword] = useState<boolean>(false);
+  const [autoUseSavedPdfPassword, setAutoUseSavedPdfPassword] = useState<boolean>(
+    initialLocal.autoUseSavedPdfPassword ?? true
+  );
+  const [customerIdOrCrn, setCustomerIdOrCrn] = useState<string>(
+    initialLocal.customerIdOrCrn || ''
+  );
+  const [statementFormatHint, setStatementFormatHint] = useState<StatementFormatHint>(
+    initialLocal.statementFormatHint || 'auto'
+  );
+  const [statementFrequency, setStatementFrequency] = useState<StatementFrequency>(
+    initialLocal.statementFrequency || 'monthly'
+  );
+  const [interestRatePct, setInterestRatePct] = useState<string>(
+    initialLocal.interestRatePct !== undefined && initialLocal.interestRatePct !== null
+      ? String(initialLocal.interestRatePct)
+      : ''
+  );
+  const [maturityDate, setMaturityDate] = useState<string>(initialLocal.maturityDate || '');
+
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -93,11 +139,11 @@ export const AccountForm: React.FC<AccountFormProps> = ({
       setName(initialData.name);
       setBankName(initialData.bank_name);
       setAccountType(initialData.account_type);
+      setCurrency(initialData.currency || 'INR');
       setPurpose(initialData.purpose || 'personal');
       setLast4(initialData.account_number_last4 || '');
       setIfsc(initialData.ifsc || '');
       setUpiId(initialData.upi_id || '');
-      setPdfPassword(initialData.pdf_password || '');
       setAccountHolderName(initialData.account_holder_name || '');
       setOperatedByOwner(initialData.operated_by_owner ?? true);
       setOpeningBalance(
@@ -115,6 +161,19 @@ export const AccountForm: React.FC<AccountFormProps> = ({
         initialData.billing_cycle_day ? String(initialData.billing_cycle_day) : ''
       );
       setPaymentDueDay(initialData.payment_due_day ? String(initialData.payment_due_day) : '');
+
+      const local = getAccountLocalPrefs(initialData.id);
+      setPdfPassword(local.pdfPassword || '');
+      setAutoUseSavedPdfPassword(local.autoUseSavedPdfPassword ?? true);
+      setCustomerIdOrCrn(local.customerIdOrCrn || '');
+      setStatementFormatHint(local.statementFormatHint || 'auto');
+      setStatementFrequency(local.statementFrequency || 'monthly');
+      setInterestRatePct(
+        local.interestRatePct !== undefined && local.interestRatePct !== null
+          ? String(local.interestRatePct)
+          : ''
+      );
+      setMaturityDate(local.maturityDate || '');
     }
   }, [initialData]);
 
@@ -136,6 +195,13 @@ export const AccountForm: React.FC<AccountFormProps> = ({
 
     if (openingBalance.trim() && isNaN(Number(openingBalance))) {
       errs.openingBalance = 'Opening balance must be a valid number.';
+    }
+
+    if (interestRatePct.trim()) {
+      const r = Number(interestRatePct);
+      if (isNaN(r) || r < 0 || r > 100) {
+        errs.interestRatePct = 'Interest rate must be between 0 and 100%.';
+      }
     }
 
     if (accountType === 'credit_card') {
@@ -173,12 +239,11 @@ export const AccountForm: React.FC<AccountFormProps> = ({
       account_number_last4: last4.trim() ? last4.trim() : null,
       ifsc: ifsc.trim() ? ifsc.trim().toUpperCase() : null,
       upi_id: upiId.trim() ? upiId.trim() : null,
-      pdf_password: pdfPassword.trim() ? pdfPassword.trim() : null,
       account_holder_name: accountHolderName.trim() ? accountHolderName.trim() : null,
       operated_by_owner: operatedByOwner,
       opening_balance: openingBalance.trim() ? Number(openingBalance) : 0,
       opening_date: openingDate.trim() ? openingDate.trim() : null,
-      currency: initialData?.currency || 'INR',
+      currency: currency || 'INR',
       is_active: isActive,
       color_index: colorIndex,
       icon: icon || 'Landmark',
@@ -193,7 +258,19 @@ export const AccountForm: React.FC<AccountFormProps> = ({
 
     setSubmitting(true);
     try {
-      await onSubmit(formData);
+      const saved = await onSubmit(formData);
+      const targetAccountId = saved?.id || initialData?.id;
+      if (targetAccountId) {
+        setAccountLocalPrefs(targetAccountId, {
+          pdfPassword: pdfPassword.trim() || undefined,
+          autoUseSavedPdfPassword,
+          customerIdOrCrn: customerIdOrCrn.trim() || undefined,
+          statementFormatHint,
+          statementFrequency,
+          interestRatePct: interestRatePct.trim() ? Number(interestRatePct) : null,
+          maturityDate: maturityDate.trim() || null,
+        });
+      }
     } catch (err: any) {
       setSubmitError(err?.message || 'Failed to save account.');
     } finally {
@@ -202,6 +279,10 @@ export const AccountForm: React.FC<AccountFormProps> = ({
   };
 
   const busy = isLoading || submitting;
+  const showRateSection = ['savings', 'fd', 'ppf', 'nps', 'loan', 'credit_card'].includes(
+    accountType
+  );
+  const showMaturityDate = ['fd', 'ppf', 'loan'].includes(accountType);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in">
@@ -212,7 +293,7 @@ export const AccountForm: React.FC<AccountFormProps> = ({
               <CardTitle>{isEditing ? 'Edit Account' : 'Register New Account'}</CardTitle>
               <p className="text-xs text-slate-500 mt-0.5">
                 {isEditing
-                  ? 'Update account metadata, ownership, and statement matching settings'
+                  ? 'Update account metadata, ownership, and local statement PDF settings'
                   : 'Add a bank account, credit card, or wallet for statement mapping'}
               </p>
             </div>
@@ -318,20 +399,18 @@ export const AccountForm: React.FC<AccountFormProps> = ({
               />
             </div>
 
-            {/* Default PDF Password for Statement Imports */}
-            <Input
-              label="Statement PDF Password (Optional)"
-              type="password"
-              placeholder="Saved password used to automatically unlock uploaded PDF statements"
-              value={pdfPassword}
-              onChange={(e) => setPdfPassword(e.target.value)}
-              disabled={busy}
-            />
-
-            {/* Opening Balance, Opening Date, Notes */}
+            {/* Currency, Opening Balance, Opening Date */}
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <Select
+                label="Account Currency"
+                value={currency}
+                onChange={(e) => setCurrency(e.target.value)}
+                disabled={busy}
+                options={CURRENCY_OPTIONS}
+              />
+
               <Input
-                label="Opening Balance (₹)"
+                label={`Opening Balance (${currency})`}
                 type="number"
                 step="0.01"
                 value={openingBalance}
@@ -347,7 +426,10 @@ export const AccountForm: React.FC<AccountFormProps> = ({
                 onChange={(e) => setOpeningDate(e.target.value)}
                 disabled={busy}
               />
+            </div>
 
+            {/* Notes + Optional Interest Rate / Maturity Date */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
               <Input
                 label="Notes (Optional)"
                 placeholder="e.g. Primary tax account"
@@ -355,6 +437,29 @@ export const AccountForm: React.FC<AccountFormProps> = ({
                 onChange={(e) => setNotes(e.target.value)}
                 disabled={busy}
               />
+
+              {showRateSection && (
+                <Input
+                  label="Interest / APR (% p.a.)"
+                  type="number"
+                  step="0.01"
+                  placeholder="e.g. 7.10"
+                  value={interestRatePct}
+                  onChange={(e) => setInterestRatePct(e.target.value)}
+                  error={errors.interestRatePct}
+                  disabled={busy}
+                />
+              )}
+
+              {showMaturityDate && (
+                <Input
+                  label="Maturity / Tenure End"
+                  type="date"
+                  value={maturityDate}
+                  onChange={(e) => setMaturityDate(e.target.value)}
+                  disabled={busy}
+                />
+              )}
             </div>
 
             {/* Credit Card Conditional Section */}
@@ -396,6 +501,100 @@ export const AccountForm: React.FC<AccountFormProps> = ({
                 </div>
               </div>
             )}
+
+            {/* Statement & PDF Security (Local Device Storage) */}
+            <div className="p-4 rounded-xl bg-amber-50/50 dark:bg-amber-950/20 border border-amber-200/80 dark:border-amber-900/50 space-y-3">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs font-semibold text-amber-900 dark:text-amber-200 uppercase tracking-wider inline-flex items-center gap-1.5">
+                  <Lock className="w-3.5 h-3.5" />
+                  Statement &amp; PDF Security (Local Device)
+                </span>
+                <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-amber-100 dark:bg-amber-900/50 text-amber-800 dark:text-amber-300">
+                  Browser Local Only
+                </span>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <label
+                    htmlFor="account-pdf-password"
+                    className="text-xs font-medium text-slate-700 dark:text-slate-300 flex items-center justify-between"
+                  >
+                    <span>PDF Statement Password</span>
+                    {pdfPassword && (
+                      <button
+                        type="button"
+                        onClick={() => setPdfPassword('')}
+                        disabled={busy}
+                        className="text-[11px] text-red-600 dark:text-red-400 hover:underline cursor-pointer"
+                      >
+                        Clear
+                      </button>
+                    )}
+                  </label>
+                  <div className="relative">
+                    <input
+                      id="account-pdf-password"
+                      type={showPdfPassword ? 'text' : 'password'}
+                      value={pdfPassword}
+                      onChange={(e) => setPdfPassword(e.target.value)}
+                      placeholder="e.g. Customer ID or DDMMYYYY"
+                      autoComplete="new-password"
+                      disabled={busy}
+                      className="w-full px-3 py-2 pr-9 text-xs sm:text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowPdfPassword((v) => !v)}
+                      tabIndex={-1}
+                      aria-label={showPdfPassword ? 'Hide PDF password' : 'Show PDF password'}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer p-0.5"
+                    >
+                      {showPdfPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
+                  </div>
+                </div>
+
+                <Input
+                  label="Customer ID / CRN (Local Ref)"
+                  placeholder="e.g. HDFC Cust ID or Kotak CRN"
+                  value={customerIdOrCrn}
+                  onChange={(e) => setCustomerIdOrCrn(e.target.value)}
+                  disabled={busy}
+                />
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <Select
+                  label="Preferred Statement Format"
+                  value={statementFormatHint}
+                  onChange={(e) => setStatementFormatHint(e.target.value as StatementFormatHint)}
+                  disabled={busy}
+                  options={STATEMENT_FORMAT_OPTIONS}
+                />
+
+                <Select
+                  label="Expected Statement Cadence"
+                  value={statementFrequency}
+                  onChange={(e) => setStatementFrequency(e.target.value as StatementFrequency)}
+                  disabled={busy}
+                  options={STATEMENT_FREQUENCY_OPTIONS}
+                />
+              </div>
+
+              <label className="flex items-start gap-2 cursor-pointer select-none pt-0.5">
+                <input
+                  type="checkbox"
+                  checked={autoUseSavedPdfPassword}
+                  onChange={(e) => setAutoUseSavedPdfPassword(e.target.checked)}
+                  disabled={busy}
+                  className="mt-0.5 h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                />
+                <span className="text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed">
+                  Automatically check &amp; apply this saved password locally when uploading PDF statements (never sent to cloud database).
+                </span>
+              </label>
+            </div>
 
             {/* Toggles: Operated by Owner & Is Active */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 p-3.5 rounded-xl bg-slate-50 dark:bg-slate-900/60 border border-slate-200 dark:border-slate-800">

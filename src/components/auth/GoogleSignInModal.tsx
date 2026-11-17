@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { X, Loader2, AlertCircle, ShieldCheck } from 'lucide-react';
+import { X, Loader2, AlertCircle, ShieldCheck, KeyRound, ArrowRight } from 'lucide-react';
 import { ZaboraaWordmark } from '../ui/ZaboraaWordmark';
-import { exchangeGoogleIdToken, getGoogleClientId } from '../../lib/auth';
+import { exchangeGoogleIdToken, exchangeLocalPassword, getGoogleClientId } from '../../lib/auth';
 import { loadGoogleIdentityScript } from '../../lib/google-gis';
 
 interface GoogleSignInModalProps {
@@ -19,23 +19,45 @@ export const GoogleSignInModal: React.FC<GoogleSignInModalProps> = ({
   const [loadingScript, setLoadingScript] = useState(true);
   const [verifying, setVerifying] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // SANDBOX-ONLY: temporary local password state (remove before production)
+  const [sandboxEnabled, setSandboxEnabled] = useState(false);
+  const [localPassword, setLocalPassword] = useState('');
+  const [verifyingLocal, setVerifyingLocal] = useState(false);
   const clientId = getGoogleClientId();
 
   useEffect(() => {
     if (!isOpen) {
       setError(null);
       setVerifying(false);
+      setVerifyingLocal(false);
+      setLocalPassword('');
       return;
     }
 
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && !verifying) {
+      if (e.key === 'Escape' && !verifying && !verifyingLocal) {
         onClose();
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isOpen, verifying, onClose]);
+  }, [isOpen, verifying, verifyingLocal, onClose]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    let active = true;
+    fetch('/api/auth/sandbox-status')
+      .then((r) => r.json())
+      .then((d) => {
+        if (active) setSandboxEnabled(Boolean(d?.enabled));
+      })
+      .catch(() => {
+        if (active) setSandboxEnabled(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [isOpen]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -45,7 +67,6 @@ export const GoogleSignInModal: React.FC<GoogleSignInModalProps> = ({
     async function initGis() {
       if (!clientId) {
         setLoadingScript(false);
-        setError('Google Client ID (VITE_GOOGLE_CLIENT_ID) is not configured.');
         return;
       }
 
@@ -112,6 +133,20 @@ export const GoogleSignInModal: React.FC<GoogleSignInModalProps> = ({
     };
   }, [isOpen, clientId, onSuccess]);
 
+  const handleLocalPasswordSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!localPassword.trim() || verifyingLocal) return;
+    setVerifyingLocal(true);
+    setError(null);
+    try {
+      await exchangeLocalPassword(localPassword);
+      onSuccess();
+    } catch (err: any) {
+      setError(err?.message || 'Invalid sandbox password.');
+      setVerifyingLocal(false);
+    }
+  };
+
   if (!isOpen) return null;
 
   return (
@@ -122,7 +157,7 @@ export const GoogleSignInModal: React.FC<GoogleSignInModalProps> = ({
       aria-labelledby="google-signin-title"
       data-testid="google-signin-modal"
       onClick={(e) => {
-        if (e.target === e.currentTarget && !verifying) {
+        if (e.target === e.currentTarget && !verifying && !verifyingLocal) {
           onClose();
         }
       }}
@@ -138,13 +173,19 @@ export const GoogleSignInModal: React.FC<GoogleSignInModalProps> = ({
               Sign in to your private vault
             </h2>
             <p className="text-xs text-slate-500 dark:text-slate-400">
-              Direct Google authentication for <span className="font-mono">finance.zaboraa.com</span>
+              {clientId ? (
+                <>
+                  Direct Google authentication for <span className="font-mono">finance.zaboraa.com</span>
+                </>
+              ) : (
+                'Sandbox verification sign-in'
+              )}
             </p>
           </div>
           <button
             type="button"
             onClick={onClose}
-            disabled={verifying}
+            disabled={verifying || verifyingLocal}
             aria-label="Close sign-in dialog"
             className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer disabled:opacity-50"
           >
@@ -159,32 +200,100 @@ export const GoogleSignInModal: React.FC<GoogleSignInModalProps> = ({
           </div>
         )}
 
-        <div className="py-3 flex flex-col items-center justify-center min-h-[68px]">
-          {verifying ? (
-            <div className="flex items-center gap-2.5 text-xs font-medium text-indigo-600 dark:text-indigo-400">
-              <Loader2 className="w-4 h-4 animate-spin" />
-              <span>Verifying allowlist &amp; opening vault...</span>
-            </div>
-          ) : (
-            <>
-              {loadingScript && (
-                <div className="flex items-center gap-2 text-xs text-slate-500 mb-2">
-                  <Loader2 className="w-4 h-4 animate-spin text-indigo-600" />
-                  <span>Loading Google Sign-In...</span>
-                </div>
-              )}
-              <div
-                ref={buttonContainerRef}
-                className="flex items-center justify-center min-h-[44px]"
+        {clientId && (
+          <div className="py-2 flex flex-col items-center justify-center min-h-[56px]">
+            {verifying ? (
+              <div className="flex items-center gap-2.5 text-xs font-medium text-indigo-600 dark:text-indigo-400">
+                <Loader2 className="w-4 h-4 animate-spin" />
+                <span>Verifying allowlist &amp; opening vault...</span>
+              </div>
+            ) : (
+              <>
+                {loadingScript && (
+                  <div className="flex items-center gap-2 text-xs text-slate-500 mb-2">
+                    <Loader2 className="w-4 h-4 animate-spin text-indigo-600" />
+                    <span>Loading Google Sign-In...</span>
+                  </div>
+                )}
+                <div
+                  ref={buttonContainerRef}
+                  className="flex items-center justify-center min-h-[44px]"
+                />
+              </>
+            )}
+          </div>
+        )}
+
+        {/* SANDBOX-ONLY: Temporary local password login form — remove before production */}
+        {sandboxEnabled && (
+          <form onSubmit={handleLocalPasswordSubmit} className="space-y-3">
+            {clientId && (
+              <div className="relative flex items-center py-1">
+                <div className="flex-grow border-t border-slate-200 dark:border-slate-800" />
+                <span className="shrink mx-3 text-[11px] uppercase tracking-wider text-slate-400 font-medium">
+                  Sandbox Local Login
+                </span>
+                <div className="flex-grow border-t border-slate-200 dark:border-slate-800" />
+              </div>
+            )}
+
+            <div className="space-y-1.5">
+              <label
+                htmlFor="sandbox-local-password"
+                className="flex items-center justify-between text-xs font-medium text-slate-700 dark:text-slate-300"
+              >
+                <span className="inline-flex items-center gap-1.5">
+                  <KeyRound className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
+                  Local Sandbox Password
+                </span>
+                <span className="text-[10px] font-mono text-amber-600 dark:text-amber-400">
+                  Sandbox Only
+                </span>
+              </label>
+              <input
+                id="sandbox-local-password"
+                type="password"
+                value={localPassword}
+                onChange={(e) => setLocalPassword(e.target.value)}
+                placeholder="Enter sandbox local password"
+                autoComplete="current-password"
+                disabled={verifyingLocal || verifying}
+                className="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
               />
-            </>
-          )}
-        </div>
+            </div>
+
+            <button
+              type="submit"
+              disabled={!localPassword.trim() || verifyingLocal || verifying}
+              className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-sm font-medium transition-colors cursor-pointer"
+            >
+              {verifyingLocal ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  <span>Unlocking Sandbox Vault...</span>
+                </>
+              ) : (
+                <>
+                  <span>Sign In with Local Password</span>
+                  <ArrowRight className="w-4 h-4" />
+                </>
+              )}
+            </button>
+          </form>
+        )}
+
+        {!clientId && !sandboxEnabled && (
+          <div className="p-3 rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 text-xs text-amber-800 dark:text-amber-300">
+            Google Client ID (VITE_GOOGLE_CLIENT_ID) is not configured.
+          </div>
+        )}
 
         <div className="pt-3 border-t border-slate-100 dark:border-slate-800 flex items-center gap-2 text-[11px] text-slate-500 dark:text-slate-400">
           <ShieldCheck className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400 shrink-0" />
           <span>
-            Verified by Zaboraa Finance server allowlist with strict Supabase Row-Level Security.
+            {clientId
+              ? 'Verified by Zaboraa Finance server allowlist with strict Supabase Row-Level Security.'
+              : 'Temporary sandbox access for verification. Remove local password auth before production.'}
           </span>
         </div>
       </div>

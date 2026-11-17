@@ -21,15 +21,7 @@ export default function PublicLandingPage() {
   }, [isAuthenticated, isLoading, router]);
 
   const handleLoginClick = async () => {
-    if (getGoogleClientId()) {
-      setIsSignInOpen(true);
-      return;
-    }
-    try {
-      await signInWithGoogle('/dashboard');
-    } catch (err) {
-      console.error('Google Sign-in failed:', err);
-    }
+    setIsSignInOpen(true);
   };
 
   if (isLoading) {

@@ -6,7 +6,8 @@ import { Button } from '../ui/Button';
 import { Card } from '../ui/Card';
 import { formatINR } from '../../types/design-system';
 import type { AccountWithBalance, AccountFormData, AccountType } from '../../types/accounts';
-import { Plus, Filter, Building2, Wallet, CreditCard, ShieldCheck } from 'lucide-react';
+import { deleteAccountLocalPrefs } from '../../lib/account-local-prefs';
+import { Plus, ShieldCheck, Search } from 'lucide-react';
 
 interface AccountListProps {
   initialAccounts: AccountWithBalance[];
@@ -26,9 +27,9 @@ export const AccountList: React.FC<AccountListProps> = ({
   const [accounts, setAccounts] = useState<AccountWithBalance[]>(initialAccounts);
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [editingAccount, setEditingAccount] = useState<AccountWithBalance | null>(null);
-  const [typeFilter, setTypeFilter] = useState<'all' | AccountType | 'inactive'>('all');
+  const [typeFilter, setTypeFilter] = useState<'all' | AccountType | 'investments' | 'inactive'>('all');
+  const [searchQuery, setSearchQuery] = useState('');
   const [actionError, setActionError] = useState<string | null>(null);
-  const [successMessage, setSuccessMessage] = useState<string | null>(null);
 
   const [confirmModal, setConfirmModal] = useState<{
     type: 'clear' | 'delete_all';
@@ -39,10 +40,31 @@ export const AccountList: React.FC<AccountListProps> = ({
   const activeAccounts = accounts.filter((a) => a.is_active);
   const totalBalance = activeAccounts.reduce((acc, a) => acc + a.current_balance, 0);
 
+  const q = searchQuery.trim().toLowerCase();
   const filteredAccounts = accounts.filter((a) => {
-    if (typeFilter === 'all') return true;
-    if (typeFilter === 'inactive') return !a.is_active;
-    return a.account_type === typeFilter;
+    if (typeFilter === 'inactive') {
+      if (a.is_active) return false;
+    } else if (typeFilter === 'investments') {
+      if (!['fd', 'ppf', 'nps'].includes(a.account_type)) return false;
+    } else if (typeFilter !== 'all') {
+      if (a.account_type !== typeFilter) return false;
+    }
+
+    if (q) {
+      const haystack = [
+        a.name,
+        a.bank_name,
+        a.account_number_last4 || '',
+        a.ifsc || '',
+        a.upi_id || '',
+        a.purpose || '',
+      ]
+        .join(' ')
+        .toLowerCase();
+      if (!haystack.includes(q)) return false;
+    }
+
+    return true;
   });
 
   const handleOpenCreate = () => {
@@ -60,22 +82,22 @@ export const AccountList: React.FC<AccountListProps> = ({
     setEditingAccount(null);
   };
 
-  const handleFormSubmit = async (formData: AccountFormData) => {
+  const handleFormSubmit = async (formData: AccountFormData): Promise<AccountWithBalance | void> => {
     try {
+      let saved: AccountWithBalance;
       if (editingAccount) {
-        const updated = await onUpdateAccount(editingAccount.id, formData);
-        setAccounts((prev) => prev.map((a) => (a.id === updated.id ? updated : a)));
-        setSuccessMessage('Account updated successfully');
+        saved = await onUpdateAccount(editingAccount.id, formData);
+        setAccounts((prev) => prev.map((a) => (a.id === saved.id ? saved : a)));
       } else {
-        const created = await onCreateAccount(formData);
-        setAccounts((prev) => [...prev, created]);
-        setSuccessMessage('Account created successfully');
+        saved = await onCreateAccount(formData);
+        setAccounts((prev) => [...prev, saved]);
       }
       handleCloseForm();
-      setTimeout(() => setSuccessMessage(null), 4000);
+      return saved;
     } catch (err: any) {
       setActionError(err.message || 'Operation failed.');
       setTimeout(() => setActionError(null), 4000);
+      throw err;
     }
   };
 
@@ -93,6 +115,7 @@ export const AccountList: React.FC<AccountListProps> = ({
 
     const res = await onDeleteAccount(id);
     if (res.success) {
+      deleteAccountLocalPrefs(id);
       setAccounts((prev) => prev.filter((a) => a.id !== id));
     } else {
       setActionError(res.error || 'Cannot delete account with existing transactions.');
@@ -129,16 +152,6 @@ export const AccountList: React.FC<AccountListProps> = ({
           </Button>
         </div>
       </div>
-
-      {/* Success banner */}
-      {successMessage && (
-        <div className="p-4 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 text-xs text-emerald-700 dark:text-emerald-300 flex items-center justify-between animate-in fade-in">
-          <span className="font-semibold">{successMessage}</span>
-          <button type="button" onClick={() => setSuccessMessage(null)} className="font-bold cursor-pointer">
-            Dismiss
-          </button>
-        </div>
-      )}
 
       {/* Action error banner */}
       {actionError && (
@@ -178,31 +191,47 @@ export const AccountList: React.FC<AccountListProps> = ({
         </Card>
       </div>
 
-      {/* Filter Segmented Controls */}
-      <div className="flex items-center flex-wrap gap-2 pt-2">
-        {(
-          [
-            { id: 'all', label: 'All Accounts' },
-            { id: 'savings', label: 'Savings' },
-            { id: 'salary', label: 'Salary' },
-            { id: 'current', label: 'Current' },
-            { id: 'credit_card', label: 'Credit Cards' },
-            { id: 'inactive', label: 'Inactive' },
-          ] as const
-        ).map((f) => (
-          <button
-            key={f.id}
-            type="button"
-            onClick={() => setTypeFilter(f.id as any)}
-            className={`px-3 py-1.5 text-xs font-medium rounded-lg border transition-colors cursor-pointer ${
-              typeFilter === f.id
-                ? 'bg-indigo-600 text-white border-indigo-600 shadow-xs'
-                : 'border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
-            }`}
-          >
-            {f.label}
-          </button>
-        ))}
+      {/* Filter Segmented Controls + Search */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-2">
+        <div className="flex items-center flex-wrap gap-2">
+          {(
+            [
+              { id: 'all', label: 'All Accounts' },
+              { id: 'savings', label: 'Savings' },
+              { id: 'salary', label: 'Salary' },
+              { id: 'current', label: 'Current' },
+              { id: 'credit_card', label: 'Credit Cards' },
+              { id: 'investments', label: 'FD / PPF / NPS' },
+              { id: 'loan', label: 'Loans' },
+              { id: 'wallet', label: 'Wallets' },
+              { id: 'inactive', label: 'Inactive' },
+            ] as const
+          ).map((f) => (
+            <button
+              key={f.id}
+              type="button"
+              onClick={() => setTypeFilter(f.id as any)}
+              className={`px-3 py-1.5 text-xs font-medium rounded-lg border transition-colors cursor-pointer ${
+                typeFilter === f.id
+                  ? 'bg-indigo-600 text-white border-indigo-600 shadow-xs'
+                  : 'border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+              }`}
+            >
+              {f.label}
+            </button>
+          ))}
+        </div>
+
+        <div className="relative w-full sm:w-64 shrink-0">
+          <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Search bank, last 4, IFSC, UPI..."
+            className="w-full pl-8 pr-3 py-1.5 text-xs rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+          />
+        </div>
       </div>
 
       {/* Accounts Grid or Empty State */}
@@ -280,6 +309,7 @@ export const AccountList: React.FC<AccountListProps> = ({
                       await clearAccountTransactions(targetAcc.id);
                     } else {
                       await deleteAccountWithTransactions(targetAcc.id);
+                      deleteAccountLocalPrefs(targetAcc.id);
                       setAccounts((prev) => prev.filter((a) => a.id !== targetAcc.id));
                     }
                   } catch (err: any) {

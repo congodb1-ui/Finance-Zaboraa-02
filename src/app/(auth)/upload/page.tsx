@@ -21,6 +21,11 @@ import {
 import { apiPost } from '../../../lib/api-client';
 import { getAccounts } from '../../../lib/actions/accounts';
 import { useUserPreferences } from '../../../lib/contexts/UserPreferencesContext';
+import {
+  getAccountPdfPassword,
+  hasSavedAccountPdfPassword,
+  setAccountPdfPassword,
+} from '../../../lib/account-local-prefs';
 import type { AccountWithBalance } from '../../../types/accounts';
 import type {
   StatementUpload,
@@ -41,6 +46,7 @@ import {
   Plus,
   RefreshCw,
   Mail,
+  KeyRound,
 } from 'lucide-react';
 
 export default function StatementUploadPage() {
@@ -70,6 +76,24 @@ export default function StatementUploadPage() {
   // History state & read-only viewing
   const [uploadsHistory, setUploadsHistory] = useState<StatementUpload[]>([]);
   const [isReadOnlyInspection, setIsReadOnlyInspection] = useState(false);
+  const [prefsVersion, setPrefsVersion] = useState(0);
+
+  // Sync account local prefs updates (PDF password saved/cleared)
+  useEffect(() => {
+    const onPrefsChanged = () => setPrefsVersion((v) => v + 1);
+    window.addEventListener('zaboraa-account-prefs-changed', onPrefsChanged);
+    return () => window.removeEventListener('zaboraa-account-prefs-changed', onPrefsChanged);
+  }, []);
+
+  // Helper to extract ?account=<id> from hash (#upload?account=...)
+  const getRequestedAccountIdFromHash = (): string | null => {
+    if (typeof window === 'undefined') return null;
+    const hash = window.location.hash.replace(/^#/, '');
+    const queryIdx = hash.indexOf('?');
+    if (queryIdx === -1) return null;
+    const params = new URLSearchParams(hash.slice(queryIdx + 1));
+    return params.get('account');
+  };
 
   // Load registered accounts and existing uploads
   useEffect(() => {
@@ -77,7 +101,10 @@ export default function StatementUploadPage() {
       try {
         const [accs, hist] = await Promise.all([getAccounts(), getUploads()]);
         setAccounts(accs);
-        if (accs.length > 0 && !selectedAccountId) {
+        const requestedAccountId = getRequestedAccountIdFromHash();
+        if (requestedAccountId && accs.some((a) => a.id === requestedAccountId)) {
+          setSelectedAccountId(requestedAccountId);
+        } else if (accs.length > 0 && !selectedAccountId) {
           setSelectedAccountId(accs[0].id);
         }
         setUploadsHistory(hist);
@@ -87,6 +114,18 @@ export default function StatementUploadPage() {
     }
     loadData();
   }, []);
+
+  // Pre-select account when hash changes to #upload?account=<id>
+  useEffect(() => {
+    const syncAccountFromHash = () => {
+      const requestedAccountId = getRequestedAccountIdFromHash();
+      if (requestedAccountId && accounts.some((a) => a.id === requestedAccountId)) {
+        setSelectedAccountId(requestedAccountId);
+      }
+    };
+    window.addEventListener('hashchange', syncAccountFromHash);
+    return () => window.removeEventListener('hashchange', syncAccountFromHash);
+  }, [accounts]);
 
   // Handle file drop / select
   const handleFileSelected = (file: File) => {
@@ -109,7 +148,7 @@ export default function StatementUploadPage() {
   };
 
   // STEP 1-8: Trigger Upload & Parse
-  const handleStartParsing = async (password?: string) => {
+  const handleStartParsing = async (explicitPassword?: string, saveEnteredPassword?: boolean) => {
     if (!selectedFile) {
       setStatusMessage({ type: 'error', text: 'Please select a statement file to upload.' });
       return;
@@ -119,12 +158,17 @@ export default function StatementUploadPage() {
       return;
     }
 
+    const isPdf = selectedFile.name.toLowerCase().endsWith('.pdf');
+    const localSavedPwd = !explicitPassword && isPdf ? getAccountPdfPassword(selectedAccountId) : null;
+    const usedLocalSavedPassword = Boolean(!explicitPassword && localSavedPwd);
+    const passwordToUse = explicitPassword || localSavedPwd || undefined;
+
     setIsProcessing(true);
     setStatusMessage(null);
     setCurrentStep('parse');
 
     try {
-      const response = await processStatementUpload(selectedFile, selectedAccountId, password);
+      const response = await processStatementUpload(selectedFile, selectedAccountId, passwordToUse);
 
       // Handle duplicate file error
       if (response.error === 'DUPLICATE_FILE') {
@@ -145,6 +189,11 @@ export default function StatementUploadPage() {
         });
         setCurrentStep('select');
         return;
+      }
+
+      // Persist the entered PDF password locally when the user opted in
+      if (explicitPassword && saveEnteredPassword && selectedAccountId) {
+        setAccountPdfPassword(selectedAccountId, explicitPassword);
       }
 
       setIsPasswordModalOpen(false);
@@ -175,11 +224,19 @@ export default function StatementUploadPage() {
         setCurrentStep('review');
         setStatusMessage({
           type: 'success',
-          text: `Parsed ${response.row_count} rows with ${response.detected_bank || 'Standard'} format auto-detection.`,
+          text: `Parsed ${response.row_count} rows with ${response.detected_bank || 'Standard'} format auto-detection${
+            usedLocalSavedPassword ? ' (PDF unlocked using saved local password)' : ''
+          }.`,
         });
       } else {
         // Show Column Mapping Wizard
         setCurrentStep('map');
+        if (usedLocalSavedPassword) {
+          setStatusMessage({
+            type: 'info',
+            text: 'PDF unlocked automatically using the locally saved password for this account.',
+          });
+        }
       }
     } catch (err: any) {
       console.error('Upload failed:', err);
@@ -192,10 +249,14 @@ export default function StatementUploadPage() {
 
       if (isPasswordError) {
         setIsPasswordModalOpen(true);
-        if (
+        const isIncorrect =
           err?.code === 'INCORRECT_PASSWORD' ||
-          err?.message?.toLowerCase().includes('incorrect')
-        ) {
+          err?.message?.toLowerCase().includes('incorrect');
+        if (usedLocalSavedPassword && isIncorrect) {
+          setPasswordError(
+            'The locally saved PDF password for this account did not unlock this file. Please enter the correct password.'
+          );
+        } else if (isIncorrect) {
           setPasswordError('Incorrect password. Please verify and try again.');
         } else {
           setPasswordError(null);
@@ -214,10 +275,10 @@ export default function StatementUploadPage() {
     }
   };
 
-  const handlePasswordSubmit = async (password: string) => {
+  const handlePasswordSubmit = async (password: string, saveLocally?: boolean) => {
     setIsSubmittingPassword(true);
     setPasswordError(null);
-    await handleStartParsing(password);
+    await handleStartParsing(password, saveLocally);
   };
 
   // Handle manual column mapping confirmation from ColumnMappingWizard
@@ -347,7 +408,7 @@ export default function StatementUploadPage() {
             Statement Upload & Parser
           </h1>
           <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-            Ingest Indian bank & UPI statements (.csv, .xlsx) with SHA-256 deduplication and audit trail
+            Ingest Indian bank & UPI statements (.csv, .xlsx, .pdf) with SHA-256 deduplication and audit trail
           </p>
         </div>
 
@@ -516,32 +577,41 @@ export default function StatementUploadPage() {
                       No accounts registered yet. Please create an account in the Accounts module first.
                     </div>
                   ) : (
-                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-                      {accounts.map((acc) => (
-                        <div
-                          key={acc.id}
-                          onClick={() => setSelectedAccountId(acc.id)}
-                          className={`p-3.5 rounded-xl border cursor-pointer transition-all ${
-                            selectedAccountId === acc.id
-                              ? 'border-indigo-600 bg-indigo-50/50 dark:bg-indigo-950/30 ring-2 ring-indigo-500/20'
-                              : 'border-slate-200 dark:border-slate-700/80 hover:border-slate-300 dark:hover:border-slate-600 bg-white dark:bg-slate-900'
-                          }`}
-                        >
-                          <div className="flex items-start justify-between gap-2">
-                            <div>
-                              <div className="text-xs font-semibold text-slate-900 dark:text-white">
-                                {acc.name}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3" data-prefs-v={prefsVersion}>
+                      {accounts.map((acc) => {
+                        const hasPdfPwd = hasSavedAccountPdfPassword(acc.id);
+                        return (
+                          <div
+                            key={acc.id}
+                            onClick={() => setSelectedAccountId(acc.id)}
+                            className={`p-3.5 rounded-xl border cursor-pointer transition-all ${
+                              selectedAccountId === acc.id
+                                ? 'border-indigo-600 bg-indigo-50/50 dark:bg-indigo-950/30 ring-2 ring-indigo-500/20'
+                                : 'border-slate-200 dark:border-slate-700/80 hover:border-slate-300 dark:hover:border-slate-600 bg-white dark:bg-slate-900'
+                            }`}
+                          >
+                            <div className="flex items-start justify-between gap-2">
+                              <div>
+                                <div className="text-xs font-semibold text-slate-900 dark:text-white">
+                                  {acc.name}
+                                </div>
+                                <div className="text-[11px] text-slate-500 font-mono mt-0.5">
+                                  {acc.bank_name} {acc.account_number_last4 ? `• ****${acc.account_number_last4}` : ''}
+                                </div>
                               </div>
-                              <div className="text-[11px] text-slate-500 font-mono mt-0.5">
-                                {acc.bank_name} {acc.account_number_last4 ? `• ****${acc.account_number_last4}` : ''}
-                              </div>
+                              <span className="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400">
+                                {acc.account_type.replace('_', ' ')}
+                              </span>
                             </div>
-                            <span className="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400">
-                              {acc.account_type.replace('_', ' ')}
-                            </span>
+                            {hasPdfPwd && (
+                              <div className="mt-2 inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-200 dark:border-emerald-800/70 text-[10px] font-medium text-emerald-700 dark:text-emerald-300">
+                                <KeyRound className="w-2.5 h-2.5" />
+                                <span>PDF Password Saved</span>
+                              </div>
+                            )}
                           </div>
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   )}
                 </CardContent>
@@ -554,6 +624,47 @@ export default function StatementUploadPage() {
                 onClearFile={handleClearFile}
                 isUploading={isProcessing}
               />
+
+              {/* Local PDF Password Check Notice when a .pdf file is chosen */}
+              {selectedFile &&
+                selectedFile.name.toLowerCase().endsWith('.pdf') &&
+                selectedAccountId &&
+                (() => {
+                  const selectedAcc = accounts.find((a) => a.id === selectedAccountId);
+                  if (!selectedAcc) return null;
+                  const autoPwd = getAccountPdfPassword(selectedAcc.id);
+                  const hasSavedPwd = hasSavedAccountPdfPassword(selectedAcc.id);
+                  return (
+                    <div
+                      className={`p-3.5 rounded-xl border flex items-center gap-3 text-xs ${
+                        autoPwd
+                          ? 'bg-emerald-50/70 dark:bg-emerald-950/30 border-emerald-200 dark:border-emerald-800/70 text-emerald-900 dark:text-emerald-200'
+                          : 'bg-slate-50 dark:bg-slate-800/60 border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300'
+                      }`}
+                    >
+                      <KeyRound
+                        className={`w-4 h-4 shrink-0 ${
+                          autoPwd ? 'text-emerald-600 dark:text-emerald-400' : 'text-slate-500 dark:text-slate-400'
+                        }`}
+                      />
+                      <div className="flex-1 leading-relaxed">
+                        {autoPwd ? (
+                          <span>
+                            Saved local PDF password found for <strong>{selectedAcc.name}</strong> — it will be checked and applied automatically if this PDF is encrypted.
+                          </span>
+                        ) : hasSavedPwd ? (
+                          <span>
+                            A local PDF password is saved for <strong>{selectedAcc.name}</strong>, but auto-apply is turned off in account settings. You&apos;ll be prompted if encrypted.
+                          </span>
+                        ) : (
+                          <span>
+                            No local PDF password saved for <strong>{selectedAcc.name}</strong> — if the PDF is password-protected, a pop-up will prompt you to enter it.
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })()}
 
               {/* Start Processing Action Bar */}
               {selectedFile && (
@@ -679,6 +790,7 @@ export default function StatementUploadPage() {
         }}
         onSubmit={handlePasswordSubmit}
         fileName={selectedFile?.name}
+        accountName={accounts.find((a) => a.id === selectedAccountId)?.name}
         error={passwordError}
         isLoading={isSubmittingPassword || isProcessing}
       />
