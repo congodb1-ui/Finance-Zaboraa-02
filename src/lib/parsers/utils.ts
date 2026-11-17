@@ -190,17 +190,17 @@ export function extractUpiRef(
   const explicitMatch =
     src.match(/UPI\s*Ref\s*No\.?[:\s]+(\d{9,16})/i) ||
     src.match(/UPI\s*(?:Transaction\s*ID|Txn\s*ID|transaction\s*reference\s*(?:no\.?|number)\s*is)[:\s]+(\d{9,16})/i) ||
-    src.match(/UPI\/[A-Za-z0-9@._-]+\/(\d{12})\b/i) ||
-    src.match(/UPI\s+(\d{12})(?:[A-Za-z]|\b)/i) ||
-    src.match(/UPI[\/\-][^\/\-\n]*?[\/\-](\d{12})\b/i);
+    src.match(/UPI\/[A-Za-z0-9@._-]+\/(\d{12,14})\b/i) ||
+    src.match(/UPI\s+(\d{12,14})(?:[A-Za-z]|\b)/i) ||
+    src.match(/UPI[\/\-][^\/\-\n]*?[\/\-](\d{12,14})\b/i);
   if (explicitMatch) {
     return normalizeTwelveDigitRef(explicitMatch[1]) || explicitMatch[1];
   }
 
   const hasUpiContext = forceUpi || /\bUPI\b/i.test(src) || /@[a-zA-Z][a-zA-Z0-9.-]*/.test(src);
   if (hasUpiContext) {
-    // Look for a 12-digit numeric token inside a UPI narration (e.g., HDFC: UPI-SWIGGY-SWIGGY@ICICI-631803023475-...)
-    const tokenMatch = src.match(/(?:^|[\s\-\/,:])(\d{12})(?=$|[\s\-\/,:A-Za-z])/);
+    // Look for a 12-14 digit numeric token inside a UPI narration (e.g., HDFC: UPI-SWIGGY-SWIGGY@ICICI-631803023475-...)
+    const tokenMatch = src.match(/(?:^|[\s\-\/,:])(\d{12,14})(?=$|[\s\-\/,:A-Za-z])/);
     if (tokenMatch) return tokenMatch[1];
 
     if (refNo) {

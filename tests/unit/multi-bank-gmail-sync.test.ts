@@ -1209,7 +1209,135 @@ describe('Phase 2 Fixes — Dynamic Columns, 2-Row Summary, Account Mismatch & P
       'FAMILY (A/c 0921)'
     );
   });
+
+  it('FIX 5 (2026 HDFC Audit): eliminates word-splitting, wrapped title truncation, card terminal noise, and Xxxxx8212 across tight-gap & wrapped PDF textItems', async () => {
+    const mock2026Pdf: PDFExtractionResult = {
+      openingBalance: 100000,
+      closingBalance: 85000,
+      fullDocumentText: 'HDFC BANK LIMITED Statement From : 01/01/2026 To : 31/01/2026',
+      allGridRows: [],
+      pages: [
+        {
+          pageNumber: 1,
+          fullText: 'HDFC BANK LIMITED',
+          gridRows: [],
+          textItems: [
+            { text: 'Date', x: 34, y: 700, width: 16, height: 10 },
+            { text: 'Narration', x: 68, y: 700, width: 40, height: 10 },
+            { text: 'Chq./Ref.No.', x: 284, y: 700, width: 48, height: 10 },
+            { text: 'Value Dt', x: 362, y: 700, width: 30, height: 10 },
+            { text: 'Withdrawal Amt.', x: 405, y: 700, width: 60, height: 10 },
+            { text: 'Deposit Amt.', x: 491, y: 700, width: 45, height: 10 },
+            { text: 'Closing Balance', x: 564, y: 700, width: 55, height: 10 },
+
+            // Row 1: Tight-gap split CONG + O TECHNOLOGIES and Sent Usin G Paytm U
+            { text: '01/01/26', x: 34, y: 675, width: 28, height: 10 },
+            { text: 'UPI-CONG', x: 68, y: 675, width: 40, height: 10 },
+            { text: 'O TECHNOLOGIES-CONGO@YBL-YESB0YBLUPI-', x: 108.4, y: 675, width: 165, height: 10 },
+            { text: '6986531676001-SENT USIN G PAYTM U', x: 68, y: 664, width: 170, height: 10 },
+            { text: '6986531676001', x: 288, y: 675, width: 62, height: 10 },
+            { text: '01/01/26', x: 362, y: 675, width: 28, height: 10 },
+            { text: '1,000.00', x: 425, y: 675, width: 32, height: 10 },
+            { text: '99,000.00', x: 580, y: 675, width: 38, height: 10 },
+
+            // Row 2: Wrapped title Airtel Broadb And B + ill + Up I Mandate
+            { text: '02/01/26', x: 34, y: 645, width: 28, height: 10 },
+            { text: 'UPI-AIRTEL BROADB AND B', x: 68, y: 645, width: 130, height: 10 },
+            { text: 'ILL-AIRTEL@YBL-YESB0YBLUPI-6986531676002-UP I MANDATE', x: 68, y: 634, width: 195, height: 10 },
+            { text: '6986531676002', x: 288, y: 645, width: 62, height: 10 },
+            { text: '02/01/26', x: 362, y: 645, width: 28, height: 10 },
+            { text: '2,000.00', x: 425, y: 645, width: 32, height: 10 },
+            { text: '97,000.00', x: 580, y: 645, width: 38, height: 10 },
+
+            // Row 3: Wrapped title King Bakery And Conf + ectioners + UpiIntent
+            { text: '03/01/26', x: 34, y: 615, width: 28, height: 10 },
+            { text: 'UPI-KING BAKERY AND CONF', x: 68, y: 615, width: 140, height: 10 },
+            { text: 'ECTIONERS-Q123@YBL-YESB0YBLUPI-6986531676003-UPIINTENT', x: 68, y: 604, width: 195, height: 10 },
+            { text: '6986531676003', x: 288, y: 615, width: 62, height: 10 },
+            { text: '03/01/26', x: 362, y: 615, width: 28, height: 10 },
+            { text: '1,000.00', x: 425, y: 615, width: 32, height: 10 },
+            { text: '96,000.00', x: 580, y: 615, width: 38, height: 10 },
+
+            // Row 4: Xxxxx8212 + 13-digit ref 6986531676151 -> UNREADABLE PAYEE - CHECK PDF
+            { text: '04/01/26', x: 34, y: 585, width: 28, height: 10 },
+            { text: 'Xxxxx8212', x: 68, y: 585, width: 55, height: 10 },
+            { text: '6986531676151', x: 288, y: 585, width: 62, height: 10 },
+            { text: '04/01/26', x: 362, y: 585, width: 28, height: 10 },
+            { text: '10,000.00', x: 420, y: 585, width: 38, height: 10 },
+            { text: '86,000.00', x: 580, y: 585, width: 38, height: 10 },
+
+            // Row 5: Garbled masked card row 416021xxxxxx9358-s1anpu6f-pune
+            { text: '05/01/26', x: 34, y: 555, width: 28, height: 10 },
+            { text: '416021xxxxxx9358-s1anpu6f-pune', x: 68, y: 555, width: 150, height: 10 },
+            { text: '000000123456', x: 288, y: 555, width: 58, height: 10 },
+            { text: '05/01/26', x: 362, y: 555, width: 28, height: 10 },
+            { text: '1,000.00', x: 425, y: 555, width: 32, height: 10 },
+            { text: '85,000.00', x: 580, y: 555, width: 38, height: 10 },
+          ],
+        },
+      ],
+    };
+
+    const res = await parseStatementPDF(new Uint8Array(0), { preExtracted: mock2026Pdf });
+    const txns = res.transactions || [];
+    expect(txns).toHaveLength(5);
+
+    expect(txns[0].description.toUpperCase()).toBe('CONGO TECHNOLOGIES');
+    expect(txns[0].upi_ref_no).toBe('6986531676001');
+
+    expect(txns[1].description).toBe('Airtel Broadband Bill');
+    expect(txns[1].upi_ref_no).toBe('6986531676002');
+
+    expect(txns[2].description).toBe('King Bakery And Confectioners');
+    expect(txns[2].upi_ref_no).toBe('6986531676003');
+
+    expect(txns[3].description).toBe(UNREADABLE_PAYEE_LABEL);
+    expect(txns[3].reference_number).toBe('6986531676151');
+
+    expect(txns[4].description).toBe('Card / ATM - Pune');
+
+    // All 4 split Paytm variants + Mandate + Intent normalize to ONE canonical channel label without "Usi"
+    const subVariants = [
+      'UPI-TEST PAYEE-TEST@YBL-YESB0YBLUPI-6986531676001-SENT USI NG PAYTM U',
+      'UPI-TEST PAYEE-TEST@YBL-YESB0YBLUPI-6986531676001-SENT USING PAY TM U',
+      'UPI-TEST PAYEE-TEST@YBL-YESB0YBLUPI-6986531676001-SENT USIN G PAYTM U',
+      'UPI-TEST PAYEE-TEST@YBL-YESB0YBLUPI-6986531676001-SENT USING PAYTM U',
+    ];
+    for (const rawSub of subVariants) {
+      const sub = formatTransactionSubtitle('Test Payee', rawSub, '6986531676001');
+      expect(sub).toBe('UPI Payment · Ref: 6986531676001');
+      expect(sub).not.toMatch(/Usi|Pay Tm/i);
+    }
+
+    expect(
+      formatTransactionSubtitle(
+        'Airtel Broadband Bill',
+        'UPI-AIRTEL-AIRTEL@YBL-YESB0YBLUPI-6986531676002-Up I Mandate',
+        '6986531676002'
+      )
+    ).toBe('UPI Mandate · Ref: 6986531676002');
+
+    expect(
+      formatTransactionSubtitle(
+        'King Bakery And Confectioners',
+        'UPI-KING-Q123@YBL-YESB0YBLUPI-6986531676003-UpiIntent',
+        '6986531676003'
+      )
+    ).toBe('UPI Intent · Ref: 6986531676003');
+
+    expect(
+      formatTransactionSubtitle('Card / ATM - Pune', '416021xxxxxx9358-s1anpu6f-pune', '123456')
+    ).toBe('Card / ATM · Ref: 123456');
+
+    for (const t of txns) {
+      const sub = formatTransactionSubtitle(t.description, t.raw_description, t.reference_number) || '';
+      const combined = `${t.description} ${sub}`;
+      expect(combined).not.toMatch(/Usi Ng|Usin G|Pay Tm|CONG O|Xxxxx|Up I|UpiIntent|s1anpu6f/i);
+      expect(sub).not.toMatch(/\bUsi/i);
+    }
+  });
 });
+
 
 
 

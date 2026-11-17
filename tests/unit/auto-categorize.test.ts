@@ -236,6 +236,12 @@ describe('Auto-Categorization — Taxonomy & Merchant Grouping', () => {
 
     expect(normalizeMerchantKey('SHEETAL PETROLEUM')).toBe('SHEETAL PETROLEUM');
     expect(normalizeMerchantKey('Sheetal Petroleum')).toBe('SHEETAL PETROLEUM');
+
+    // Word splits + channel suffixes never enter merchant grouping key
+    expect(normalizeMerchantKey('CONG O TECHNOLOGIES - Sent Usin G Paytm U')).toBe('CONGO TECHNOLOGIES');
+    expect(normalizeMerchantKey('CONGO TECHNOLOGIES - Up I Mandate')).toBe('CONGO TECHNOLOGIES');
+    expect(normalizeMerchantKey('CONGO TECHNOLOGIES · UpiIntent')).toBe('CONGO TECHNOLOGIES');
+    expect(normalizeMerchantKey('CONGO TECHNOLOGIES - Bank Transfer')).toBe('CONGO TECHNOLOGIES');
   });
 
   it('flags person names strictly as isPersonName even across variants', () => {

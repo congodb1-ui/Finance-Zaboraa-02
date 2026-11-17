@@ -14,6 +14,7 @@ import { isStatementNoiseLine } from './strip-statement-noise';
 import {
   parseBankNarration,
   isUnreadableOrMaskedPayee,
+  deSplitPdfWords,
   UNREADABLE_PAYEE_LABEL,
 } from './bank-transaction';
 import { extractCrossSourceRefs, normalizeReferenceNumber } from './utils';
@@ -123,15 +124,97 @@ export function normalizeDateToISO(dateStr: string): string {
 
 const SAFE_STANDALONE_SHORT_WORDS = new Set([
   'ALI', 'DAS', 'ROY', 'SEN', 'PAL', 'DEV', 'RAY', 'JHA', 'RAI', 'KAR', 'GILL', 'BOSE', 'NAIR',
+  'JAIN', 'KHAN', 'SHAH', 'PATEL', 'NAIK', 'RAO', 'KUMAR', 'SINGH',
   'PVT', 'LTD', 'LLP', 'INC', 'CO', 'PLC', 'LLC', 'AND', 'THE', 'FOR', 'NOT', 'VIA', 'TO', 'BY',
-  'IN', 'ON', 'AT', 'OF', 'FROM', 'SO', 'DO', 'WO', 'CR', 'DR', 'NA', 'MR', 'MS', 'MRS', 'DR',
-  'MD', 'SK', 'KM', 'SRI', 'SH', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L',
-  'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z',
+  'IN', 'ON', 'AT', 'OF', 'FROM', 'SO', 'DO', 'WO', 'CR', 'DR', 'NA', 'MR', 'MS', 'MRS',
+  'MD', 'SK', 'KM', 'SRI', 'SH', 'ST', 'RD', 'NO', 'OPP', 'NR',
+  'BANK', 'CASH', 'CARD', 'PAID', 'BILL', 'FOOD', 'FUEL', 'SHOP', 'MART', 'CHEM', 'TECH', 'AUTO',
+  'HOME', 'PARK', 'ROAD', 'PUNE', 'WEST', 'EAST', 'CITY', 'SELF', 'LOAN', 'RENT', 'FEES', 'TEST',
+  'SENT', 'WITH', 'THAT', 'THIS', 'YOUR', 'NAME', 'CODE', 'INFO', 'HELP', 'CLUB', 'ZONE', 'PLUS',
+  'STAR', 'KING', 'GOLD', 'CARE', 'LIFE',
 ]);
+
+const KNOWN_WRAP_FRAGMENT_PAIRS: Array<[RegExp, RegExp]> = [
+  [/CONG$/i, /^O(?:\b|[-/\s]|$)/i],
+  [/BROADB$/i, /^AND(?:\b|[-/\s]|$)/i],
+  [/CONF$/i, /^ECTIONER(?:S)?(?:\b|[-/\s@]|$)/i],
+  [/CONFECTION$/i, /^ER(?:S)?(?:\b|[-/\s@]|$)/i],
+  [/SENT\s+USI$/i, /^NG(?:\b|[-/\s]|$)/i],
+  [/SENT\s+USIN$/i, /^G(?:\b|[-/\s]|$)/i],
+  [/USIN$/i, /^G(?:\b|[-/\s]|$)/i],
+  [/USI$/i, /^NG(?:\b|[-/\s]|$)/i],
+  [/PAY$/i, /^TM(?:\b|[-/\s@.]|$)/i],
+  [/PAYT$/i, /^M(?:\b|[-/\s@.]|$)/i],
+  [/UP$/i, /^I(?:\b|[-/\s]|$)/i],
+  [/TECHNOLO$/i, /^GIES(?:\b|[-/\s]|$)/i],
+  [/TECHNOLOG$/i, /^IES(?:\b|[-/\s]|$)/i],
+  [/LIM$/i, /^ITED(?:\b|[-/\s]|$)/i],
+  [/LIMIT$/i, /^ED(?:\b|[-/\s]|$)/i],
+  [/SOLUT$/i, /^IONS(?:\b|[-/\s]|$)/i],
+  [/ENTERPR$/i, /^ISES(?:\b|[-/\s]|$)/i],
+  [/PRIV$/i, /^ATE(?:\b|[-/\s]|$)/i],
+  [/SERVI$/i, /^CES(?:\b|[-/\s]|$)/i],
+  [/SER$/i, /^VICES(?:\b|[-/\s]|$)/i],
+  [/PAYM$/i, /^ENT(?:\b|[-/\s]|$)/i],
+  [/PA$/i, /^YMENT(?:\b|[-/\s]|$)/i],
+  [/MANDAT$/i, /^E(?:\b|[-/\s]|$)/i],
+  [/\bB$/i, /^ILL(?:\b|[-/\s@-]|$)/i],
+];
+
+const SAFE_COMPLETE_4PLUS_WORDS = new Set([
+  'BANK', 'FROM', 'WITH', 'ROAD', 'EAST', 'WEST', 'SAHU', 'SHOP', 'MART', 'CARE', 'FUEL', 'FOOD',
+  'CASH', 'BILL', 'PAID', 'RENT', 'LOAN', 'SELF', 'SAVE', 'MAIN', 'CITY', 'PUNE', 'MALL', 'TECH',
+  'AUTO', 'HOME', 'LIFE', 'STAR', 'KING', 'PLUS', 'BLUE', 'GOLD', 'BOOK', 'PARK', 'WORK', 'BAKER',
+  'BAKERY', 'STORE', 'STORES', 'MARKET', 'SUPER', 'GENERAL', 'PAYTM', 'MANDATE', 'INTENT', 'PAYMENT',
+]);
+
+function joinPdfLineItems(items: Array<{ text: string; x: number; width: number }>): string {
+  if (!items || items.length === 0) return '';
+  let out = '';
+  let prevRight = -Infinity;
+  let prevHasWidth = false;
+
+  for (const it of items) {
+    const raw = it.text ?? '';
+    const trimmed = raw.trim();
+    if (!trimmed) continue;
+
+    if (!out) {
+      out = raw.replace(/^\s+/, '');
+    } else {
+      const gap = it.x - prevRight;
+      const shouldConcatDirectly =
+        prevHasWidth &&
+        gap >= -1.5 &&
+        gap < 1.3 &&
+        !/\s$/.test(out) &&
+        !/^\s/.test(raw) &&
+        !(/\.\d{2}$/.test(out.trim()) && /^\d/.test(trimmed));
+
+      out = shouldConcatDirectly
+        ? out + raw.replace(/^\s+/, '')
+        : out.replace(/\s+$/, '') + ' ' + trimmed;
+    }
+
+    const w = it.width || 0;
+    prevRight = it.x + w;
+    prevHasWidth = w > 0;
+  }
+
+  return out.replace(/\s{2,}/g, ' ').trim();
+}
 
 export function smartJoin(existing: string, continuation: string): string {
   if (!existing) return continuation;
   if (!continuation) return existing;
+
+  // Join directly across delimiter boundaries (e.g. "...CONF-" + "ECTIONERS@YBL", "...@IBL" + "-123")
+  if (existing.endsWith('-') || existing.endsWith('/') || existing.endsWith('@')) {
+    return existing + continuation;
+  }
+  if (/^[-/@.]/.test(continuation)) {
+    return existing + continuation;
+  }
 
   // Join split IFSC codes across line breaks (e.g., "...@IBL-HD" + "FC0002523-...", "...-UT" + "IB0000000-...")
   if (/-[A-Z]{1,4}$/i.test(existing) && /^[A-Z]{1,6}0[A-Z0-9]{4,}/i.test(continuation)) {
@@ -143,33 +226,49 @@ export function smartJoin(existing: string, continuation: string): string {
     return existing + continuation;
   }
 
-  // Join split 12-digit UTRs across line breaks (e.g., "...-30055" + "4418653-...")
-  const trailingDigits = existing.match(/(?:^|[-/])(\d{2,10})$/);
-  const leadingDigits = continuation.match(/^(\d{2,10})(?:-|$|\s)/);
+  // Join split 12-14 digit UTRs across line breaks (e.g., "...-30055" + "4418653-...")
+  const trailingDigits = existing.match(/(?:^|[-/])(\d{2,11})$/);
+  const leadingDigits = continuation.match(/^(\d{2,11})(?:-|$|\s)/);
   if (
     trailingDigits &&
     leadingDigits &&
-    trailingDigits[1].length + leadingDigits[1].length === 12
+    trailingDigits[1].length + leadingDigits[1].length >= 12 &&
+    trailingDigits[1].length + leadingDigits[1].length <= 14
   ) {
     return existing + continuation;
   }
 
+  // Rejoin known PDF line-wrap splits
+  for (const [endRe, startRe] of KNOWN_WRAP_FRAGMENT_PAIRS) {
+    if (endRe.test(existing) && startRe.test(continuation)) {
+      return existing + continuation;
+    }
+  }
+
   const existingEndsInLetter = /[A-Za-z]$/.test(existing);
   const continuationStartsLetter = /^[A-Za-z]/.test(continuation);
-  const firstContWord = continuation.split(/\s+/)[0] || '';
-  const fragmentIsShort = firstContWord.length <= 4;
-  const existingLastWord = existing.split(/\s+/).pop() || '';
-  const existingLastWordIsLong = existingLastWord.length >= 4;
-  const isProtectedShortWord = SAFE_STANDALONE_SHORT_WORDS.has(
-    firstContWord.replace(/[^A-Za-z]/g, '').toUpperCase()
-  );
+  const firstContAlpha = continuation.match(/^([A-Za-z]+)/)?.[1] || '';
+  const existingLastAlpha = existing.match(/([A-Za-z]+)$/)?.[1] || '';
 
+  // Join single-letter split tails (e.g. CONG + O, USIN + G) when stem >= 4 chars & not a standalone short word
+  if (
+    existingEndsInLetter &&
+    firstContAlpha.length === 1 &&
+    existingLastAlpha.length >= 4 &&
+    !SAFE_COMPLETE_4PLUS_WORDS.has(existingLastAlpha.toUpperCase()) &&
+    !/^(?:A|I)$/i.test(firstContAlpha)
+  ) {
+    return existing + continuation;
+  }
+
+  // Join short wrapped word fragments (2..4 letters), even when followed by -VPA@BANK
   if (
     existingEndsInLetter &&
     continuationStartsLetter &&
-    fragmentIsShort &&
-    existingLastWordIsLong &&
-    !isProtectedShortWord
+    firstContAlpha.length >= 2 &&
+    firstContAlpha.length <= 4 &&
+    existingLastAlpha.length >= 4 &&
+    !SAFE_STANDALONE_SHORT_WORDS.has(firstContAlpha.toUpperCase())
   ) {
     return existing + continuation;
   }
@@ -179,24 +278,7 @@ export function smartJoin(existing: string, continuation: string): string {
 
 export function mergeWordFragments(name: string): string {
   if (!name) return '';
-  return name
-    .replace(/\bLIM\s+ITED\b/gi, 'LIMITED')
-    .replace(/\bLIMIT\s+ED\b/gi, 'LIMITED')
-    .replace(/\bSER\s+VICES\b/gi, 'SERVICES')
-    .replace(/\bSERVI\s+CES\b/gi, 'SERVICES')
-    .replace(/\bPRIV\s+ATE\b/gi, 'PRIVATE')
-    .replace(/\bSECURIT\s+IES\b/gi, 'SECURITIES')
-    .replace(/\bDECORA\s+TORS\b/gi, 'DECORATORS')
-    .replace(/\bTECHNOLO\s+GIES\b/gi, 'TECHNOLOGIES')
-    .replace(/\bENTERPR\s+ISES\b/gi, 'ENTERPRISES')
-    .replace(/\bPA\s+YMENT\b/gi, 'PAYMENT')
-    .replace(/\bPAYM\s+ENT\b/gi, 'PAYMENT')
-    .replace(/\bS\s+AYYED\b/gi, 'SAYYED')
-    .replace(/\bFR\s+OM\b/gi, 'FROM')
-    .replace(/\bPA\s+YTM\b/gi, 'PAYTM')
-    .replace(/\bE\s+NJOY\b/gi, 'ENJOY')
-    .replace(/\bO\s+THER\b/gi, 'OTHER')
-    .replace(/\bMA\s+INTENAN\b/gi, 'MAINTENANCE')
+  return deSplitPdfWords(name)
     .replace(/([A-Z]{3,})T\s+RANSACTION\b/gi, '$1 TRANSACTION')
     .replace(/\bAddress\s*city(?:\s+[^]*?)?\s+State\b/gi, ' ')
     .replace(/\s{2,}/g, ' ')
@@ -297,6 +379,7 @@ export function stripNoiseSuffixes(narration: string): string {
     .replace(/-SAVING-UPI\s*PA?\s*YMENT/gi, '')
     .replace(/-UPI\s*PA?\s*YMENT/gi, '')
     .replace(/-UPI\s*PAYMENT/gi, '')
+    .replace(/[-/\s]*(?:SENT\s+USING\s+PAYTM\s*U?|UPI\s+MANDATE|UPI\s+INTENT|BANK\s+TRANSFER)\s*$/gi, '')
     .replace(/\s*-\s*NA\s*$/gi, '')
     .replace(/-OID\d+/gi, '')
     .replace(/-PYTM\d+\b/gi, '')
@@ -360,9 +443,7 @@ export function stripFooterBleed(narration: string): string {
 export function cleanNarrationPipeline(rawNarration: string, explicitRef?: string): { cleanDescription: string; reference: string } {
   const strippedFooter = stripFooterBleed(rawNarration);
   const { narration: strippedUtr, ref: utrRef } = stripUTRPrefix(strippedFooter);
-  const joinedWords = strippedUtr
-    .replace(/\bLIM\s+ITED\b/gi, 'LIMITED')
-    .replace(/\bSALIM\s*S\s+AYYED\b/gi, 'SALIM SAYYED')
+  const joinedWords = deSplitPdfWords(strippedUtr)
     .replace(/\b([A-Z]{3,})([A-Z]{1,3})\s+([A-Z]{2,})(?=\s|$|-)/g, (m, a, b, c) => {
       if (/^KKBKR|^HDFCR/i.test(a) && /^\d+$/.test(c)) return `${a}${b}${c}`;
       return m;
@@ -672,7 +753,7 @@ export async function parsePDFIntelligent(
       for (let lIdx = 0; lIdx < linesMap.length; lIdx++) {
         const line = linesMap[lIdx];
         line.items.sort((a, b) => a.x - b.x);
-        line.text = line.items.map((i) => i.text).join(' ');
+        line.text = joinPdfLineItems(line.items);
         if (/^\s*\d{1,2}[\/\-.]\d{1,2}[\/\-.]\d{2,4}\b/.test(line.text)) {
           if (firstDateRowY === null) firstDateRowY = line.y;
           lastDateRowY = line.y;
@@ -742,15 +823,46 @@ export async function parsePDFIntelligent(
                 ? Math.max(0, narrIt.x - 10)
                 : 0;
 
-        const narrMaxX = refIt
-          ? refIt.x - 4
+        // Measure actual Ref/Chq token left boundary from sample data rows below header
+        let observedRefMinX: number | null = null;
+        if (refIt) {
+          const thresholdX = refIt.x - 15;
+          const maxRefRightX = valDtIt
+            ? valDtIt.x - 2
+            : firstAmountHeader
+              ? firstAmountHeader.x - 4
+              : Infinity;
+          for (let rIdx = headerLineIdx + 1; rIdx < Math.min(linesMap.length, headerLineIdx + 12); rIdx++) {
+            const rTok = linesMap[rIdx].items.find(
+              (i) =>
+                i.x >= thresholdX &&
+                i.x < maxRefRightX &&
+                /^[A-Z0-9]{6,26}$/i.test(i.text.trim()) &&
+                /\d/.test(i.text)
+            );
+            if (rTok && (observedRefMinX === null || rTok.x < observedRefMinX)) {
+              observedRefMinX = rTok.x;
+            }
+          }
+        }
+
+        const effectiveRefLeft =
+          refIt && observedRefMinX !== null ? Math.max(refIt.x, observedRefMinX) : refIt?.x;
+
+        const narrMaxX = effectiveRefLeft !== undefined
+          ? effectiveRefLeft - 4
           : valDtIt
             ? valDtIt.x - 4
             : firstAmountHeader
               ? firstAmountHeader.x - 4
               : Infinity;
 
-        const refMinX = refIt ? refIt.x - 6 : narrMaxX;
+        const refMinX =
+          observedRefMinX !== null
+            ? observedRefMinX - 4
+            : refIt
+              ? refIt.x - 6
+              : narrMaxX;
         const refMaxX = valDtIt
           ? valDtIt.x - 2
           : firstAmountHeader
@@ -1077,14 +1189,14 @@ export async function parsePDFIntelligent(
       }
 
       // Collect narration from anchor items + continuation lines using smartJoin
-      const anchorNarr = narrItms.map((it) => it.text).join(' ');
+      const anchorNarr = joinPdfLineItems(narrItms);
       let rawFullNarr = anchorNarr;
       for (const cl of block.continuationLines) {
         const cBounds = cl.colBounds || bounds;
         const cNarrItms = cBounds
           ? cl.items.filter((it) => it.x >= cBounds.narrMinX - 15 && it.x < cBounds.refMaxX)
           : cl.items;
-        const cText = cNarrItms.map((it) => it.text).join(' ').trim();
+        const cText = joinPdfLineItems(cNarrItms);
         if (cText && !isStatementNoiseLine(cText)) {
           rawFullNarr = smartJoin(rawFullNarr, cText);
         }

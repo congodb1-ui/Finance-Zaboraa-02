@@ -1,4 +1,5 @@
 import { maskForAI } from '../ai/pii-mask';
+import { deSplitPdfWords } from '../parsers/bank-transaction';
 import type {
   AccountScopeTag,
   MerchantAccountSummary,
@@ -66,7 +67,7 @@ export function normalizeMerchantKey(
   const source = (description || rawDescription || '').trim();
   if (!source) return 'UNKNOWN MERCHANT';
 
-  let s = source.toUpperCase();
+  let s = deSplitPdfWords(source).toUpperCase();
 
   // Replace '&' with ' AND ' so Western Bakery & General Stores === Western Bakery And General Stores
   s = s.replace(/\s*&\s*/g, ' AND ');
@@ -77,6 +78,18 @@ export function normalizeMerchantKey(
       /^(?:UPI|IMPS|NEFT(?:\s+(?:CR|DR))?|RTGS(?:\s+(?:CR|DR))?|POS(?:\s+\d{4}X+\d{0,4})?|ACH|NACH|ATM|ECOM|MB|BIL|INB|CLG|MMT|BY\s+TRANSFER|TO\s+TRANSFER)[-:/\s]+/i,
       ''
     );
+  }
+
+  // Strip channel suffixes BEFORE Paytm/VPA stripping so merchant grouping key contains ONLY payee title
+  const preStrippedChannel = s
+    .replace(
+      /[-/\s·]+(?:SENT\s+(?:USING|FROM)\s+(?:PAYTM(?:\s+U)?|GPAY|PHONEPE|BHIM)|UPI\s+MANDATE|UPI\s+INTENT|UPI\s+PAYMENT|BANK\s+TRANSFER|IMPS\s+TRANSFER|NEFT\s+TRANSFER|RTGS\s+TRANSFER|CARD\s*\/\s*ATM)\b/gi,
+      ' '
+    )
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (preStrippedChannel) {
+    s = preStrippedChannel;
   }
 
   // Strip Paytm QR / OID / merchant codes & VPA handles (before hyphen stripping)
@@ -98,8 +111,17 @@ export function normalizeMerchantKey(
   // Strip pure 6+ digit sequences (UTRs, phone numbers, ref numbers)
   s = s.replace(/\b\d{6,}\b/g, ' ');
 
-  // Strip trailing bank payment filler like "-NA", "-UPI PAYMENT", "-PAYMENT", "-IN"
-  s = s.replace(/[-/\s]+(?:UPI\s+PAYMENT|NA)\b$/g, ' ');
+  // Strip trailing channel / NA filler after ref removal
+  const postStrippedChannel = s
+    .replace(
+      /[-/\s·]+(?:SENT\s+(?:USING|FROM)\s+(?:PAYTM(?:\s+U)?|GPAY|PHONEPE|BHIM)|UPI\s+MANDATE|UPI\s+INTENT|UPI\s+PAYMENT|BANK\s+TRANSFER|IMPS\s+TRANSFER|NEFT\s+TRANSFER|RTGS\s+TRANSFER|CARD\s*\/\s*ATM|NA)\b/gi,
+      ' '
+    )
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (postStrippedChannel) {
+    s = postStrippedChannel;
+  }
 
   // Replace remaining delimiters with space
   s = s.replace(/[^A-Z0-9\s]/g, ' ');

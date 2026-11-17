@@ -117,16 +117,25 @@ export function isUnreadableOrMaskedPayee(value: string | null | undefined): boo
   if (upper === UNREADABLE_PAYEE_LABEL) return true;
   if (INVALID_STANDALONE_DESCRIPTIONS.has(upper)) return true;
 
-  // Purely masked account/card/placeholder strings: XXXXX8212, Xxxxxxxx0921, ****1234, AHB-XXXXX8212-NA
-  if (/^(?:[A-Z]{1,4}[-\s]+)?[X*#]{3,}[-\s]*\d{0,6}(?:[-\s]+(?:NA|N\s*A))?$/i.test(trimmed)) {
+  // Purely masked account/card/placeholder strings: XXXXX8212, Xxxxxxxx0921, ****1234, AHB-XXXXX8212-NA, X xxxx8212
+  const normalizedMasked = trimmed
+    .replace(/\b([X*])\s+([X*]{2,}\d*)\b/gi, '$1$2')
+    .replace(/\b([X*]{3,})\s+(\d{2,6})\b/gi, '$1$2');
+
+  if (/^(?:[A-Z]{1,4}[-\s]+)?[X*#]{3,}[-\s]*\d{0,6}(?:[-\s]+(?:NA|N\s*A))?$/i.test(normalizedMasked)) {
+    return true;
+  }
+
+  // Explicitly catch Xxxxx/XXXXX masked account tokens like "Xxxxx8212", "Xxxxx8212 - Transfer", etc.
+  if (/\b[X*]{4,}\d{2,6}\b/i.test(normalizedMasked) && !/^\d{4,6}[X*]{4,8}\d{4}/i.test(normalizedMasked)) {
     return true;
   }
 
   // Contains a masked X/asterisk run with no meaningful non-X alphabetic payee name
-  if (/(?:^|[\s\-/])[X*]{3,}\d*(?:$|[\s\-/])/i.test(trimmed)) {
-    const remainingAlpha = trimmed
+  if (/(?:^|[\s\-/])[X*]{3,}\d*(?:$|[\s\-/])/i.test(normalizedMasked)) {
+    const remainingAlpha = normalizedMasked
       .replace(/\b[X*]{3,}\d*\b/gi, ' ')
-      .replace(/\b(?:NA|CR|DR|UPI|IMPS|NEFT|RTGS|FT|EFT|INB|TO|FROM|BY|VIA|A\/C|ACC|ACCT)\b/gi, ' ')
+      .replace(/\b(?:NA|CR|DR|UPI|IMPS|NEFT|RTGS|FT|EFT|INB|TO|FROM|BY|VIA|A\/C|ACC|ACCT|TRANSFER|PAYMENT|REF)\b/gi, ' ')
       .replace(/[^a-zA-Z]/g, '');
     if (remainingAlpha.length < 3) {
       return true;
@@ -150,6 +159,143 @@ export function sanitizePayeeDescription(candidate: string | null | undefined): 
 }
 
 /**
+ * Rejoins common PDF text-extraction word splits and wrapped fragments
+ * (e.g. "CONG O" -> "CONGO", "Sent Usin G Paytm U" -> "Sent Using Paytm U",
+ * "Pay Tm" -> "Paytm", "Up I Mandate" -> "UPI Mandate", "UpiIntent" -> "UPI Intent",
+ * "Broadb And" -> "Broadband", "Conf Ectioners" -> "Confectioners").
+ */
+export function deSplitPdfWords(raw: string): string {
+  if (!raw) return '';
+  let text = raw
+    .replace(/([a-zA-Z])-\s*\r?\n\s*([a-zA-Z])/g, '$1$2')
+    .replace(/\r?\n|\r/g, ' ')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+
+  text = text.replace(/@\s+([A-Za-z])/g, '@$1');
+
+  // Fix split Xxxxx account masks (e.g. "X xxxx8212", "X x x x x 8212", or "XXXXX 8212")
+  text = text.replace(/\b([X*](?:\s+[X*]){3,})\s*(\d{2,6})?\b/gi, (_, xs, d) => xs.replace(/\s+/g, '') + (d || ''));
+  text = text.replace(/\b([X*])\s+([X*]{2,}\d{2,6})\b/gi, '$1$2');
+  text = text.replace(/\b([X*]{4,})\s+(\d{3,6})\b/gi, '$1$2');
+
+  // Specific multi-fragment channel & merchant words from PDF extractions
+  text = text.replace(/\bCONG\s+O\b/gi, (m) => (m === m.toUpperCase() ? 'CONGO' : 'Congo'));
+  text = text.replace(/\bBROADB\s+AND\b/gi, (m) => (m === m.toUpperCase() ? 'BROADBAND' : 'Broadband'));
+  text = text.replace(/\bCONF\s+ECTIONER(S)?\b/gi, (_, s) =>
+    s ? 'CONFECTIONERS' : 'CONFECTIONER'
+  );
+  text = text.replace(/\bCONFECTION\s+ER(S)?\b/gi, (_, s) =>
+    s ? 'CONFECTIONERS' : 'CONFECTIONER'
+  );
+
+  // Channel splits: Sent Usi Ng / Sent Usin G / Pay Tm / Up I / UpiIntent
+  text = text.replace(/\bSENT\s+U\s*S\s*I\s+N\s*G\b/gi, 'SENT USING');
+  text = text.replace(/\bSENT\s+U\s*S\s*I\s*N\s+G\b/gi, 'SENT USING');
+  text = text.replace(
+    /\b(US|SAV|BANK|TRAD|SHOPP|WORK|BILL|BOOK|PARK|CATER|MARKET|DEVELOP|PURCHAS|PRINT|PACKAG|CLEAN|HOLD|FUND|BUILD|LIST|HOST|SHIPP|GAM|DIN|MIN)IN\s+G\b/gi,
+    '$1ING'
+  );
+  text = text.replace(
+    /\b(US|SAV|BANK|TRAD|SHOPP|WORK|BILL|BOOK|PARK|CATER|MARKET)I\s+NG\b/gi,
+    '$1ING'
+  );
+  text = text.replace(/\bPAY\s+T\s*M\b/gi, 'PAYTM');
+  text = text.replace(/\bPAYT\s+M\b/gi, 'PAYTM');
+  text = text.replace(/\bUP\s+I(?=\s*(?:MANDATE|INTENT|PAYMENT|TRANSFER|TXN|ID|REF|CR|DR|-|\/|$))/gi, 'UPI');
+  text = text.replace(/\bUPI\s*INTENT\b/gi, 'UPI INTENT');
+  text = text.replace(/\bUPI\s*MANDAT\s*E\b|\bUPI\s*MANDA\s*TE\b|\bUPI\s*MAN\s*DATE\b/gi, 'UPI MANDATE');
+  text = text.replace(/\bMANDAT\s+E\b|\bMANDA\s+TE\b|\bMAN\s+DATE\b/gi, 'MANDATE');
+
+  // Common corporate & bank narration PDF splits
+  text = text.replace(/\bLIM\s+ITED\b/gi, 'LIMITED');
+  text = text.replace(/\bLIMIT\s+ED\b/gi, 'LIMITED');
+  text = text.replace(/\bPA\s+YMENT\b/gi, 'PAYMENT');
+  text = text.replace(/\bPAYM\s+ENT\b/gi, 'PAYMENT');
+  text = text.replace(/\bSALIM\s*S\s+AYYED\b/gi, 'SALIM SAYYED');
+  text = text.replace(/\bSER\s+VICES\b/gi, 'SERVICES');
+  text = text.replace(/\bSERVI\s+CES\b/gi, 'SERVICES');
+  text = text.replace(/\bPRIV\s+ATE\b/gi, 'PRIVATE');
+  text = text.replace(/\bSECURIT\s+IES\b/gi, 'SECURITIES');
+  text = text.replace(/\bDECORA\s+TORS\b/gi, 'DECORATORS');
+  text = text.replace(/\bTECHNOLO\s+GIES\b/gi, 'TECHNOLOGIES');
+  text = text.replace(/\bTECHNOLOG\s+IES\b/gi, 'TECHNOLOGIES');
+  text = text.replace(/\bENTERPR\s+ISES\b/gi, 'ENTERPRISES');
+  text = text.replace(/\bSOLUT\s+IONS\b/gi, 'SOLUTIONS');
+  text = text.replace(/\bPETRO\s+LEUM\b|\bPETROL\s+EUM\b/gi, 'PETROLEUM');
+  text = text.replace(/\bSENT\s+FR\s+OM\b/gi, 'SENT FROM');
+  text = text.replace(/\bPA\s+YTM\b/gi, 'PAYTM');
+  text = text.replace(/\bE\s+NJOY\b/gi, 'ENJOY');
+  text = text.replace(/\bO\s+THER\b/gi, 'OTHER');
+  text = text.replace(/\bMA\s+INTENAN(?:CE)?\b/gi, (m) =>
+    m.toUpperCase().endsWith('CE') ? 'MAINTENANCE' : 'MAINTENAN'
+  );
+  text = text.replace(/([A-Z]{3,})T\s+RANSACTION\b/gi, '$1 TRANSACTION');
+  text = text.replace(/@OKIC\s+ICI/gi, '@OKICICI');
+  text = text.replace(/@HDF\s+CBANK/gi, '@HDFCBANK');
+  text = text.replace(/@PA\s+YTM/gi, '@PAYTM');
+  text = text.replace(/\bAddress\s*city(?:\s+[^]*?)?\s+State\b/gi, ' ');
+  text = text.replace(/\bSECURITIES\s*LIM(?:\s+ITED)?\b/gi, 'SECURITIES LIMITED');
+  text = text.replace(/([A-Z]{3,})([A-Z]{1,2})\s+([A-Z]{2,})(?=\s|$|-)/g, (m, a, b, c) => {
+    if (b === 'S' && c === 'AYYED') return `${a} ${b}${c}`;
+    if ((b === 'LIM' || b === 'L') && /^ITED$/i.test(c)) return `${a} ${b}${c}`;
+    return m;
+  });
+
+  return text.replace(/\s{2,}/g, ' ').trim();
+}
+
+const CARD_TERMINAL_NOISE_REGEX = /^(?=[A-Za-z]*\d)(?=\d*[A-Za-z])[A-Za-z0-9]{5,12}$/;
+
+function parseMaskedCardNarration(
+  text: string,
+  fallbackRef: string
+): ParsedBankNarration | null {
+  const m = text.match(
+    /^(?:(ATM|ATW|POS|ECOM)[\/\-\s]+)?(\d{4,6}[X*]{4,8}\d{4})(?:[-/\s]+(.*))?$/i
+  );
+  if (!m) return null;
+
+  const rail = (m[1] || 'POS').toUpperCase();
+  const cardMask = m[2];
+  const cardLast4 = cardMask.slice(-4);
+  let tail = (m[3] || '').trim();
+
+  let extractedRef = fallbackRef;
+  const refMatch = tail.match(/[-/\s](\d{6,16})$/);
+  if (refMatch) {
+    extractedRef = extractedRef || cleanRef(refMatch[1]);
+    tail = tail.slice(0, -refMatch[0].length).trim();
+  }
+
+  const rawParts = tail
+    .split(tail.includes('-') ? '-' : /[\s/]+/)
+    .map((p) => p.trim())
+    .filter(Boolean);
+
+  const cleanParts = rawParts.filter((part) => {
+    if (CARD_TERMINAL_NOISE_REGEX.test(part)) return false;
+    if (/^\d{6,}$/.test(part)) {
+      if (!extractedRef) extractedRef = cleanRef(part);
+      return false;
+    }
+    if (/^(?:NA|N A|IN|IND)$/i.test(part)) return false;
+    return true;
+  });
+
+  const cleanLocation = cleanParts.join(' - ').trim();
+  const desc = cleanLocation
+    ? `Card / ATM - ${toTitleCase(cleanLocation)}`
+    : `Card / ATM Transaction (${cardLast4})`;
+
+  return {
+    description: desc,
+    reference: extractedRef || fallbackRef,
+    transactionType: rail === 'ATM' || rail === 'ATW' ? 'ATM' : 'POS',
+  };
+}
+
+/**
  * Single source of truth parser for Indian bank transaction narrations
  * (PDF statement lines and bank email alert texts).
  */
@@ -168,42 +314,10 @@ export function parseBankNarration(
     };
   }
 
-  // 1. Normalize line-breaks, leading dot/bullet noise, mid-word line-breaks, and collapse whitespace
-  text = text.replace(/([a-zA-Z])-\s*\r?\n\s*([a-zA-Z])/g, '$1$2');
-  text = text.replace(/\r?\n|\r/g, ' ').replace(/\s{2,}/g, ' ').trim();
+  // 1. Normalize line-breaks, leading dot/bullet noise, PDF word splits, and collapse whitespace
   text = text.replace(/^[.*•\s]+/, '').trim();
-  text = text.replace(/@\s+([A-Za-z])/g, '@$1');
-
-  // Fix common PDF wrapped split words and redaction artifacts
-  text = text.replace(/\bLIM\s+ITED\b/gi, 'LIMITED');
-  text = text.replace(/\bLIMIT\s+ED\b/gi, 'LIMITED');
-  text = text.replace(/\bPA\s+YMENT\b/gi, 'PAYMENT');
-  text = text.replace(/\bPAYM\s+ENT\b/gi, 'PAYMENT');
-  text = text.replace(/\bSALIM\s*S\s+AYYED\b/gi, 'SALIM SAYYED');
-  text = text.replace(/\bSER\s+VICES\b/gi, 'SERVICES');
-  text = text.replace(/\bSERVI\s+CES\b/gi, 'SERVICES');
-  text = text.replace(/\bPRIV\s+ATE\b/gi, 'PRIVATE');
-  text = text.replace(/\bSECURIT\s+IES\b/gi, 'SECURITIES');
-  text = text.replace(/\bDECORA\s+TORS\b/gi, 'DECORATORS');
-  text = text.replace(/\bTECHNOLO\s+GIES\b/gi, 'TECHNOLOGIES');
-  text = text.replace(/\bSENT\s+FR\s+OM\b/gi, 'SENT FROM');
-  text = text.replace(/\bPA\s+YTM\b/gi, 'PAYTM');
-  text = text.replace(/\bE\s+NJOY\b/gi, 'ENJOY');
-  text = text.replace(/\bO\s+THER\b/gi, 'OTHER');
-  text = text.replace(/\bMA\s+INTENAN(?:CE)?\b/gi, (m) => (m.toUpperCase().endsWith('CE') ? 'MAINTENANCE' : 'MAINTENAN'));
-  text = text.replace(/([A-Z]{3,})T\s+RANSACTION\b/gi, '$1 TRANSACTION');
-  text = text.replace(/@OKIC\s+ICI/gi, '@OKICICI');
-  text = text.replace(/@HDF\s+CBANK/gi, '@HDFCBANK');
-  text = text.replace(/@PA\s+YTM/gi, '@PAYTM');
-  text = text.replace(/\bAddress\s*city(?:\s+[^]*?)?\s+State\b/gi, ' ');
-  text = text.replace(/\bSECURITIES\s*LIM(?:\s+ITED)?\b/gi, 'SECURITIES LIMITED');
-  text = text.replace(/([A-Z]{3,})([A-Z]{1,2})\s+([A-Z]{2,})(?=\s|$|-)/g, (m, a, b, c) => {
-    // Only rejoin likely split words like "SECURITIESLIM ITED" -> keep normal two words intact unless prefix ends in LIM/CON/TECH
-    if (b === 'S' && c === 'AYYED') return `${a} ${b}${c}`;
-    if ((b === 'LIM' || b === 'L') && /^ITED$/i.test(c)) return `${a} ${b}${c}`;
-    return m;
-  });
-  text = text.replace(/\s{2,}/g, ' ').trim();
+  text = deSplitPdfWords(text);
+  text = text.replace(/^[.*•\s]+/, '').trim();
 
   // STEP 4A & 4B: Strip leading UTR prefix and/or date prepended to narration (Old bank statement format)
   // e.g. "0000234669620494 12/12/22 SAYYED-WASIMSSAYYED@ICICI-..." or "300255127239-BROADBAND"
@@ -284,7 +398,7 @@ export function parseBankNarration(
 
     if (description && !INVALID_STANDALONE_DESCRIPTIONS.has(description.toUpperCase())) {
       return {
-        description: description,
+        description: isUnreadableOrMaskedPayee(description) ? UNREADABLE_PAYEE_LABEL : description,
         reference: extractedRef || fallbackRef,
         transactionType: 'RTGS',
       };
@@ -328,7 +442,7 @@ export function parseBankNarration(
     const description = descParts.join(' - ').trim();
     if (description && !INVALID_STANDALONE_DESCRIPTIONS.has(description.toUpperCase())) {
       return {
-        description: description,
+        description: isUnreadableOrMaskedPayee(description) ? UNREADABLE_PAYEE_LABEL : description,
         reference: extractedRef || fallbackRef,
         transactionType: 'NEFT',
       };
@@ -342,8 +456,8 @@ export function parseBankNarration(
   // - Other: IMPS-<12-digit UTR>-<MERCHANT>-<BANK> or IMPS CR-<MERCHANT>-<UTR>
   // ==========================================
   if (/^IMPS[\/\-\s]/i.test(text)) {
-    // Check BOM slash format: IMPS/<code>/<12-digit-ref>/<masked>/<payee>[/<purpose>...]
-    const bomSlash = text.match(/^IMPS\/\d+\/(\d{12})\/([^\/]*)\/(.+)$/i);
+    // Check BOM slash format: IMPS/<code>/<12-14-digit-UTR>/<maskedAccount>/<PAYEE>/<Purpose>
+    const bomSlash = text.match(/^IMPS\/\d+\/(\d{12,14})\/([^\/]*)\/(.+)$/i);
     if (bomSlash) {
       const ref12 = bomSlash[1];
       const tailParts = bomSlash[3]
@@ -352,7 +466,7 @@ export function parseBankNarration(
         .filter(Boolean);
       const cleanDesc = tailParts.join(' - ') || 'IMPS Transfer';
       return {
-        description: cleanDesc,
+        description: isUnreadableOrMaskedPayee(cleanDesc) ? UNREADABLE_PAYEE_LABEL : cleanDesc,
         reference: ref12 || fallbackRef,
         transactionType: 'IMPS',
       };
@@ -374,7 +488,7 @@ export function parseBankNarration(
           ? tail
           : `IMPS P2P Transfer (${rrn.slice(-4)})`;
       return {
-        description: cleanDesc,
+        description: isUnreadableOrMaskedPayee(cleanDesc) ? UNREADABLE_PAYEE_LABEL : cleanDesc,
         reference: ref,
         transactionType: 'IMPS',
       };
@@ -386,16 +500,16 @@ export function parseBankNarration(
     let desc = '';
 
     if (segments.length >= 2) {
-      // Check if first segment is 12-digit UTR
-      if (/^\d{12}$/.test(segments[0])) {
+      // Check if first segment is 12-14 digit UTR
+      if (/^\d{12,14}$/.test(segments[0])) {
         extractedRef = segments[0];
         desc = segments[1];
-      } else if (/^\d{1,3}$/.test(segments[0]) && /^\d{12}$/.test(segments[1])) {
+      } else if (/^\d{1,3}$/.test(segments[0]) && /^\d{12,14}$/.test(segments[1])) {
         extractedRef = segments[1];
         desc = segments.slice(2).filter((s) => !/^\*+/.test(s)).join(' - ');
       } else {
         const lastSeg = segments[segments.length - 1];
-        if (/^\d{12}$/.test(lastSeg) || /^[A-Z0-9]{10,22}$/i.test(lastSeg)) {
+        if (/^\d{12,14}$/.test(lastSeg) || /^[A-Z0-9]{10,22}$/i.test(lastSeg)) {
           extractedRef = lastSeg;
           desc = segments.slice(0, -1).join(' - ');
         } else {
@@ -447,7 +561,15 @@ export function parseBankNarration(
   }
 
   // ==========================================
-  // 6. ATM / ATW
+  // 6. MASKED CARD POS / ATM ROWS (e.g. "416021xxxxxx9358-s1anpu6f-pune" or "POS 416021XXXXXX9358 S1ANPU6F PUNE")
+  // ==========================================
+  const cardParsed = parseMaskedCardNarration(text, effectiveFallbackRef);
+  if (cardParsed) {
+    return cardParsed;
+  }
+
+  // ==========================================
+  // 7. ATM / ATW
   // ==========================================
   if (/^(?:ATM|ATW)[\/\-\s]/i.test(text)) {
     let working = text.replace(/^(?:ATM|ATW)[\/\-\s]+/i, '').trim();
@@ -457,15 +579,16 @@ export function parseBankNarration(
       extractedRef = utrMatch[1];
       working = working.slice(0, -utrMatch[0].length).trim();
     }
+    const desc = working || 'ATM Withdrawal';
     return {
-      description: working || 'ATM Withdrawal',
+      description: isUnreadableOrMaskedPayee(desc) ? UNREADABLE_PAYEE_LABEL : desc,
       reference: extractedRef || fallbackRef,
       transactionType: 'ATM',
     };
   }
 
   // ==========================================
-  // 7. POS
+  // 8. POS
   // ==========================================
   if (/^POS[\/\-\s]/i.test(text)) {
     let working = text.replace(/^POS[\/\-\s]+/i, '').trim();
@@ -493,15 +616,16 @@ export function parseBankNarration(
       }
     }
 
+    const finalPos = desc || 'POS Purchase';
     return {
-      description: desc || 'POS Purchase',
+      description: isUnreadableOrMaskedPayee(finalPos) ? UNREADABLE_PAYEE_LABEL : finalPos,
       reference: extractedRef || fallbackRef,
       transactionType: 'POS',
     };
   }
 
   // ==========================================
-  // 8. CHQ
+  // 9. CHQ
   // ==========================================
   if (/^CHQ[\/\-\s]/i.test(text)) {
     let working = text.replace(/^CHQ[\/\-\s]+/i, '').trim();
@@ -512,8 +636,9 @@ export function parseBankNarration(
       extractedRef = cleanRef(chqMatch[1]);
       payee = chqMatch[2].trim();
     }
+    const finalChq = payee || 'Cheque Payment';
     return {
-      description: payee || 'Cheque Payment',
+      description: isUnreadableOrMaskedPayee(finalChq) ? UNREADABLE_PAYEE_LABEL : finalChq,
       reference: extractedRef || fallbackRef,
       transactionType: 'CHQ',
     };
@@ -543,18 +668,18 @@ export function parseBankNarration(
 
     let working = text.replace(/^UPI[\/\-\s]+/i, '').trim();
 
-    // 1. Extract 12-digit UTR
+    // 1. Extract 12-14 digit UTR
     let extractedRef = fallbackRef;
-    const utrMatch = text.match(/(?:^|[-/\s])(\d{12})(?=$|[-/\s])/);
+    const utrMatch = text.match(/(?:^|[-/\s])(\d{12,14})(?=$|[-/\s])/);
     if (utrMatch) {
       extractedRef = utrMatch[1];
     } else if (effectiveFallbackRef) {
       extractedRef = effectiveFallbackRef;
     }
 
-    // 2. Strip noise phrases
+    // 2. Strip channel/wallet noise phrases (keep payee title clean)
     working = working.replace(
-      /[-/\s]*(SENT USING PAYTM U|SENT USING PAYTM|SENT USING PAYT M U|SENT USING GPAY|SENT USING PHONEPE|SENT USING BHIM|SENT FROM PAYTM|SENT FROM GPAY|SENT FROM PHONEPE|SENT FROM BHIM|VIA NETBANKING|INTERNET BANKING|MOBILE BANKING|UPI MANDATE|PAY TO BHARATPE ME|VERIFIED PAYTM MER|EXECUTION TEST)[-/\s]*/gi,
+      /[-/\s]*(SENT USING PAYTM U|SENT USING PAYTM|SENT USING PAYT M U|SENT USING GPAY|SENT USING PHONEPE|SENT USING BHIM|SENT FROM PAYTM|SENT FROM GPAY|SENT FROM PHONEPE|SENT FROM BHIM|VIA NETBANKING|INTERNET BANKING|MOBILE BANKING|UPI MANDATE|UPI INTENT|UPI PAYMENT|BANK TRANSFER|PAY TO BHARATPE ME|VERIFIED PAYTM MER|EXECUTION TEST)[-/\s]*/gi,
       ''
     );
 
@@ -606,7 +731,7 @@ export function parseBankNarration(
         }
       } else {
         const splitMatch = working.match(
-          /^(.*?)(?:-[*]{3,}|-[A-Z]{4}0[A-Z0-9]{6}|-\d{12})/
+          /^(.*?)(?:-[*]{3,}|-[A-Z]{4}0[A-Z0-9]{6}|-\d{12,14})/
         );
         if (splitMatch && splitMatch[1] && splitMatch[1].trim().length > 0) {
           working = splitMatch[1].trim();
@@ -743,12 +868,18 @@ export function parseBankNarration(
   // 12. Fallback (no recognized prefix)
   // ==========================================
   let extractedRef = effectiveFallbackRef;
-  const utrMatch = text.match(/(?:^|[-/\s])(\d{12})(?=$|[-/\s])/);
+  const utrMatch = text.match(/(?:^|[-/\s])(\d{12,14})(?=$|[-/\s])/);
   if (utrMatch) {
     extractedRef = utrMatch[1];
   }
 
-  let desc = text.slice(0, 100).trim();
+  let desc = text
+    .replace(
+      /[-/\s]*(SENT USING PAYTM U|SENT USING PAYTM|SENT USING GPAY|SENT USING PHONEPE|SENT USING BHIM|SENT FROM PAYTM|SENT FROM GPAY|SENT FROM PHONEPE|SENT FROM BHIM|UPI MANDATE|UPI INTENT|UPI PAYMENT)[-/\s]*$/gi,
+      ''
+    )
+    .slice(0, 120)
+    .trim();
   if (isUnreadableOrMaskedPayee(desc)) {
     desc = UNREADABLE_PAYEE_LABEL;
   }
@@ -761,8 +892,9 @@ export function parseBankNarration(
 }
 
 /**
- * Formats a clean, noise-free secondary line for UI tables (e.g. "UPI · Airtel Broadband" or "NEFT Credit")
- * without exposing raw VPA handles (@OKBIZAXIS, paytmqr...), IFSC codes, or wallet boilerplate ("SENT USING PAYTM").
+ * Formats a clean, noise-free secondary line for UI tables (e.g. "UPI Payment · Ref: ..." or "UPI Mandate · Ref: ...")
+ * without exposing raw VPA handles (@OKBIZAXIS, paytmqr...), IFSC codes, or split wallet boilerplate.
+ * Normalizes channel suffixes to canonical labels: UPI Payment, Bank Transfer, UPI Mandate, UPI Intent.
  */
 export function formatTransactionSubtitle(
   description: string,
@@ -772,7 +904,7 @@ export function formatTransactionSubtitle(
   const raw = (rawDescription || '').trim();
   if (!raw || raw === description) return null;
 
-  const cleanedRaw = raw.replace(/^[.*•\s]+/, '').trim();
+  const cleanedRaw = deSplitPdfWords(raw.replace(/^[.*•\s]+/, '').trim());
   let mode = 'Bank Transfer';
   if (/^UPI[\/\-\s]/i.test(cleanedRaw) || /@[A-Za-z]/i.test(cleanedRaw)) {
     mode = 'UPI Payment';
@@ -783,21 +915,30 @@ export function formatTransactionSubtitle(
   } else if (/^IMPS[\/\-\s]/i.test(cleanedRaw)) {
     mode = 'IMPS Transfer';
   } else if (/^(?:EFT|FT|INB)[\/\-\s]/i.test(cleanedRaw)) {
-    mode = 'NetBanking';
-  } else if (/^(?:POS|ATM|ATW)[\/\-\s]/i.test(cleanedRaw)) {
+    mode = 'Bank Transfer';
+  } else if (/^(?:POS|ATM|ATW)[\/\-\s]/i.test(cleanedRaw) || /^\d{4,6}[X*]{4,8}\d{4}\b/i.test(cleanedRaw)) {
     mode = 'Card / ATM';
   } else if (/^CHQ[\/\-\s]/i.test(cleanedRaw)) {
     mode = 'Cheque';
   }
 
-  // Extract optional human remark after the 12-digit UTR for UPI rows
+  // Detect normalized UPI sub-channels (UPI Mandate / UPI Intent)
+  if (mode === 'UPI Payment') {
+    if (/\bUPI\s+MANDATE\b/i.test(cleanedRaw)) {
+      mode = 'UPI Mandate';
+    } else if (/\bUPI\s+INTENT\b/i.test(cleanedRaw)) {
+      mode = 'UPI Intent';
+    }
+  }
+
+  // Extract optional human remark after the 12-14 digit UTR for UPI rows
   let note = '';
   if (mode === 'UPI Payment') {
-    const tailMatch = cleanedRaw.match(/(?:^|[-/\s])\d{12}(?:\s+\d{1,2})?\s*-\s*(.+)$/);
+    const tailMatch = cleanedRaw.match(/(?:^|[-/\s])\d{12,14}(?:\s+\d{1,2})?\s*-\s*(.+)$/);
     if (tailMatch && tailMatch[1]) {
       let candidate = tailMatch[1]
         .replace(
-          /\b(?:SENT\s+US?ING\s+PAYT?M\s*U?|SENT\s+FR\s*OM\s+PHONE(?:\s*E)?|PAYMENT\s+FR\s*OM\s+PHON(?:\s*E)?|SENT\s+FROM\s+\w+|PAY\s+TO\s+BHARATPE\s+ME|VIA\s+NETBANKING|UPI|NA|S-NA)\b/gi,
+          /\b(?:SENT\s+USING\s+PAYTM\s*U?|SENT\s+USING\s+GPAY|SENT\s+USING\s+PHONEPE|SENT\s+USING\s+BHIM|SENT\s+FROM\s+PHONE(?:\s*E)?|PAYMENT\s+FROM\s+PHON(?:\s*E)?|SENT\s+FROM\s+\w+|PAY\s+TO\s+BHARATPE\s+ME|VIA\s+NETBANKING|UPI\s+MANDATE|UPI\s+INTENT|UPI\s+PAYMENT|BANK\s+TRANSFER|UPI|NA|S-NA)\b/gi,
           ''
         )
         .replace(/\bOID\d+\b/gi, '')

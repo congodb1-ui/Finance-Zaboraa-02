@@ -161,7 +161,16 @@ export async function extractPDFRawData(
       for (const item of cluster.items) {
         const gap = item.x - (prevX + prevWidth);
         if (prevX !== -999 && gap < 12 && gap >= -2) {
-          currentCell = `${currentCell} ${item.text}`.trim();
+          const isTightGlyphJoin =
+            prevWidth > 0 &&
+            gap >= -1.5 &&
+            gap < 1.3 &&
+            !/\s$/.test(currentCell) &&
+            !/^\s/.test(item.text) &&
+            !(/\.\d{2}$/.test(currentCell) && /^\d/.test(item.text.trim()));
+          currentCell = isTightGlyphJoin
+            ? `${currentCell}${item.text}`.trim()
+            : `${currentCell} ${item.text}`.trim();
         } else {
           if (currentCell) {
             mergedCells.push(currentCell.trim());

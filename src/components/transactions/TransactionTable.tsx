@@ -100,6 +100,7 @@ export const TransactionTable: React.FC<TransactionTableProps> = ({
         {transactions.map((tx) => {
           const isSelected = selectedIds.includes(tx.id);
           const isTransfer = tx.is_transfer;
+          const isUnreadablePayee = tx.description === 'UNREADABLE PAYEE - CHECK PDF';
           const isDebit = tx.debit !== null && tx.debit !== undefined;
           const amountDisplay = isDebit ? `−${formatINR(tx.debit!)}` : `+${formatINR(tx.credit || 0)}`;
 
@@ -111,7 +112,9 @@ export const TransactionTable: React.FC<TransactionTableProps> = ({
               className={`p-4 space-y-2.5 transition-colors cursor-pointer ${
                 isSelected
                   ? 'bg-indigo-50/70 dark:bg-indigo-950/40'
-                  : 'hover:bg-slate-50 dark:hover:bg-slate-800/40'
+                  : isUnreadablePayee
+                    ? 'bg-amber-50/80 dark:bg-amber-950/30 border-l-4 border-l-amber-500 hover:bg-amber-100/70 dark:hover:bg-amber-950/40'
+                    : 'hover:bg-slate-50 dark:hover:bg-slate-800/40'
               }`}
             >
               {/* Line 1: Checkbox + Date + Amount */}
@@ -153,8 +156,14 @@ export const TransactionTable: React.FC<TransactionTableProps> = ({
               </div>
 
               {/* Line 2: Description + Recurring indicator */}
-              <div className="flex items-center gap-2 pl-9">
-                <span className="font-medium text-slate-900 dark:text-white text-sm sm:text-base">
+              <div className="flex items-center gap-2 pl-9 flex-wrap">
+                <span
+                  className={`font-medium text-sm sm:text-base ${
+                    isUnreadablePayee
+                      ? 'text-amber-800 dark:text-amber-300 font-semibold'
+                      : 'text-slate-900 dark:text-white'
+                  }`}
+                >
                   {tx.description}
                 </span>
                 {tx.is_recurring && (
@@ -240,6 +249,7 @@ export const TransactionTable: React.FC<TransactionTableProps> = ({
             {transactions.map((tx) => {
               const isSelected = selectedIds.includes(tx.id);
               const isTransfer = tx.is_transfer;
+              const isUnreadablePayee = tx.description === 'UNREADABLE PAYEE - CHECK PDF';
 
               return (
                 <tr
@@ -252,7 +262,9 @@ export const TransactionTable: React.FC<TransactionTableProps> = ({
                   className={`group transition-colors cursor-pointer select-none ${
                     isSelected
                       ? 'bg-indigo-50/60 dark:bg-indigo-950/30'
-                      : 'hover:bg-slate-50/80 dark:hover:bg-slate-800/50'
+                      : isUnreadablePayee
+                        ? 'bg-amber-50/80 dark:bg-amber-950/30 border-l-4 border-l-amber-500 hover:bg-amber-100/70 dark:hover:bg-amber-950/40'
+                        : 'hover:bg-slate-50/80 dark:hover:bg-slate-800/50'
                   } ${isTransfer ? 'text-slate-500 dark:text-slate-400' : ''}`}
                 >
                   <td className="py-3 px-3.5 text-center" onClick={(e) => e.stopPropagation()}>
@@ -270,16 +282,23 @@ export const TransactionTable: React.FC<TransactionTableProps> = ({
                   </td>
 
                   <td className="py-3 px-3">
-                    <div className="flex items-center gap-1.5">
+                    <div className="flex items-center gap-1.5 flex-wrap">
                       <span
                         className={`font-medium ${
-                          isTransfer
-                            ? 'text-slate-600 dark:text-slate-300 line-through-none'
-                            : 'text-slate-900 dark:text-white'
+                          isUnreadablePayee
+                            ? 'text-amber-800 dark:text-amber-300 font-semibold'
+                            : isTransfer
+                              ? 'text-slate-600 dark:text-slate-300 line-through-none'
+                              : 'text-slate-900 dark:text-white'
                         }`}
                       >
                         {tx.description}
                       </span>
+                      {isUnreadablePayee && (
+                        <span className="text-[10px] font-mono font-semibold px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-900/70 text-amber-800 dark:text-amber-200 border border-amber-300 dark:border-amber-700">
+                          CHECK PDF
+                        </span>
+                      )}
                       {tx.is_recurring && (
                         <span
                           title="Recurring transaction"

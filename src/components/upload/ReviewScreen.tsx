@@ -865,8 +865,12 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
                   <tr
                     key={tx.id}
                     onClick={startEditing}
-                    className={`hover:bg-slate-50/60 dark:hover:bg-slate-800/40 transition-colors ${
-                      hasBalanceMismatch ? 'bg-amber-50/40 dark:bg-amber-950/20' : ''
+                    className={`transition-colors ${
+                      isUnreadablePayee
+                        ? 'bg-amber-50/80 dark:bg-amber-950/30 border-l-4 border-l-amber-500 hover:bg-amber-100/70 dark:hover:bg-amber-950/40'
+                        : hasBalanceMismatch
+                          ? 'bg-amber-50/40 dark:bg-amber-950/20 hover:bg-slate-50/60 dark:hover:bg-slate-800/40'
+                          : 'hover:bg-slate-50/60 dark:hover:bg-slate-800/40'
                     } ${!isReadOnly && onUpdateStagedRow ? 'cursor-pointer' : ''}`}
                   >
                     <td className="py-3 px-4 text-center font-mono text-slate-400 text-[11px]">
@@ -880,11 +884,16 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
                         title={tx.raw_description || undefined}
                         className={`font-medium flex items-center gap-2 flex-wrap ${
                           isUnreadablePayee
-                            ? 'text-amber-700 dark:text-amber-400'
+                            ? 'text-amber-800 dark:text-amber-300 font-semibold'
                             : 'text-slate-900 dark:text-white'
                         }`}
                       >
                         <span>{tx.description}</span>
+                        {isUnreadablePayee && (
+                          <span className="text-[10px] font-mono font-semibold px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-900/70 text-amber-800 dark:text-amber-200 border border-amber-300 dark:border-amber-700">
+                            CHECK PDF
+                          </span>
+                        )}
                         {hasBalanceMismatch && (
                           <span className="text-[10px] font-mono font-semibold px-1.5 py-0.5 rounded bg-red-100 dark:bg-red-950/80 text-red-700 dark:text-red-300 border border-red-200 dark:border-red-800">
                             BALANCE_MISMATCH
