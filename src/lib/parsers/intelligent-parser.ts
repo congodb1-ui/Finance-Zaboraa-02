@@ -573,7 +573,7 @@ export async function parsePDFIntelligent(
 
     const dateItem = vLine.items.find((i) => {
       const t = i.text.trim();
-      return /^\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}/.test(t) || /^\d{1,4}$/.test(t);
+      return (/^\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}/.test(t) || /^\d{1,4}$/.test(t)) && i.x < 120;
     });
 
     if (dateMatch && (dateItem || vLine.items.length > 0)) {
@@ -617,7 +617,9 @@ export async function parsePDFIntelligent(
     let resolved = false;
 
     // STEP 1 — Extract all numbers from anchor line
-    const anchorTextWithoutDate = block.anchorText.replace(/^\s*(?:\d{1,4}\s+)?\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}\s*/, '');
+    const anchorTextWithoutDate = block.anchorText
+      .replace(/^\s*(?:\d{1,4}\s+)?\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}\s*/, '')
+      .replace(/\b\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}\b/g, '');
     const numMatches = Array.from(anchorTextWithoutDate.matchAll(NUMBER_REGEX));
 
     interface ExtractedNum {
@@ -629,16 +631,18 @@ export async function parsePDFIntelligent(
     const extractedNums: ExtractedNum[] = [];
     for (const match of numMatches) {
       const raw = match[0];
+      // Ignore isolated 1-2 digit numbers that are likely date components or tokens without decimals
+      if (/^\d{1,2}$/.test(raw) && !raw.includes('.')) continue;
       const val = cleanNumber(raw);
       if (val !== null) {
         extractedNums.push({ val, raw, index: match.index ?? 0 });
       }
     }
 
-    // STEP 2 — Identify balance using chain math
+    // STEP 2 — Identify balance using chain math (evaluating candidates from right-to-left)
     if (prevBalance !== null && extractedNums.length >= 2) {
-      for (let nIdx = 0; nIdx < extractedNums.length; nIdx++) {
-        const N = extractedNums[nIdx].val; // Balance candidate
+      for (let nIdx = extractedNums.length - 1; nIdx >= 0; nIdx--) {
+        const N = extractedNums[nIdx].val; // Balance candidate (prefer rightmost number)
         for (let aIdx = 0; aIdx < extractedNums.length; aIdx++) {
           if (nIdx === aIdx) continue;
           const A = extractedNums[aIdx].val; // Amount candidate
