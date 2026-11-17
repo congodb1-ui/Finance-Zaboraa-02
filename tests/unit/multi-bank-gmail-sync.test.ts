@@ -62,7 +62,10 @@ describe('Multi-Bank Manual Statement Parsers (PDF)', () => {
     expect(txns[0].description).toBe('Wasim Salim Sayyed');
     expect(txns[0].upi_ref_no).toBe('126012537860');
     expect(txns[txns.length - 1].reference_number).toBe('KKBKR22026110525706561');
-    expect(txns.some((t) => /PageNo|Summary for Account/i.test(t.description))).toBe(false);
+    expect(txns[35].description).toBe('KOTAK Securities Limited NSE CLI - Alisha Wasim Sayyed - Kkbkr22');
+    expect(txns[35].reference_number).toBe('KKBKR22026101725350598');
+    expect(txns[37].description).toBe('KOTAK Securities Limited NSE CLI - Alisha Wasim Sayyed - Kkbkr22');
+    expect(txns.some((t) => /PageNo|Summary for Account|Lim Kkbkr|\bIted\b/i.test(t.description))).toBe(false);
   });
 
   it('parses HDFC Account 8458 accurately (207 txns, zero diff, forex @ intact)', async () => {
@@ -92,6 +95,31 @@ describe('Multi-Bank Manual Statement Parsers (PDF)', () => {
     expect(txns[153].description).toBe('Saber Sadeque Syed');
     const rtgsRow = txns.find((t) => t.reference_number === 'HDFCR52024110859480657');
     expect(rtgsRow).toBeDefined();
+    expect(rtgsRow?.description).toBe('Salim Gaffar Sayyed - Netbank, Mum - Hdfcr52024110859480657 - Loan');
+
+    // Audit fixes for File 2 (HDFC 8458): 40-char fixed-width wrap reconstruction & subtitle cleanup
+    expect(txns[1].description).toBe('Infopro Learning Private Limited - Congo Technologies');
+    expect(txns[36].description).toBe('Ebla Computer Consultancy - Congo Technologies');
+    expect(txns[38].description).toBe('9579662397 (PAYTM)');
+    expect(txns[22].description).toBe('Happyfares Ac Travel');
+    expect(
+      formatTransactionSubtitle(txns[22].description, txns[22].raw_description, txns[22].reference_number)
+    ).toBe('UPI Payment · Ref: 404770566192');
+    // Consistent payee name across all 6 Atmakuri transactions (no LAKSHMINAR false merge)
+    const atmakuriRows = [txns[0], txns[13], txns[18], txns[73], txns[83], txns[134]];
+    for (const row of atmakuriRows) {
+      expect(row.description).toBe('Atmakuri Lakshmi Nar');
+    }
+
+    const badTokenRe =
+      /Pri Vate|Consul Tancy|Fre Elanci|D Istant|F Rom|Fr Om|Fro M|P Hone|Ph One|Pho Ne|Phon E|Pay Ment|P Ayment|Ariademo|Pay Using|Usi Ng|Usin G|Pay Tm|\bSen T\b|\bU Sing\b|\bP Aytm\b|Lakshminar/i;
+    for (const t of txns) {
+      const sub = formatTransactionSubtitle(t.description, t.raw_description, t.reference_number);
+      expect(badTokenRe.test(t.description)).toBe(false);
+      if (sub) {
+        expect(badTokenRe.test(sub)).toBe(false);
+      }
+    }
     expect(txns.some((t) => /AddressCity|CONGO TECHNOLOGIES State/i.test(t.description + ' ' + (t.raw_description || '')))).toBe(false);
   });
 
@@ -175,6 +203,63 @@ describe('Multi-Bank Manual Statement Parsers (PDF)', () => {
     // Ensure final row did not swallow B. Summary footer
     expect(txns[85].description).toBe('BY INTT');
     expect(txns[85].credit).toBe(239);
+
+    // Zero chronological continuity breaks across all 86 rows (Channel codes like 9999-CENTRAL OFF / 9022 / 1004 must not corrupt balance)
+    const chrono = orderTransactionsChronologically(txns);
+    expect(chrono.breaks).toBe(0);
+    expect(txns[12].description).toBe('MONTHLY SMS CHA');
+    expect(txns[12].balance).toBe(777344.02);
+    expect(txns[14].description).toBe('Mrs. ALISHA WASIM SAYYED - Donation');
+    expect(txns[14].reference_number).toBe('412413750673');
+    expect(txns[19].description).toBe('JNS-PMSBY-23-24-01201780700-980');
+    expect(txns[19].balance).toBe(1042508.48);
+    expect(txns[31].balance).toBe(1596761.65);
+    expect(txns[32].balance).toBe(1621761.65);
+    expect(txns[68].reference_number).toBe('2502');
+    expect(txns[68].balance).toBe(131915.1);
+    expect(txns.some((t) => /\b\d{10,}\b/.test(t.description) && !/JNS-PMSBY/.test(t.description))).toBe(false);
+  });
+
+  it('normalizes split wallet/channel remarks cleanly in File 1 (HDFC 3597) subtitles', () => {
+    const cases: Array<{ raw: string; expectedTitle: string; expectedSub: string }> = [
+      {
+        raw: 'UPI-CHANDANI BAKERY-Q340928003@YBL-YESB0YBLUPI-404123456789-SEN T USING PAYTM U',
+        expectedTitle: 'CHANDANI BAKERY',
+        expectedSub: 'UPI Payment · Ref: 404123456789',
+      },
+      {
+        raw: 'UPI-SWIGGY-SWIGGY@AXISBANK-UTIB0000000-404123456789-SENT U SING PAYTM U',
+        expectedTitle: 'SWIGGY',
+        expectedSub: 'UPI Payment · Ref: 404123456789',
+      },
+      {
+        raw: 'UPI-RELIEF CHEMIST-PAYTMQR123@PTY-PYTM0123456-404123456789-SENT USI NG PAYTM U',
+        expectedTitle: 'RELIEF CHEMIST',
+        expectedSub: 'UPI Payment · Ref: 404123456789',
+      },
+      {
+        raw: 'UPI-CONGO TECHNOLOGIES-PAYTM@PTY-PYTM0123456-404123456789-SENT USING P AYTM U',
+        expectedTitle: 'CONGO TECHNOLOGIES',
+        expectedSub: 'UPI Payment · Ref: 404123456789',
+      },
+      {
+        raw: 'UPI-HAPPYFARES-HAPPY@HDFC-HDFC0000001-404770566192-PAY USING UPI',
+        expectedTitle: 'HAPPYFARES',
+        expectedSub: 'UPI Payment · Ref: 404770566192',
+      },
+      {
+        raw: 'UPI-ZOMATO-ZOM@ICICI-ICIC0000001-404770566193-PAYMENT F ROM PHONE',
+        expectedTitle: 'ZOMATO',
+        expectedSub: 'UPI Payment · Ref: 404770566193',
+      },
+    ];
+
+    for (const c of cases) {
+      const parsed = parseBankNarration(c.raw, '404123456789');
+      expect(parsed.description).toBe(c.expectedTitle);
+      const sub = formatTransactionSubtitle(parsed.description, c.raw, parsed.reference);
+      expect(sub).toBe(c.expectedSub);
+    }
   });
 });
 

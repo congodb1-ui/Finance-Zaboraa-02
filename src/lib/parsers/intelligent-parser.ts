@@ -159,6 +159,19 @@ const KNOWN_WRAP_FRAGMENT_PAIRS: Array<[RegExp, RegExp]> = [
   [/PA$/i, /^YMENT(?:\b|[-/\s]|$)/i],
   [/MANDAT$/i, /^E(?:\b|[-/\s]|$)/i],
   [/\bB$/i, /^ILL(?:\b|[-/\s@-]|$)/i],
+  [/\bF$/i, /^ROM(?:\b|[-/\s]|$)/i],
+  [/\bFR$/i, /^OM(?:\b|[-/\s]|$)/i],
+  [/\bFRO$/i, /^M(?:\b|[-/\s]|$)/i],
+  [/\bP$/i, /^HONE(?:\b|[-/\s]|$)/i],
+  [/\bPH$/i, /^ONE(?:\b|[-/\s]|$)/i],
+  [/\bPHO$/i, /^NE(?:\b|[-/\s]|$)/i],
+  [/\bPHON$/i, /^E(?:\b|[-/\s]|$)/i],
+  [/\bPRI$/i, /^VATE(?:\b|[-/\s@-]|$)/i],
+  [/\bCONSUL$/i, /^TANCY(?:\b|[-/\s@-]|$)/i],
+  [/\bFRE$/i, /^ELANC(?:I|ING|E)?(?:\b|[-/\s@-]|$)/i],
+  [/\bD$/i, /^ISTANT(?:\b|[-/\s@-]|$)/i],
+  [/\bSEN$/i, /^T(?:\b|[-/\s@-]|$)/i],
+  [/\bP$/i, /^AYTM(?:\b|[-/\s@-]|$)/i],
 ];
 
 const SAFE_COMPLETE_4PLUS_WORDS = new Set([
@@ -166,6 +179,7 @@ const SAFE_COMPLETE_4PLUS_WORDS = new Set([
   'CASH', 'BILL', 'PAID', 'RENT', 'LOAN', 'SELF', 'SAVE', 'MAIN', 'CITY', 'PUNE', 'MALL', 'TECH',
   'AUTO', 'HOME', 'LIFE', 'STAR', 'KING', 'PLUS', 'BLUE', 'GOLD', 'BOOK', 'PARK', 'WORK', 'BAKER',
   'BAKERY', 'STORE', 'STORES', 'MARKET', 'SUPER', 'GENERAL', 'PAYTM', 'MANDATE', 'INTENT', 'PAYMENT',
+  'ARIA', 'DEMO', 'PHONE', 'USING', 'SENT',
 ]);
 
 function joinPdfLineItems(items: Array<{ text: string; x: number; width: number }>): string {
@@ -202,6 +216,57 @@ function joinPdfLineItems(items: Array<{ text: string; x: number; width: number 
   }
 
   return out.replace(/\s{2,}/g, ' ').trim();
+}
+
+/**
+ * Reconstructs narration lines wrapped at a fixed column width (e.g., HDFC's 40-char Crystal Reports field),
+ * using exact chunk length + left-edge x indentation to distinguish space wraps from mid-word cuts.
+ */
+function joinFixedWidthNarrationLines(
+  segments: Array<{ text: string; minX: number }>
+): string {
+  if (segments.length === 0) return '';
+  const FIXED_CHUNK_LEN = 40;
+  const baseX = Math.min(...segments.map((s) => s.minX));
+  let acc = segments[0].text.trim();
+  let chunkLen = acc.length;
+
+  for (let i = 1; i < segments.length; i++) {
+    const cur = segments[i].text.trim();
+    if (!cur) continue;
+    const hasLeadingSpace = segments[i].minX - baseX > 0.8;
+    const boundaryPunctuation = /[-/@]$/.test(acc) || /^[-/@.]/.test(cur);
+
+    if (chunkLen === FIXED_CHUNK_LEN) {
+      if (boundaryPunctuation && !hasLeadingSpace) {
+        acc += cur;
+        chunkLen = cur.length;
+      } else if (hasLeadingSpace) {
+        acc += ' ' + cur;
+        chunkLen = 1 + cur.length;
+      } else {
+        // Hard-chopped at column 40 with no intervening whitespace: direct stitch
+        acc += cur;
+        chunkLen = cur.length;
+      }
+    } else if (chunkLen < FIXED_CHUNK_LEN && chunkLen + 1 + cur.length <= FIXED_CHUNK_LEN) {
+      if (boundaryPunctuation) {
+        acc += cur;
+        chunkLen += cur.length;
+      } else {
+        acc += ' ' + cur;
+        chunkLen += 1 + cur.length;
+      }
+    } else {
+      acc = boundaryPunctuation ? acc + cur : smartJoin(acc, cur);
+      chunkLen = cur.length;
+    }
+  }
+
+  // Collapse stray whitespace adjacent to delimiter around IFSC/VPA boundaries introduced by column wraps
+  return acc
+    .replace(/@([A-Za-z0-9.-]+)\s+-([A-Z]{4}0[A-Z0-9]{6})/g, '@$1-$2')
+    .replace(/@([A-Za-z0-9.-]+)-\s+([A-Z]{4}0[A-Z0-9]{6})/g, '@$1-$2');
 }
 
 export function smartJoin(existing: string, continuation: string): string {
@@ -261,14 +326,15 @@ export function smartJoin(existing: string, continuation: string): string {
     return existing + continuation;
   }
 
-  // Join short wrapped word fragments (2..4 letters), even when followed by -VPA@BANK
+  // Join short wrapped word fragments (2..3 letters, or known suffixes), even when followed by -VPA@BANK
   if (
     existingEndsInLetter &&
     continuationStartsLetter &&
     firstContAlpha.length >= 2 &&
-    firstContAlpha.length <= 4 &&
+    firstContAlpha.length <= 3 &&
     existingLastAlpha.length >= 4 &&
-    !SAFE_STANDALONE_SHORT_WORDS.has(firstContAlpha.toUpperCase())
+    !SAFE_STANDALONE_SHORT_WORDS.has(firstContAlpha.toUpperCase()) &&
+    !SAFE_COMPLETE_4PLUS_WORDS.has(existingLastAlpha.toUpperCase())
   ) {
     return existing + continuation;
   }
@@ -1070,6 +1136,19 @@ export async function parsePDFIntelligent(
     }
   }
 
+  // Detect once per document whether this statement uses fixed 40-char narration wrapping (e.g. HDFC Crystal Reports)
+  const fileUsesFixed40 =
+    profile.name === 'HDFC Bank' ||
+    allVisualLines.some((vl) =>
+      vl.colBounds
+        ? vl.items
+            .filter((it) => it.x >= vl.colBounds!.narrMinX && it.x < vl.colBounds!.narrMaxX)
+            .map((it) => it.text)
+            .join('')
+            .trim().length === 40
+        : false
+    );
+
   // Parse transactions from Anchor blocks
   const parsedTxns: ParsedTransaction[] = [];
   let runningBalance: number | null = pdfData.openingBalance ?? null;
@@ -1102,8 +1181,25 @@ export async function parsePDFIntelligent(
       let amountItems: typeof items;
 
       if (bounds) {
-        narrItms = items.filter((it) => it !== dateItm && it.x >= bounds.narrMinX && it.x < bounds.narrMaxX);
-        refItms = items.filter((it) => it !== dateItm && it.x >= bounds.refMinX && it.x < bounds.refMaxX);
+        const isExtendedRightAlignedRef = (it: RawItem): boolean => {
+          const t = it.text.trim();
+          return (
+            it.x < bounds.refMinX &&
+            it.x >= bounds.refMinX - 45 &&
+            itemRightX(it) > bounds.refMinX + 10 &&
+            /^[A-Z0-9]{10,26}$/i.test(t) &&
+            /\d/.test(t)
+          );
+        };
+        refItms = items.filter(
+          (it) =>
+            it !== dateItm &&
+            ((it.x >= bounds.refMinX && it.x < bounds.refMaxX) || isExtendedRightAlignedRef(it))
+        );
+        const refSet = new Set(refItms);
+        narrItms = items.filter(
+          (it) => it !== dateItm && !refSet.has(it) && it.x >= bounds.narrMinX && it.x < bounds.narrMaxX
+        );
         amountItems = items.filter((it) => it !== dateItm && it.x >= bounds.amtMinX);
       } else {
         // Dynamic headerless fallback: numeric items on the right are amounts, non-numeric items after date are narration
@@ -1188,9 +1284,15 @@ export async function parsePDFIntelligent(
         }
       }
 
-      // Collect narration from anchor items + continuation lines using smartJoin
+      // Collect narration from anchor items + continuation lines
       const anchorNarr = joinPdfLineItems(narrItms);
-      let rawFullNarr = anchorNarr;
+      const narrSegments: Array<{ text: string; minX: number }> = [];
+      if (anchorNarr) {
+        narrSegments.push({
+          text: anchorNarr,
+          minX: narrItms.length > 0 ? narrItms[0].x : 0,
+        });
+      }
       for (const cl of block.continuationLines) {
         const cBounds = cl.colBounds || bounds;
         const cNarrItms = cBounds
@@ -1198,7 +1300,24 @@ export async function parsePDFIntelligent(
           : cl.items;
         const cText = joinPdfLineItems(cNarrItms);
         if (cText && !isStatementNoiseLine(cText)) {
-          rawFullNarr = smartJoin(rawFullNarr, cText);
+          narrSegments.push({
+            text: cText,
+            minX: cNarrItms.length > 0 ? cNarrItms[0].x : 0,
+          });
+        }
+      }
+
+      let rawFullNarr = '';
+      const hasFixed40Wrap =
+        narrSegments.length > 1 &&
+        narrSegments.every((s) => s.text.trim().length <= 40) &&
+        (fileUsesFixed40 || narrSegments.some((s) => s.text.trim().length === 40));
+
+      if (hasFixed40Wrap) {
+        rawFullNarr = joinFixedWidthNarrationLines(narrSegments);
+      } else {
+        for (const seg of narrSegments) {
+          rawFullNarr = rawFullNarr ? smartJoin(rawFullNarr, seg.text) : seg.text;
         }
       }
       if (!rawFullNarr) rawFullNarr = joinedRawNarration;

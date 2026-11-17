@@ -313,33 +313,71 @@ function parseBOMPdfPages(pdfData: PDFExtractionResult): {
         const balH = row.items.find((i) => /^balance$/i.test(i.text.trim()));
         const chanH = row.items.find((i) => /^channel$/i.test(i.text.trim()));
 
-        // "Cheque" / "/Reference No" may be slightly below this Y
-        const refHeaderItem = items.find(
+        // "Cheque" / "/Reference No" spans two header lines; pick the leftmost X so ref numbers aren't clipped into Particulars
+        const refHeaderItems = items.filter(
           (i) => Math.abs(i.y - row.y) <= 14 && /cheque|reference/i.test(i.text.trim())
         );
 
         const dateX = dateH ? dateH.x : 165;
         const partX = partH ? partH.x : 283;
-        const refX = refHeaderItem ? refHeaderItem.x : 405;
+        const refHeaderX =
+          refHeaderItems.length > 0 ? Math.min(...refHeaderItems.map((i) => i.x)) : 405;
         const debitX = debitH ? debitH.x : 520;
         const creditX = creditH ? creditH.x : 607;
         const balX = balH ? balH.x : 715;
         const chanX = chanH ? chanH.x : 848;
 
+        // Refine refMinX & balMaxX dynamically from actual body items below header
+        const bodyBelowHeader = items.filter((i) => i.y < row.y - 12 && i.text.trim());
+        const refValueCandidates = bodyBelowHeader.filter(
+          (i) => i.x >= refHeaderX - 30 && i.x < debitX - 25 && /^\d{3,18}$/.test(i.text.trim())
+        );
+        const refX =
+          refValueCandidates.length > 0
+            ? Math.min(refHeaderX, Math.min(...refValueCandidates.map((i) => i.x)))
+            : refHeaderX;
+
+        const balCandidates = bodyBelowHeader.filter(
+          (i) =>
+            i.x >= (creditX + balX) / 2 &&
+            i.x < chanX + 10 &&
+            /^[-−+]?[\d,]+\.\d{2}(?:\s*(?:Cr|Dr))?$/i.test(i.text.trim())
+        );
+        const observedBalRightMax =
+          balCandidates.length > 0
+            ? Math.max(...balCandidates.map((i) => i.x + (i.width || 0)))
+            : null;
+        const chanCandidates = bodyBelowHeader.filter(
+          (i) =>
+            i.x >= (observedBalRightMax !== null ? observedBalRightMax + 2 : balX + 60) &&
+            !/^[-−+]?[\d,]+\.\d{2}(?:\s*(?:Cr|Dr))?$/i.test(i.text.trim())
+        );
+        const observedChanMinX =
+          chanCandidates.length > 0 ? Math.min(...chanCandidates.map((i) => i.x)) : null;
+
+        const splitBalChanX =
+          observedBalRightMax !== null &&
+          observedChanMinX !== null &&
+          observedChanMinX > observedBalRightMax
+            ? (observedBalRightMax + observedChanMinX) / 2
+            : observedBalRightMax !== null
+              ? observedBalRightMax + 6
+              : chanX - 38;
+
         colBounds = {
           dateMinX: dateX - 30,
           dateMaxX: partX - 75,
           partMinX: partX - 75,
-          partMaxX: refX - 10,
-          refMinX: refX - 15,
+          partMaxX: refX - 6,
+          refMinX: refX - 6,
           refMaxX: debitX - 25,
           debitMinX: debitX - 25,
           debitMaxX: (debitX + creditX) / 2 + 5,
           creditMinX: (debitX + creditX) / 2 + 5,
           creditMaxX: (creditX + balX) / 2 + 5,
           balMinX: (creditX + balX) / 2 + 5,
-          balMaxX: chanX - 15,
-          chanMinX: chanX - 15,
+          balMaxX: splitBalChanX,
+          chanMinX: splitBalChanX,
         };
         break;
       }
@@ -400,11 +438,14 @@ function parseBOMPdfPages(pdfData: PDFExtractionResult): {
         (it) => it.x >= colBounds.creditMinX && it.x < colBounds.creditMaxX
       );
       const balItems = cellItems.filter(
-        (it) => it.x >= colBounds.balMinX && it.x < colBounds.balMaxX
+        (it) =>
+          it.x >= colBounds.balMinX &&
+          it.x < colBounds.balMaxX &&
+          /^[-−+]?[\d,]+\.\d{2}(?:\s*(?:Cr|Dr))?$/i.test(it.text.trim())
       );
       const chanItems = cellItems.filter((it) => it.x >= colBounds.chanMinX);
 
-      // Reconstruct multi-line Particulars preserving natural line breaks
+      // Reconstruct multi-line Particulars preserving natural line breaks without breaking slash/hyphen tokens
       const partLines: Array<{ y: number; text: string }> = [];
       for (const p of partItems) {
         const line = partLines.find((pl) => Math.abs(pl.y - p.y) <= 3.0);
@@ -413,12 +454,29 @@ function parseBOMPdfPages(pdfData: PDFExtractionResult): {
       }
       partLines.sort((a, b) => b.y - a.y);
 
-      const rawNarration = partLines.map((l) => l.text).join(' ').replace(/\s+/g, ' ').trim();
+      let rawNarration = '';
+      for (const pl of partLines) {
+        const seg = pl.text.trim();
+        if (!seg) continue;
+        if (!rawNarration) {
+          rawNarration = seg;
+        } else if (/[-/]$/.test(rawNarration) || /^\//.test(seg)) {
+          rawNarration = `${rawNarration}${seg}`;
+        } else {
+          rawNarration = `${rawNarration} ${seg}`;
+        }
+      }
+      rawNarration = rawNarration.replace(/\s+/g, ' ').trim();
       const refRaw = refItems.map((i) => i.text.trim()).join('').trim();
       const channel = chanItems.map((i) => i.text.trim()).join(' ').trim();
       const dVal = parseMonetaryValue(debitItems.map((i) => i.text.trim()).join(''));
       const cVal = parseMonetaryValue(creditItems.map((i) => i.text.trim()).join(''));
-      const bVal = parseMonetaryValue(balItems.map((i) => i.text.trim()).join(''));
+      // Pick exact balance token closest to the anchor Y so stray adjacent items can never alter decimals
+      const bestBalItem =
+        balItems.length > 0
+          ? [...balItems].sort((a, b) => Math.abs(a.y - anchor.y) - Math.abs(b.y - anchor.y))[0]
+          : null;
+      const bVal = bestBalItem ? parseMonetaryValue(bestBalItem.text.trim()) : null;
 
       const debit = dVal !== null && Math.abs(dVal) > 0 ? Math.abs(dVal) : null;
       const credit = cVal !== null && Math.abs(cVal) > 0 ? Math.abs(cVal) : null;

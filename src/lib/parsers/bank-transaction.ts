@@ -189,9 +189,15 @@ export function deSplitPdfWords(raw: string): string {
     s ? 'CONFECTIONERS' : 'CONFECTIONER'
   );
 
-  // Channel splits: Sent Usi Ng / Sent Usin G / Pay Tm / Up I / UpiIntent
+  // Channel splits: Sent Usi Ng / Sent U Sing / Sen T Using / Pay Tm / Up I / UpiIntent
+  text = text.replace(/\bS\s*E\s*N\s+T\s+U\s*S\s*I\s*N\s*G\b/gi, 'SENT USING');
+  text = text.replace(/\bSENT\s+U\s+S\s*I\s*N\s*G\b/gi, 'SENT USING');
   text = text.replace(/\bSENT\s+U\s*S\s*I\s+N\s*G\b/gi, 'SENT USING');
   text = text.replace(/\bSENT\s+U\s*S\s*I\s*N\s+G\b/gi, 'SENT USING');
+  text = text.replace(/\bP\s*A\s*Y\s*M\s*E\s*N\s*T\s+F\s*R\s*O\s*M\s+P\s*H\s*O\s*N\s*E?\b/gi, (m) =>
+    /E\s*$/i.test(m) ? 'PAYMENT FROM PHONE' : 'PAYMENT FROM PHON'
+  );
+  text = text.replace(/\bPAYMENT\s+F\s*R\s*O\s*M\s+P\s*H\s*O?\b/gi, 'PAYMENT FROM PHONE');
   text = text.replace(
     /\b(US|SAV|BANK|TRAD|SHOPP|WORK|BILL|BOOK|PARK|CATER|MARKET|DEVELOP|PURCHAS|PRINT|PACKAG|CLEAN|HOLD|FUND|BUILD|LIST|HOST|SHIPP|GAM|DIN|MIN)IN\s+G\b/gi,
     '$1ING'
@@ -200,6 +206,8 @@ export function deSplitPdfWords(raw: string): string {
     /\b(US|SAV|BANK|TRAD|SHOPP|WORK|BILL|BOOK|PARK|CATER|MARKET)I\s+NG\b/gi,
     '$1ING'
   );
+  text = text.replace(/\bP\s+AYTM\b/gi, 'PAYTM');
+  text = text.replace(/\bPA\s+YTM\b/gi, 'PAYTM');
   text = text.replace(/\bPAY\s+T\s*M\b/gi, 'PAYTM');
   text = text.replace(/\bPAYT\s+M\b/gi, 'PAYTM');
   text = text.replace(/\bUP\s+I(?=\s*(?:MANDATE|INTENT|PAYMENT|TRANSFER|TXN|ID|REF|CR|DR|-|\/|$))/gi, 'UPI');
@@ -210,12 +218,28 @@ export function deSplitPdfWords(raw: string): string {
   // Common corporate & bank narration PDF splits
   text = text.replace(/\bLIM\s+ITED\b/gi, 'LIMITED');
   text = text.replace(/\bLIMIT\s+ED\b/gi, 'LIMITED');
+  text = text.replace(/\bP\s+AYMENT\b/gi, 'PAYMENT');
   text = text.replace(/\bPA\s+YMENT\b/gi, 'PAYMENT');
+  text = text.replace(/\bPAY\s+MENT\b/gi, 'PAYMENT');
   text = text.replace(/\bPAYM\s+ENT\b/gi, 'PAYMENT');
+  text = text.replace(/\bPAYMEN\s+T\b/gi, 'PAYMENT');
+  text = text.replace(/\bF\s+ROM\b/gi, 'FROM');
+  text = text.replace(/\bFR\s+OM\b/gi, 'FROM');
+  text = text.replace(/\bFRO\s+M\b/gi, 'FROM');
+  text = text.replace(/\bP\s+HONE\b/gi, 'PHONE');
+  text = text.replace(/\bPH\s+ONE\b/gi, 'PHONE');
+  text = text.replace(/\bPHO\s+NE\b/gi, 'PHONE');
+  text = text.replace(/\bPHON\s+E\b/gi, 'PHONE');
   text = text.replace(/\bSALIM\s*S\s+AYYED\b/gi, 'SALIM SAYYED');
   text = text.replace(/\bSER\s+VICES\b/gi, 'SERVICES');
   text = text.replace(/\bSERVI\s+CES\b/gi, 'SERVICES');
   text = text.replace(/\bPRIV\s+ATE\b/gi, 'PRIVATE');
+  text = text.replace(/\bPRI\s+VATE\b/gi, 'PRIVATE');
+  text = text.replace(/\bCONSUL\s+TANCY\b/gi, 'CONSULTANCY');
+  text = text.replace(/\bFRE\s+ELANC(ING|E|I)?\b/gi, (_, tail) =>
+    tail ? `FREELANC${tail.toUpperCase()}` : 'FREELANC'
+  );
+  text = text.replace(/\bD\s+ISTANT\b/gi, 'DISTANT');
   text = text.replace(/\bSECURIT\s+IES\b/gi, 'SECURITIES');
   text = text.replace(/\bDECORA\s+TORS\b/gi, 'DECORATORS');
   text = text.replace(/\bTECHNOLO\s+GIES\b/gi, 'TECHNOLOGIES');
@@ -224,7 +248,6 @@ export function deSplitPdfWords(raw: string): string {
   text = text.replace(/\bSOLUT\s+IONS\b/gi, 'SOLUTIONS');
   text = text.replace(/\bPETRO\s+LEUM\b|\bPETROL\s+EUM\b/gi, 'PETROLEUM');
   text = text.replace(/\bSENT\s+FR\s+OM\b/gi, 'SENT FROM');
-  text = text.replace(/\bPA\s+YTM\b/gi, 'PAYTM');
   text = text.replace(/\bE\s+NJOY\b/gi, 'ENJOY');
   text = text.replace(/\bO\s+THER\b/gi, 'OTHER');
   text = text.replace(/\bMA\s+INTENAN(?:CE)?\b/gi, (m) =>
@@ -460,11 +483,22 @@ export function parseBankNarration(
     const bomSlash = text.match(/^IMPS\/\d+\/(\d{12,14})\/([^\/]*)\/(.+)$/i);
     if (bomSlash) {
       const ref12 = bomSlash[1];
-      const tailParts = bomSlash[3]
-        .split('/')
-        .map((s) => s.replace(/\s*TRANSFER TO \d+ TO\s*/i, ' - ').trim())
-        .filter(Boolean);
-      const cleanDesc = tailParts.join(' - ') || 'IMPS Transfer';
+      const rawTail = bomSlash[3].trim();
+      const transferRecipientMatch = rawTail.match(
+        /^([^\/]+)\/([^]*?)\s+TRANSFER TO \d+\s+TO\s+(.+)$/i
+      );
+      let cleanDesc = '';
+      if (transferRecipientMatch) {
+        const purpose = transferRecipientMatch[2].replace(/\b\d{12,14}\b/g, '').trim();
+        const recipient = toTitleCase(transferRecipientMatch[3].trim());
+        cleanDesc = purpose ? `${recipient} - ${purpose}` : recipient;
+      } else {
+        const tailParts = rawTail
+          .split('/')
+          .map((s) => s.replace(/\s*TRANSFER TO \d+(?:\s+TO)?\s*/gi, ' ').trim())
+          .filter(Boolean);
+        cleanDesc = tailParts.join(' - ') || 'IMPS Transfer';
+      }
       return {
         description: isUnreadableOrMaskedPayee(cleanDesc) ? UNREADABLE_PAYEE_LABEL : cleanDesc,
         reference: ref12 || fallbackRef,
@@ -777,9 +811,13 @@ export function parseBankNarration(
       }
     }
 
-    // Clean trailing hyphens, slashes, spaces, and "-NA" or "NA"
+    // Clean trailing hyphens, slashes, spaces, "-NA", and compact mobile+wallet concatenation (e.g. "9579662397PAYTM")
     working = working.replace(/-(?:NA|N A)$/i, '');
     working = working.replace(/[-/\s]+$/, '').replace(/^[-/\s]+/, '').trim();
+    working = working.replace(
+      /^(\d{10})(PAYTM|GPAY|PHONEPE|BHIM|UPI)$/i,
+      (_, phone, wallet) => `${phone} (${toTitleCase(wallet)})`
+    );
 
     if (isUnreadableOrMaskedPayee(working)) {
       working = UNREADABLE_PAYEE_LABEL;
@@ -878,6 +916,7 @@ export function parseBankNarration(
       /[-/\s]*(SENT USING PAYTM U|SENT USING PAYTM|SENT USING GPAY|SENT USING PHONEPE|SENT USING BHIM|SENT FROM PAYTM|SENT FROM GPAY|SENT FROM PHONEPE|SENT FROM BHIM|UPI MANDATE|UPI INTENT|UPI PAYMENT)[-/\s]*$/gi,
       ''
     )
+    .replace(/\s+TRANSFER TO \d{6,}(?:\s+TO)?$/i, '')
     .slice(0, 120)
     .trim();
   if (isUnreadableOrMaskedPayee(desc)) {
@@ -938,7 +977,11 @@ export function formatTransactionSubtitle(
     if (tailMatch && tailMatch[1]) {
       let candidate = tailMatch[1]
         .replace(
-          /\b(?:SENT\s+USING\s+PAYTM\s*U?|SENT\s+USING\s+GPAY|SENT\s+USING\s+PHONEPE|SENT\s+USING\s+BHIM|SENT\s+FROM\s+PHONE(?:\s*E)?|PAYMENT\s+FROM\s+PHON(?:\s*E)?|SENT\s+FROM\s+\w+|PAY\s+TO\s+BHARATPE\s+ME|VIA\s+NETBANKING|UPI\s+MANDATE|UPI\s+INTENT|UPI\s+PAYMENT|BANK\s+TRANSFER|UPI|NA|S-NA)\b/gi,
+          /\b(?:SENT|PAY(?:MENT)?)\s+(?:USING|FROM|VIA|BY)\s+(?:PAYTM(?:\s+U(?:PI)?)?|PAY\s*TM(?:\s+U)?|GPAY|G-?PAY|PHONEPE|BHIM|WHATSAPP|PHONE(?:\s*PE)?|PHON|PHO|PH|P|UPI|[A-Z]{1,4})?(?:\s+U(?:PI)?)?\b/gi,
+          ''
+        )
+        .replace(
+          /\b(?:SENT\s+FROM\s+\w+|PAY\s+USING(?:\s+UPI)?|PAY\s+TO\s+BHARATPE\s+ME|VIA\s+NETBANKING|UPI\s+TRANSACTION|UPI\s+MANDATE|UPI\s+INTENT|UPI\s+PAYMENT|BANK\s+TRANSFER|UPI|NA|S-NA)\b/gi,
           ''
         )
         .replace(/\bOID\d+\b/gi, '')
@@ -946,6 +989,11 @@ export function formatTransactionSubtitle(
         .replace(/\bMA\s+INTENAN\b/gi, 'MAINTENANCE')
         .replace(/^[-/\s]+|[-/\s]+$/g, '')
         .trim();
+
+      // Drop leftover truncated boilerplate stubs (e.g. "Pay Using", "Payment From", "Sent Using")
+      if (/^(?:PAY(?:MENT)?(?:\s+(?:USING|FROM|VIA|BY))?|SENT(?:\s+(?:USING|FROM))?|USING|FROM|PHONE?E?)$/i.test(candidate)) {
+        candidate = '';
+      }
 
       const descNorm = description.toLowerCase().replace(/[^a-z0-9]/g, '');
       const candNorm = candidate.toLowerCase().replace(/[^a-z0-9]/g, '');
