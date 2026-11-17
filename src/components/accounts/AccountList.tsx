@@ -28,6 +28,7 @@ export const AccountList: React.FC<AccountListProps> = ({
   const [editingAccount, setEditingAccount] = useState<AccountWithBalance | null>(null);
   const [typeFilter, setTypeFilter] = useState<'all' | AccountType | 'inactive'>('all');
   const [actionError, setActionError] = useState<string | null>(null);
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
 
   const [confirmModal, setConfirmModal] = useState<{
     type: 'clear' | 'delete_all';
@@ -64,11 +65,14 @@ export const AccountList: React.FC<AccountListProps> = ({
       if (editingAccount) {
         const updated = await onUpdateAccount(editingAccount.id, formData);
         setAccounts((prev) => prev.map((a) => (a.id === updated.id ? updated : a)));
+        setSuccessMessage('Account updated successfully');
       } else {
         const created = await onCreateAccount(formData);
         setAccounts((prev) => [...prev, created]);
+        setSuccessMessage('Account created successfully');
       }
       handleCloseForm();
+      setTimeout(() => setSuccessMessage(null), 4000);
     } catch (err: any) {
       setActionError(err.message || 'Operation failed.');
       setTimeout(() => setActionError(null), 4000);
@@ -125,6 +129,16 @@ export const AccountList: React.FC<AccountListProps> = ({
           </Button>
         </div>
       </div>
+
+      {/* Success banner */}
+      {successMessage && (
+        <div className="p-4 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 text-xs text-emerald-700 dark:text-emerald-300 flex items-center justify-between animate-in fade-in">
+          <span className="font-semibold">{successMessage}</span>
+          <button type="button" onClick={() => setSuccessMessage(null)} className="font-bold cursor-pointer">
+            Dismiss
+          </button>
+        </div>
+      )}
 
       {/* Action error banner */}
       {actionError && (
