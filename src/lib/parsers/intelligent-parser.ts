@@ -448,6 +448,72 @@ export function cleanNumber(str: string): number | null {
   return isNaN(num) ? null : num;
 }
 
+export interface AmountTypeParams {
+  amount: number;
+  xPosition?: number;
+  debitColumnX?: number;
+  creditColumnX?: number;
+  narration: string;
+  previousBalance: number | null;
+  currentBalance: number | null;
+}
+
+/**
+ * Determines whether an amount is Debit or Credit using a strict 4-priority architecture:
+ * Priority 1: X-position check against dynamic column boundaries
+ * Priority 2: Narration keywords (explicit CR vs DR terms)
+ * Priority 3: Balance direction self-healing math (with tight difference threshold >= 1.00)
+ * Priority 4: Default fallback (debit unless credit keyword present)
+ */
+export function determineAmountType(params: AmountTypeParams): 'debit' | 'credit' {
+  const { amount, xPosition, debitColumnX, creditColumnX, narration, previousBalance, currentBalance } = params;
+
+  // PRIORITY 1: X-position check (dynamic or calibrated column boundaries)
+  // In HDFC and Indian standard layouts:
+  // Withdrawal amounts are right-aligned ending around x=460-465 (x in [390, 470])
+  // Deposit amounts are right-aligned ending around x=525-535 (x in [480, 545])
+  if (xPosition !== undefined) {
+    const boundary = creditColumnX !== undefined ? creditColumnX - 15 : 475;
+    if (xPosition < boundary) {
+      return 'debit';
+    } else if (xPosition >= boundary && xPosition < 550) {
+      return 'credit';
+    }
+  }
+
+  // PRIORITY 2: Narration keywords check
+  const isCreditKeyword = CREDIT_KEYWORDS.some((kw) => kw.test(narration));
+  const isDebitKeyword = DEBIT_KEYWORDS.some((kw) => kw.test(narration));
+  if (isCreditKeyword && !isDebitKeyword) {
+    return 'credit';
+  }
+  if (isDebitKeyword && !isCreditKeyword) {
+    return 'debit';
+  }
+
+  // PRIORITY 3: Balance direction math (only if difference >= 1.00 between predictions)
+  if (previousBalance !== null && currentBalance !== null && previousBalance > 0) {
+    const debitPredicted = previousBalance - amount;
+    const creditPredicted = previousBalance + amount;
+    const debitDiff = Math.abs(debitPredicted - currentBalance);
+    const creditDiff = Math.abs(creditPredicted - currentBalance);
+
+    // If one prediction is decisively closer (delta >= 1.00 or exact match within 0.05)
+    if (creditDiff < 0.05 && debitDiff >= 1.00) {
+      return 'credit';
+    }
+    if (debitDiff < 0.05 && creditDiff >= 1.00) {
+      return 'debit';
+    }
+    if (Math.abs(debitDiff - creditDiff) >= 1.00) {
+      return creditDiff < debitDiff ? 'credit' : 'debit';
+    }
+  }
+
+  // PRIORITY 4: Default fallback
+  return isCreditKeyword ? 'credit' : 'debit';
+}
+
 /**
  * Parses raw extracted PDF data using Intelligent Anchor-Based parsing.
  * Preserves dynamic column x-positions and raw line structures.
@@ -479,6 +545,9 @@ export async function parsePDFIntelligent(
   }
 
   const allVisualLines: VisualLine[] = [];
+  let fileDebitX: number | undefined;
+  let fileCreditX: number | undefined;
+  let fileBalanceX: number | undefined;
 
   for (const page of pdfData.pages) {
     if (summaryReached) break;
@@ -496,10 +565,6 @@ export async function parsePDFIntelligent(
       }
 
       // Check header row for dynamic column positions
-      let pageDebitX: number | null = null;
-      let pageCreditX: number | null = null;
-      let pageBalanceX: number | null = null;
-
       for (const line of linesMap) {
         line.items.sort((a, b) => a.x - b.x);
         line.text = line.items.map((i) => i.text).join(' ');
@@ -510,9 +575,9 @@ export async function parsePDFIntelligent(
           const w = line.items.find((i) => /withdrawal|debit/i.test(i.text));
           const d = line.items.find((i) => /deposit|credit/i.test(i.text));
           const b = line.items.find((i) => /balance/i.test(i.text));
-          if (w) pageDebitX = w.x;
-          if (d) pageCreditX = d.x;
-          if (b) pageBalanceX = b.x;
+          if (!fileDebitX && w) fileDebitX = w.x;
+          if (!fileCreditX && d) fileCreditX = d.x;
+          if (!fileBalanceX && b) fileBalanceX = b.x;
         }
       }
 
@@ -687,25 +752,17 @@ export async function parsePDFIntelligent(
 
         if (candidateAmounts.length === 1) {
           const amt = candidateAmounts[0];
-          // PRIORITY 1: X-position check (HDFC standard debit ~417, credit ~492)
-          if (amt.x < 460) {
-            debit = amt.num;
-          } else if (amt.x >= 460 && amt.x < 535) {
-            credit = amt.num;
-          } else {
-            // PRIORITY 2: Balance math
-            if (runningBalance !== null) {
-              const dDiff = Math.abs(runningBalance - amt.num - balance);
-              const cDiff = Math.abs(runningBalance + amt.num - balance);
-              if (cDiff < dDiff || cDiff < 0.05) credit = amt.num;
-              else debit = amt.num;
-            } else {
-              // PRIORITY 3: Narration keyword fallback
-              const isCr = CREDIT_KEYWORDS.some((kw) => kw.test(joinedRawNarration));
-              if (isCr) credit = amt.num;
-              else debit = amt.num;
-            }
-          }
+          const type = determineAmountType({
+            amount: amt.num,
+            xPosition: amt.x,
+            debitColumnX: fileDebitX,
+            creditColumnX: fileCreditX,
+            narration: joinedRawNarration,
+            previousBalance: runningBalance,
+            currentBalance: balance,
+          });
+          if (type === 'credit') credit = amt.num;
+          else debit = amt.num;
         } else if (candidateAmounts.length >= 2) {
           // If two amount candidates exist (e.g. Debit col and Credit col)
           const first = candidateAmounts[0];
@@ -713,8 +770,9 @@ export async function parsePDFIntelligent(
           if (first.num > 0 && second.num === 0) debit = first.num;
           else if (second.num > 0 && first.num === 0) credit = second.num;
           else {
-            if (first.x < 460) debit = first.num;
-            if (second.x >= 460) credit = second.num;
+            const midpoint = fileDebitX && fileCreditX ? (fileDebitX + fileCreditX) / 2 : 455;
+            if (first.x < midpoint) debit = first.num;
+            if (second.x >= midpoint) credit = second.num;
           }
         }
       }
@@ -756,18 +814,14 @@ export async function parsePDFIntelligent(
         balance = nums[nums.length - 1];
         const amt = nums[nums.length - 2];
 
-        // PRIORITY 2: Balance direction math
-        if (runningBalance !== null) {
-          const dDiff = Math.abs(runningBalance - amt - balance);
-          const cDiff = Math.abs(runningBalance + amt - balance);
-          if (cDiff < dDiff || cDiff < 0.05) credit = amt;
-          else debit = amt;
-        } else {
-          // PRIORITY 3: Narration keyword fallback
-          const isCr = CREDIT_KEYWORDS.some((kw) => kw.test(joinedRawNarration));
-          if (isCr) credit = amt;
-          else debit = amt;
-        }
+        const type = determineAmountType({
+          amount: amt,
+          narration: joinedRawNarration,
+          previousBalance: runningBalance,
+          currentBalance: balance,
+        });
+        if (type === 'credit') credit = amt;
+        else debit = amt;
       } else if (nums.length === 1) {
         balance = nums[0];
       }

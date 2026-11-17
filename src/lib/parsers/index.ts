@@ -46,7 +46,7 @@ export async function parseStatementPDF(
   const fullText = pdfData.fullDocumentText;
 
   // 1. Paytm / PhonePe UPI
-  if (isPaytmStatement(firstPageText) || isPaytmStatement(fullText)) {
+  if (isPaytmStatement(firstPageText)) {
     const res = await parsePaytmUPI(buffer, pdfData);
     if (res.rows.length > 0 && !res.parseError) {
       return res;
@@ -54,7 +54,7 @@ export async function parseStatementPDF(
   }
 
   // 2. Google Pay (GPay)
-  if (isGPayStatement(firstPageText) || isGPayStatement(fullText)) {
+  if (isGPayStatement(firstPageText)) {
     const res = await parseGPayPDF(buffer, pdfData);
     if (res.rows.length > 0 && !res.parseError) {
       return res;
@@ -62,7 +62,7 @@ export async function parseStatementPDF(
   }
 
   // 3. Bank of Maharashtra (BOM)
-  if (isBOMStatement(firstPageText) || isBOMStatement(fullText)) {
+  if (isBOMStatement(firstPageText)) {
     const res = await parseBOM(buffer, pdfData);
     if (res.rows.length > 0 && !res.parseError) {
       return res;
@@ -70,15 +70,15 @@ export async function parseStatementPDF(
   }
 
   // 4. Bank of India (BOI)
-  if (isBOIStatement(firstPageText) || isBOIStatement(fullText)) {
+  if (isBOIStatement(firstPageText)) {
     const res = await parseBOI(buffer, pdfData);
     if (res.rows.length > 0 && !res.parseError) {
       return res;
     }
   }
 
-  // 5. Existing HDFC Bank parser (unchanged)
-  if (isHDFCStatement(firstPageText)) {
+  // 5. HDFC Bank parser
+  if (isHDFCStatement(firstPageText) || isHDFCStatement(fullText)) {
     return parsePDFHDFC(buffer, pdfData);
   }
 
