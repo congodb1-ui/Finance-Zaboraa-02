@@ -115,7 +115,19 @@ async function deleteGmailTokenFromVault(
   }
 }
 
-export type { GmailSyncResult } from '../src/lib/gmail-sync-service';
+export interface GmailSyncResult {
+  emails_processed: number;
+  transactions_added: number;
+  errors_count: number;
+  last_synced_at: string;
+}
+
+export interface DeleteGmailDataResult {
+  success: boolean;
+  deleted_transactions: number;
+  preserved_statement_transactions: number;
+  affected_accounts: number;
+}
 
 
 // --- Inlined Cors & Auth Helpers ---
@@ -421,20 +433,6 @@ async function handleUpload(req: any, res: VercelResponse, path: string) {
     }
   }
 
-  if (path.endsWith('/categorize-preview')) {
-    if (req.method !== 'POST') return res.status(405).json({ error: 'Method Not Allowed' });
-    const parts = path.split('/');
-    const uploadId = parts[parts.length - 2];
-    if (!uploadId) return res.status(400).json({ error: 'Missing upload ID' });
-    try {
-      const { previewUploadCategorization } = await import('../src/lib/auto-categorize/service');
-      const result = await previewUploadCategorization(req.supabase, req.user.id, uploadId);
-      return res.status(200).json(result);
-    } catch (err: any) {
-      return res.status(400).json({ error: err?.message || 'Failed to preview upload categories' });
-    }
-  }
-
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method Not Allowed' });
   return res.status(400).json({ error: 'File upload via direct JSON API is not supported. Use client parser.' });
 }
@@ -455,9 +453,6 @@ async function handleTransactions(req: any, res: VercelResponse, path: string) {
     const filteredUpdates: Record<string, any> = {};
     for (const field of allowedFields) {
       if (updates[field] !== undefined) filteredUpdates[field] = updates[field];
-    }
-    if (filteredUpdates.category_id !== undefined) {
-      filteredUpdates.category_source = 'manual';
     }
 
     const { data, error } = await supabase
@@ -632,6 +627,447 @@ async function handleProfilePan(req: any, res: VercelResponse) {
   } catch (err: any) {
     return res.status(500).json({ error: err?.message || 'PAN update failed' });
   }
+}
+
+// --- Self-contained Gmail Data Wipe & Balance Recompute Helpers (no external ../src/ imports) ---
+interface ServerlessBalanceRow {
+  txn_date: string;
+  debit?: number | null;
+  credit?: number | null;
+  balance?: number | null;
+  balance_after?: number | null;
+}
+
+const BALANCE_TOLERANCE = 0.05;
+
+function getReportedBalanceServerless(row: ServerlessBalanceRow): number | null {
+  const val =
+    row.balance_after !== undefined && row.balance_after !== null
+      ? row.balance_after
+      : row.balance;
+  if (val === undefined || val === null) return null;
+  const num = Number(val);
+  return Number.isFinite(num) ? Math.round(num * 100) / 100 : null;
+}
+
+function toPaiseServerless(val: number): number {
+  return Math.round(val * 100);
+}
+
+function countChronologicalBreaksServerless(rows: ServerlessBalanceRow[]): number {
+  let breaks = 0;
+  let prevBal: number | null = null;
+
+  for (let i = 0; i < rows.length; i++) {
+    const curBal = getReportedBalanceServerless(rows[i]);
+    if (curBal !== null && prevBal !== null) {
+      const dr = Number(rows[i].debit ?? 0);
+      const cr = Number(rows[i].credit ?? 0);
+      if (Math.abs(prevBal - dr + cr - curBal) > BALANCE_TOLERANCE) {
+        breaks++;
+      }
+    }
+    if (curBal !== null) {
+      prevBal = curBal;
+    } else if (prevBal !== null) {
+      const dr = Number(rows[i].debit ?? 0);
+      const cr = Number(rows[i].credit ?? 0);
+      prevBal = Math.round((prevBal - dr + cr) * 100) / 100;
+    }
+  }
+  return breaks;
+}
+
+function popMatchingRowServerless(
+  buckets: Map<number, number[]>,
+  targetPaise: number,
+  used: Set<number>
+): number | null {
+  for (let offset = 0; offset <= 5; offset++) {
+    const candidates = offset === 0 ? [targetPaise] : [targetPaise - offset, targetPaise + offset];
+    for (const key of candidates) {
+      const list = buckets.get(key);
+      if (!list) continue;
+      while (list.length > 0) {
+        const idx = list[0];
+        list.shift();
+        if (!used.has(idx)) return idx;
+      }
+    }
+  }
+  return null;
+}
+
+function chainDayRowsServerless<T extends ServerlessBalanceRow>(
+  dayRows: T[],
+  prevDayEndBal: number | null
+): { ordered: T[]; endBal: number | null } {
+  if (dayRows.length <= 1) {
+    const bal = dayRows.length === 1 ? getReportedBalanceServerless(dayRows[0]) : prevDayEndBal;
+    return {
+      ordered: [...dayRows],
+      endBal:
+        bal !== null
+          ? bal
+          : prevDayEndBal !== null && dayRows.length === 1
+          ? Math.round(
+              (prevDayEndBal - Number(dayRows[0].debit ?? 0) + Number(dayRows[0].credit ?? 0)) * 100
+            ) / 100
+          : prevDayEndBal,
+    };
+  }
+
+  const isContinuousFrom = (seq: T[], seedBal: number | null): boolean => {
+    let running = seedBal;
+    for (let i = 0; i < seq.length; i++) {
+      const bal = getReportedBalanceServerless(seq[i]);
+      if (bal === null) return false;
+      if (running !== null) {
+        const dr = Number(seq[i].debit ?? 0);
+        const cr = Number(seq[i].credit ?? 0);
+        if (Math.abs(running - dr + cr - bal) > BALANCE_TOLERANCE) return false;
+      }
+      running = bal;
+    }
+    return true;
+  };
+
+  if (isContinuousFrom(dayRows, prevDayEndBal)) {
+    return { ordered: [...dayRows], endBal: getReportedBalanceServerless(dayRows[dayRows.length - 1]) };
+  }
+
+  const reversed = [...dayRows].reverse();
+  if (isContinuousFrom(reversed, prevDayEndBal)) {
+    return { ordered: reversed, endBal: getReportedBalanceServerless(reversed[reversed.length - 1]) };
+  }
+
+  const withBalIndices: number[] = [];
+  const withoutBalIndices: number[] = [];
+  const startBuckets = new Map<number, number[]>();
+  const startBalPaiseByIdx = new Map<number, number>();
+  const endBalByIdx = new Map<number, number>();
+
+  for (let i = 0; i < dayRows.length; i++) {
+    const endBal = getReportedBalanceServerless(dayRows[i]);
+    if (endBal === null) {
+      withoutBalIndices.push(i);
+      continue;
+    }
+    const dr = Number(dayRows[i].debit ?? 0);
+    const cr = Number(dayRows[i].credit ?? 0);
+    const startBal = Math.round((endBal + dr - cr) * 100) / 100;
+    const startP = toPaiseServerless(startBal);
+
+    withBalIndices.push(i);
+    startBalPaiseByIdx.set(i, startP);
+    endBalByIdx.set(i, endBal);
+
+    const bucket = startBuckets.get(startP) || [];
+    bucket.push(i);
+    startBuckets.set(startP, bucket);
+  }
+
+  if (withBalIndices.length === 0) {
+    let running = prevDayEndBal;
+    for (const r of dayRows) {
+      if (running !== null) {
+        running = Math.round((running - Number(r.debit ?? 0) + Number(r.credit ?? 0)) * 100) / 100;
+      }
+    }
+    return { ordered: [...dayRows], endBal: running };
+  }
+
+  const used = new Set<number>();
+  const result: T[] = [];
+  let cursorBal: number | null = prevDayEndBal;
+
+  while (used.size < withBalIndices.length) {
+    let nextIdx: number | null = null;
+    if (cursorBal !== null) {
+      nextIdx = popMatchingRowServerless(startBuckets, toPaiseServerless(cursorBal), used);
+    }
+
+    if (nextIdx === null) {
+      const remainingEndCounts = new Map<number, number>();
+      for (const idx of withBalIndices) {
+        if (used.has(idx)) continue;
+        const eP = toPaiseServerless(endBalByIdx.get(idx)!);
+        remainingEndCounts.set(eP, (remainingEndCounts.get(eP) || 0) + 1);
+      }
+
+      for (const idx of withBalIndices) {
+        if (used.has(idx)) continue;
+        const sP = startBalPaiseByIdx.get(idx)!;
+        const eP = toPaiseServerless(endBalByIdx.get(idx)!);
+        const endCount = remainingEndCounts.get(sP) || 0;
+        if (endCount === 0 || (sP === eP && endCount <= 1)) {
+          nextIdx = idx;
+          break;
+        }
+      }
+
+      if (nextIdx === null) {
+        nextIdx = withBalIndices.find((idx) => !used.has(idx)) ?? null;
+      }
+    }
+
+    if (nextIdx === null) break;
+    used.add(nextIdx);
+    result.push(dayRows[nextIdx]);
+    cursorBal = endBalByIdx.get(nextIdx)!;
+  }
+
+  for (const idx of withoutBalIndices) {
+    result.push(dayRows[idx]);
+    if (cursorBal !== null) {
+      cursorBal =
+        Math.round(
+          (cursorBal - Number(dayRows[idx].debit ?? 0) + Number(dayRows[idx].credit ?? 0)) * 100
+        ) / 100;
+    }
+  }
+
+  return { ordered: result, endBal: cursorBal };
+}
+
+function orderTransactionsChronologicallyServerless<T extends ServerlessBalanceRow>(rows: T[]): T[] {
+  if (!rows || rows.length <= 1) return rows ? [...rows] : [];
+
+  const firstDate = rows[0].txn_date || '';
+  const lastDate = rows[rows.length - 1].txn_date || '';
+  if (countChronologicalBreaksServerless(rows) === 0 && firstDate <= lastDate) {
+    return [...rows];
+  }
+
+  const rev = [...rows].reverse();
+  if (countChronologicalBreaksServerless(rev) === 0 && lastDate <= firstDate) {
+    return rev;
+  }
+
+  const dateGroups = new Map<string, T[]>();
+  for (const row of rows) {
+    const key = row.txn_date || '';
+    const list = dateGroups.get(key) || [];
+    list.push(row);
+    dateGroups.set(key, list);
+  }
+
+  const sortedDates = Array.from(dateGroups.keys()).sort();
+  const ordered: T[] = [];
+  let cursorBal: number | null = null;
+
+  for (const d of sortedDates) {
+    const step = chainDayRowsServerless(dateGroups.get(d)!, cursorBal);
+    ordered.push(...step.ordered);
+    cursorBal = step.endBal;
+  }
+  return ordered;
+}
+
+function computeAuthoritativeAccountBalanceServerless(
+  openingBalance: number,
+  chronologicalTxns: ServerlessBalanceRow[]
+): number {
+  let running = Number.isFinite(openingBalance) ? openingBalance : 0;
+
+  for (const tx of chronologicalTxns) {
+    const reported = getReportedBalanceServerless(tx);
+    if (reported !== null) {
+      running = reported;
+    } else {
+      const dr = Number(tx.debit ?? 0);
+      const cr = Number(tx.credit ?? 0);
+      running = running + cr - dr;
+    }
+  }
+
+  return Math.round(running * 100) / 100;
+}
+
+async function recomputeAccountBalanceServerless(
+  db: any,
+  userId: string,
+  accountId: string
+): Promise<number> {
+  const { data: acc } = await db
+    .from('accounts')
+    .select('opening_balance')
+    .eq('id', accountId)
+    .eq('user_id', userId)
+    .maybeSingle();
+  const openBal = Number(acc?.opening_balance ?? 0);
+
+  const txns: any[] = [];
+  const PAGE_SIZE = 1000;
+  let from = 0;
+  while (true) {
+    const q = db
+      .from('transactions')
+      .select('txn_date, debit, credit, balance, balance_after')
+      .eq('account_id', accountId)
+      .eq('user_id', userId)
+      .order('txn_date', { ascending: true })
+      .order('created_at', { ascending: true });
+    const { data: pageRows, error: pageErr } =
+      typeof q.range === 'function' ? await q.range(from, from + PAGE_SIZE - 1) : await q;
+    if (pageErr || !pageRows || pageRows.length === 0) break;
+    txns.push(...pageRows);
+    if (typeof q.range !== 'function' || pageRows.length < PAGE_SIZE) break;
+    from += PAGE_SIZE;
+  }
+
+  const chronologicalTxns = orderTransactionsChronologicallyServerless(txns);
+  const nextBal = computeAuthoritativeAccountBalanceServerless(openBal, chronologicalTxns);
+
+  await db
+    .from('accounts')
+    .update({
+      current_balance: nextBal,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', accountId)
+    .eq('user_id', userId);
+
+  return nextBal;
+}
+
+async function deleteGmailImportedDataServerless(
+  db: any,
+  userId: string
+): Promise<DeleteGmailDataResult> {
+  if (!db) {
+    throw new Error('Database client is required to delete Gmail imported data.');
+  }
+
+  const gmailRows: Array<{ id: string; account_id: string | null; upload_id: string | null }> = [];
+  const PAGE_SIZE = 1000;
+  let from = 0;
+
+  while (true) {
+    const q = db
+      .from('transactions')
+      .select('id, account_id, upload_id')
+      .eq('user_id', userId)
+      .eq('source', 'gmail_auto');
+    const { data, error } =
+      typeof q.range === 'function' ? await q.range(from, from + PAGE_SIZE - 1) : await q;
+    if (error) {
+      throw new Error(`Failed to query Gmail transactions: ${error.message}`);
+    }
+    if (!data || data.length === 0) break;
+    gmailRows.push(...data);
+    if (typeof q.range !== 'function' || data.length < PAGE_SIZE) break;
+    from += PAGE_SIZE;
+  }
+
+  const gmailOnlyIds: string[] = [];
+  const statementLinkedIds: string[] = [];
+  const affectedAccountIds = new Set<string>();
+
+  for (const row of gmailRows) {
+    if (row.account_id) affectedAccountIds.add(row.account_id);
+    if (row.upload_id) {
+      statementLinkedIds.push(row.id);
+    } else {
+      gmailOnlyIds.push(row.id);
+    }
+  }
+
+  const nowIso = new Date().toISOString();
+  const CHUNK_SIZE = 150;
+
+  for (let i = 0; i < gmailOnlyIds.length; i += CHUNK_SIZE) {
+    const chunk = gmailOnlyIds.slice(i, i + CHUNK_SIZE);
+
+    try {
+      await db
+        .from('transactions')
+        .update({
+          transfer_pair_id: null,
+          is_self_transfer: false,
+          is_transfer: false,
+          updated_at: nowIso,
+        })
+        .eq('user_id', userId)
+        .in('transfer_pair_id', chunk);
+    } catch {
+      // Best-effort unlink
+    }
+
+    try {
+      await db
+        .from('invoices')
+        .update({ linked_transaction_id: null, updated_at: nowIso })
+        .eq('user_id', userId)
+        .in('linked_transaction_id', chunk);
+    } catch {
+      // Best-effort unlink
+    }
+
+    const { error: delErr } = await db
+      .from('transactions')
+      .delete()
+      .eq('user_id', userId)
+      .in('id', chunk);
+
+    if (delErr) {
+      throw new Error(`Failed to delete Gmail transactions: ${delErr.message}`);
+    }
+  }
+
+  for (let i = 0; i < statementLinkedIds.length; i += CHUNK_SIZE) {
+    const chunk = statementLinkedIds.slice(i, i + CHUNK_SIZE);
+    const { error: updErr } = await db
+      .from('transactions')
+      .update({ source: 'statement_import', updated_at: nowIso })
+      .eq('user_id', userId)
+      .in('id', chunk);
+    if (updErr) {
+      throw new Error(`Failed to preserve statement-linked transactions: ${updErr.message}`);
+    }
+  }
+
+  await Promise.all([
+    Promise.resolve(db.from('gmail_sync_log').delete().eq('user_id', userId)).catch(() => {}),
+    Promise.resolve(db.from('email_parse_errors').delete().eq('user_id', userId)).catch(() => {}),
+  ]);
+
+  await db
+    .from('profiles')
+    .update({ gmail_last_synced: null, updated_at: nowIso })
+    .eq('user_id', userId);
+
+  for (const accountId of affectedAccountIds) {
+    try {
+      await recomputeAccountBalanceServerless(db, userId, accountId);
+    } catch (balErr: any) {
+      console.warn('[api/gmail/data] Balance recalculation warning:', balErr?.message);
+    }
+  }
+
+  try {
+    await db.from('audit_log').insert({
+      user_id: userId,
+      table_name: 'transactions',
+      record_id: userId,
+      action: 'delete',
+      old_data: {
+        source: 'gmail_auto',
+        deleted_transactions: gmailOnlyIds.length,
+        preserved_statement_transactions: statementLinkedIds.length,
+      },
+      new_data: null,
+    });
+  } catch {
+    // Non-blocking audit log
+  }
+
+  return {
+    success: true,
+    deleted_transactions: gmailOnlyIds.length,
+    preserved_statement_transactions: statementLinkedIds.length,
+    affected_accounts: affectedAccountIds.size,
+  };
 }
 
 // 7. Gmail Routes
@@ -950,8 +1386,7 @@ async function handleGmail(req: any, res: VercelResponse, path: string) {
 
     if (path.endsWith('/data')) {
       if (req.method !== 'DELETE') return res.status(405).json({ error: 'Method Not Allowed' });
-      const { deleteGmailImportedData } = await import('../src/lib/gmail-sync-service');
-      const result = await deleteGmailImportedData(serviceSupabase || db, user.id);
+      const result = await deleteGmailImportedDataServerless(serviceSupabase || db, user.id);
       return res.status(200).json(result);
     }
 
@@ -1025,86 +1460,6 @@ async function handleAI(req: any, res: VercelResponse, path: string) {
   return res.status(404).json({ error: 'AI endpoint not found' });
 }
 
-// 10. Auto-Categorization Routes
-async function handleAutoCategorize(req: any, res: VercelResponse, path: string) {
-  try {
-    const {
-      getAutoCategorizeStatus,
-      runAutoCategorizeAnalysis,
-      saveAutoCategorizeDraft,
-      applyAutoCategorizeBatch,
-      revertAutoCategorizeBatch,
-    } = await import('../src/lib/auto-categorize/service');
-
-    if (path.endsWith('/status')) {
-      if (req.method !== 'GET') return res.status(405).json({ error: 'Method Not Allowed' });
-      const status = await getAutoCategorizeStatus(req.supabase, req.user.id);
-      return res.status(200).json(status);
-    }
-
-    if (path.endsWith('/analyze')) {
-      if (req.method !== 'POST') return res.status(405).json({ error: 'Method Not Allowed' });
-      const result = await runAutoCategorizeAnalysis(req.supabase, req.user.id);
-      return res.status(200).json(result);
-    }
-
-    if (path.endsWith('/draft')) {
-      if (req.method !== 'POST') return res.status(405).json({ error: 'Method Not Allowed' });
-      const { batchId, items } = req.body || {};
-      if (!batchId || !Array.isArray(items)) {
-        return res.status(400).json({ error: 'batchId and items array are required.' });
-      }
-      const result = await saveAutoCategorizeDraft(req.supabase, req.user.id, batchId, items);
-      return res.status(200).json(result);
-    }
-
-    if (path.endsWith('/apply')) {
-      if (req.method !== 'POST') return res.status(405).json({ error: 'Method Not Allowed' });
-      const { batchId, items } = req.body || {};
-      if (!batchId || !Array.isArray(items)) {
-        return res.status(400).json({ error: 'batchId and items array are required.' });
-      }
-      const result = await applyAutoCategorizeBatch(req.supabase, req.user.id, batchId, items);
-      return res.status(200).json(result);
-    }
-
-    if (path.endsWith('/revert')) {
-      if (req.method !== 'POST') return res.status(405).json({ error: 'Method Not Allowed' });
-      const { batchId } = req.body || {};
-      if (!batchId) return res.status(400).json({ error: 'batchId is required.' });
-      const result = await revertAutoCategorizeBatch(req.supabase, req.user.id, batchId);
-      return res.status(200).json(result);
-    }
-
-    return res.status(404).json({ error: 'Auto-categorize route not found' });
-  } catch (err: any) {
-    return res.status(400).json({ error: err?.message || 'Auto-categorize error' });
-  }
-}
-
-// 11. Staged Transactions Category Update
-async function handleStagedTransactions(req: any, res: VercelResponse, path: string) {
-  if (path.endsWith('/category')) {
-    if (req.method !== 'PATCH') return res.status(405).json({ error: 'Method Not Allowed' });
-    const parts = path.split('/');
-    const stagedId = parts[parts.length - 2];
-    if (!stagedId) return res.status(400).json({ error: 'Missing staged transaction ID' });
-    try {
-      const { updateStagedCategoryChoice } = await import('../src/lib/auto-categorize/service');
-      const { category_id, is_transfer, apply_to_future } = req.body || {};
-      const result = await updateStagedCategoryChoice(req.supabase, req.user.id, stagedId, {
-        category_id: category_id ?? null,
-        is_transfer: Boolean(is_transfer),
-        apply_to_future: Boolean(apply_to_future),
-      });
-      return res.status(200).json(result);
-    } catch (err: any) {
-      return res.status(400).json({ error: err?.message || 'Failed to update staged category' });
-    }
-  }
-  return res.status(404).json({ error: 'Staged transaction route not found' });
-}
-
 // --- Main Dispatcher ---
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
@@ -1139,8 +1494,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (path.startsWith('/api/gmail')) return await handleGmail(req, res, path);
     if (path.startsWith('/api/analytics')) return await handleAnalytics(req, res, path);
     if (path.startsWith('/api/ai')) return await handleAI(req, res, path);
-    if (path.startsWith('/api/auto-categorize')) return await handleAutoCategorize(req, res, path);
-    if (path.startsWith('/api/staged-transactions')) return await handleStagedTransactions(req, res, path);
 
     return res.status(404).json({ error: `API route not found: ${path}` });
   } catch (globalErr: any) {
