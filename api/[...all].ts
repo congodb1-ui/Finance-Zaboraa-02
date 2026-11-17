@@ -643,19 +643,28 @@ async function handleGmail(req: any, res: VercelResponse, path: string) {
         const edgeDisabled = process.env.USE_SUPABASE_EDGE_GMAIL_SYNC === 'false';
         const syncEnabled = isConnected && !edgeDisabled && Boolean(data?.gmail_sync_enabled ?? true);
 
-        const { data: lastLog } = await db
-          .from('gmail_sync_log')
-          .select('last_synced_at, emails_processed, transactions_added, errors_count')
-          .eq('user_id', user?.id)
-          .order('last_synced_at', { ascending: false })
-          .limit(1)
-          .maybeSingle();
+        const [{ data: lastLog }, { count: gmailImportedCount }] = await Promise.all([
+          db
+            .from('gmail_sync_log')
+            .select('last_synced_at, emails_processed, transactions_added, errors_count')
+            .eq('user_id', user?.id)
+            .order('last_synced_at', { ascending: false })
+            .limit(1)
+            .maybeSingle(),
+          db
+            .from('transactions')
+            .select('id', { count: 'exact', head: true })
+            .eq('user_id', user?.id)
+            .eq('source', 'gmail_auto')
+            .is('upload_id', null),
+        ]);
 
         return res.status(200).json({
           gmail_connected: isConnected,
           gmail_email: isConnected ? data?.gmail_email || null : null,
           gmail_last_synced: data?.gmail_last_synced || null,
           gmail_sync_enabled: syncEnabled,
+          gmail_imported_count: gmailImportedCount ?? 0,
           has_offline_refresh_support: Boolean(process.env.GOOGLE_CLIENT_SECRET),
           last_sync_summary: lastLog || null,
         });
@@ -666,6 +675,7 @@ async function handleGmail(req: any, res: VercelResponse, path: string) {
           gmail_email: null,
           gmail_last_synced: null,
           gmail_sync_enabled: false,
+          gmail_imported_count: 0,
           has_offline_refresh_support: Boolean(process.env.GOOGLE_CLIENT_SECRET),
           last_sync_summary: null,
         });
@@ -918,6 +928,13 @@ async function handleGmail(req: any, res: VercelResponse, path: string) {
 
       const { runGmailSyncForUser } = await import('../src/lib/gmail-sync-service');
       const result = await runGmailSyncForUser(serviceSupabase, user.id);
+      return res.status(200).json(result);
+    }
+
+    if (path.endsWith('/data')) {
+      if (req.method !== 'DELETE') return res.status(405).json({ error: 'Method Not Allowed' });
+      const { deleteGmailImportedData } = await import('../src/lib/gmail-sync-service');
+      const result = await deleteGmailImportedData(serviceSupabase || db, user.id);
       return res.status(200).json(result);
     }
 

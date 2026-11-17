@@ -30,10 +30,23 @@ const GPAY_MAPPING: ColumnMapping = {
  */
 export function isGPayStatement(text: string): boolean {
   const lower = (text || '').toLowerCase();
+  if (!lower) return false;
+  if (lower.includes('upi transaction id') && (lower.includes('payee') || lower.includes('bank used'))) {
+    return true;
+  }
+  if (
+    lower.includes('hdfc bank') ||
+    lower.includes('bank of maharashtra') ||
+    lower.includes('state bank of india') ||
+    lower.includes('chq./ref.no.') ||
+    lower.includes('withdrawal amt')
+  ) {
+    return false;
+  }
   return (
     lower.includes('google pay') ||
-    lower.includes('gpay') ||
-    lower.includes('upi transaction id')
+    lower.includes('upi transaction id') ||
+    (/\bgpay\b/.test(lower) && !lower.includes('-gpay-') && !lower.includes('using gpay'))
   );
 }
 

@@ -135,3 +135,18 @@ export async function apiPatch<T = any>(path: string, body?: any): Promise<T> {
 
   return handleResponse<T>(res);
 }
+
+export async function apiDelete<T = any>(path: string): Promise<T> {
+  const authHeader = await getAuthHeader();
+  const url = formatUrl(path);
+
+  const res = await fetch(url, {
+    method: 'DELETE',
+    headers: {
+      Accept: 'application/json',
+      ...authHeader,
+    },
+  });
+
+  return handleResponse<T>(res);
+}

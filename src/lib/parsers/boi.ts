@@ -3,6 +3,7 @@ import type { ColumnMapping, ParseResult, ParsedTransaction } from '../../types/
 import { extractPDFRawData, type PDFExtractionResult } from './pdf';
 import { extractImpsRef, parseIndianDate, parseMonetaryValue } from './utils';
 import { isStatementNoiseLine } from './strip-statement-noise';
+import { parseBankNarration } from './bank-transaction';
 
 const BOI_COLUMNS = [
   'Date',
@@ -26,7 +27,7 @@ const BOI_MAPPING: ColumnMapping = {
 
 /**
  * Checks whether text belongs to a Bank of India (BOI) statement,
- * excluding State Bank of India, Central Bank of India, Union Bank of India, etc.
+ * excluding State Bank of India, Central Bank of India, Union Bank of India, HDFC Bank, etc.
  */
 export function isBOIStatement(text: string): boolean {
   const lower = (text || '').toLowerCase();
@@ -36,7 +37,13 @@ export function isBOIStatement(text: string): boolean {
     lower.includes('central bank of india') ||
     lower.includes('union bank of india') ||
     lower.includes('reserve bank of india') ||
-    lower.includes('industrial development bank of india')
+    lower.includes('industrial development bank of india') ||
+    lower.includes('hdfc bank') ||
+    lower.includes('hdfcbank') ||
+    lower.includes('bank of maharashtra') ||
+    lower.includes('icici bank') ||
+    lower.includes('axis bank') ||
+    lower.includes('kotak mahindra')
   ) {
     return false;
   }
@@ -103,18 +110,26 @@ function parseBOIGridRows(gridRows: string[][]): {
 
   let activeRow: Record<string, string> | null = null;
   let activeTx: ParsedTransaction | null = null;
+  let runningBalance: number | null = null;
 
   const flushActive = () => {
     if (activeRow && activeTx) {
+      const rawNarration = activeTx.description;
+      const bankParsed = parseBankNarration(rawNarration, activeTx.reference_number || undefined);
       const impsRef =
-        extractImpsRef(activeTx.description) ||
+        extractImpsRef(rawNarration) ||
         extractImpsRef(activeTx.reference_number || '');
+      activeTx.raw_description = rawNarration;
+      if (bankParsed.transactionType !== 'OTHER') {
+        activeTx.description = bankParsed.description;
+      }
       activeTx.imps_ref_no = impsRef;
-      if (!activeTx.reference_number && impsRef) {
-        activeTx.reference_number = impsRef;
-        activeRow['Chq/Ref Number'] = impsRef;
+      if (!activeTx.reference_number && (bankParsed.reference || impsRef)) {
+        activeTx.reference_number = bankParsed.reference || impsRef || null;
+        activeRow['Chq/Ref Number'] = activeTx.reference_number || '';
       }
       activeRow.Narration = activeTx.description;
+      activeRow['Raw Narration'] = rawNarration;
       rows.push(activeRow);
       transactions.push(activeTx);
     }
@@ -170,14 +185,26 @@ function parseBOIGridRows(gridRows: string[][]): {
 
         if (numericTail.length >= 2) {
           balance = numericTail[numericTail.length - 1].val;
-          const amt = numericTail[numericTail.length - 2].val!;
-          if (/\bcr\b/i.test(numericTail[numericTail.length - 2].raw) || /IMPS\/CR/i.test(narration)) {
-            credit = Math.abs(amt);
+          const amt = Math.abs(numericTail[numericTail.length - 2].val!);
+          if (runningBalance !== null && balance !== null) {
+            const dDiff = Math.abs(runningBalance - amt - balance);
+            const cDiff = Math.abs(runningBalance + amt - balance);
+            if (cDiff < 0.05 && dDiff >= 0.05) {
+              credit = amt;
+            } else if (dDiff < 0.05 && cDiff >= 0.05) {
+              debit = amt;
+            } else if (/\bcr\b/i.test(numericTail[numericTail.length - 2].raw) || /(?:IMPS|NEFT|RTGS|UPI)[\/\s]CR/i.test(narration)) {
+              credit = amt;
+            } else {
+              debit = amt;
+            }
+          } else if (/\bcr\b/i.test(numericTail[numericTail.length - 2].raw) || /(?:IMPS|NEFT|RTGS|UPI)[\/\s]CR/i.test(narration)) {
+            credit = amt;
           } else {
-            debit = Math.abs(amt);
+            debit = amt;
           }
         } else if (numericTail.length === 1) {
-          if (/IMPS\/CR/i.test(narration)) credit = Math.abs(numericTail[0].val!);
+          if (/(?:IMPS|NEFT|RTGS|UPI)[\/\s]CR/i.test(narration)) credit = Math.abs(numericTail[0].val!);
           else debit = Math.abs(numericTail[0].val!);
         }
       }
@@ -190,6 +217,9 @@ function parseBOIGridRows(gridRows: string[][]): {
     }
 
     if (debit === null && credit === null) continue;
+    if (balance !== null) {
+      runningBalance = balance;
+    }
 
     const impsRef = extractImpsRef(narration) || extractImpsRef(refRaw);
     const refNo = refRaw || impsRef || null;

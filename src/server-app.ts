@@ -48,7 +48,10 @@ import {
   deleteGmailTokenFromVault,
   saveGmailTokenToVault,
 } from './lib/gmail-vault';
-import { runGmailSyncForUser } from './lib/gmail-sync-service';
+import {
+  deleteGmailImportedData,
+  runGmailSyncForUser,
+} from './lib/gmail-sync-service';
 import { generateAnalyticsReport, listAnalyticsReports } from './lib/analytics/generate';
 import {
   getSandboxAuthUser,
@@ -1540,7 +1543,7 @@ export async function runServer() {
     async (req: AuthenticatedRequest, res: Response) => {
       try {
         const userId = req.user!.id;
-        const [{ data: profileRow }, { data: latestLog }] = await Promise.all([
+        const [{ data: profileRow }, { data: latestLog }, { count: gmailImportedCount }] = await Promise.all([
           req.supabase
             .from('profiles')
             .select('gmail_connected, gmail_email, gmail_last_synced, gmail_sync_enabled')
@@ -1553,6 +1556,12 @@ export async function runServer() {
             .order('last_synced_at', { ascending: false })
             .limit(1)
             .maybeSingle(),
+          req.supabase
+            .from('transactions')
+            .select('id', { count: 'exact', head: true })
+            .eq('user_id', userId)
+            .eq('source', 'gmail_auto')
+            .is('upload_id', null),
         ]);
 
         return res.json({
@@ -1560,6 +1569,7 @@ export async function runServer() {
           gmail_email: profileRow?.gmail_email || null,
           gmail_last_synced: profileRow?.gmail_last_synced || latestLog?.last_synced_at || null,
           gmail_sync_enabled: profileRow?.gmail_sync_enabled ?? true,
+          gmail_imported_count: gmailImportedCount ?? 0,
           last_sync_summary: latestLog || null,
           has_offline_refresh_support: Boolean(process.env.GOOGLE_CLIENT_SECRET),
         });
@@ -1850,6 +1860,24 @@ export async function runServer() {
           message.includes('expired') ||
           message.includes('reconnect');
         return res.status(isClientErr ? 400 : 500).json({ error: message });
+      }
+    }
+  );
+
+  app.delete(
+    '/api/gmail/data',
+    requireAuth,
+    async (req: AuthenticatedRequest, res: Response) => {
+      try {
+        const userId = req.user!.id;
+        const serviceSupabase = getServiceSupabase();
+        const result = await deleteGmailImportedData(serviceSupabase || req.supabase, userId);
+        return res.json(result);
+      } catch (err: any) {
+        console.error('Gmail delete imported data error:', err?.message);
+        return res.status(500).json({
+          error: err?.message || 'Failed to delete Gmail imported data.',
+        });
       }
     }
   );

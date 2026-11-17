@@ -129,11 +129,31 @@ export function matchAccountForPaytm(
  */
 export function isPaytmStatement(text: string): boolean {
   const lower = (text || '').toLowerCase();
-  return (
-    lower.includes('paytm') ||
-    lower.includes('phonepe') ||
+  if (!lower) return false;
+  if (lower.includes('one97 communications') || lower.includes('paytm passbook')) {
+    return true;
+  }
+  const hasWalletStructure =
+    (lower.includes('notes & tags') && lower.includes('your account')) ||
     (lower.includes('upi ref no') &&
-      (lower.includes('your account') || lower.includes('notes & tags') || lower.includes('transaction details')))
+      (lower.includes('your account') || lower.includes('notes & tags') || lower.includes('transaction details')));
+  if (hasWalletStructure) return true;
+
+  // Reject standard bank statements (HDFC, BOM, BOI, SBI, ICICI, Axis) whose narrations mention @paytm / SENT USING PAYTM
+  if (
+    lower.includes('hdfc bank') ||
+    lower.includes('bank of maharashtra') ||
+    lower.includes('state bank of india') ||
+    lower.includes('chq./ref.no.') ||
+    lower.includes('withdrawal amt')
+  ) {
+    return false;
+  }
+
+  return (
+    (lower.includes('upi statement') && (lower.includes('paytm') || lower.includes('phonepe'))) ||
+    (/\bpaytm\b/.test(lower) && !lower.includes('@paytm') && !lower.includes('sent using paytm') && !lower.includes('sent from paytm')) ||
+    (/\bphonepe\b/.test(lower) && !lower.includes('from phone'))
   );
 }
 

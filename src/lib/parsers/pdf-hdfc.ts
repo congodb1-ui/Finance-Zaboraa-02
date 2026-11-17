@@ -1,6 +1,7 @@
 import type { ParseResult, ColumnMapping } from '../../types/uploads';
 import { extractPDFRawData, type PDFExtractionResult } from './pdf';
 import { intelligentParse } from './intelligent-parser';
+import { parseBankNarration } from './bank-transaction';
 
 export const HDFC_COLUMNS = [
   'Date',
@@ -45,7 +46,6 @@ export async function parsePDFHDFC(
 export const parseHDFCStatement = parsePDFHDFC;
 
 export function cleanHdfcNarration(rawNarration: string, refColumn: string = '') {
-  const { parseBankNarration } = require('./bank-transaction');
   const parsed = parseBankNarration(rawNarration);
   return {
     description: parsed.description,

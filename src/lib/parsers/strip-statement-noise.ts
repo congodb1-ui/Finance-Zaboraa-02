@@ -66,14 +66,20 @@ const UNIVERSAL_NOISE_PATTERNS: RegExp[] = [
   /considered\s+correct\s+if\s+no\s+error/i,
   /within\s+30\s+days/i,
   /contents\s+of\s+this\s+statement/i,
+  /^\s*this\s+statement\.?\s*$/i,
   /computer\s+generated\s+statement/i,
   /does\s+not\s+require\s+(?:any\s+)?signature/i,
   /we\s+understand\s+your\s+world/i,
   /thank\s+you\s+for\s+banking\s+with/i,
 
-  // Specific Bank Names in Footers
-  /^\s*HDFC\s+BANK\s+LIMITED\s*$/i,
+  // Specific Bank Names & Branch Address Headers/Footers
+  /^\s*HDFC\s+BANK\s+LIMITED\b/i,
   /hdfc\s+bank\s+house.*senapati\s+bapat\s+marg/i,
+  /^\s*\*?\s*Closing\s+balance\s+includes\b/i,
+  /^\s*State\s+account\s+branch\s+GST/i,
+  /^\s*Address\s*[:\-]/i,
+  /^\s*City\s*[:\-]/i,
+  /^\s*State\s*[:\-]/i,
   /^\s*STATE\s+BANK\s+OF\s+INDIA\s*$/i,
   /^\s*ICICI\s+BANK\s+LIMITED\s*$/i,
   /^\s*AXIS\s+BANK\s+LIMITED\s*$/i,
@@ -84,7 +90,7 @@ const UNIVERSAL_NOISE_PATTERNS: RegExp[] = [
 
   // Common customer address artifacts (like "KOOL HOMES", "FLAT NO", "BLDG NO" etc. accompanied by PIN)
   /\b(?:kool\s+homes|flat\s+no|bldg|building|chsl|nagar|road|marg|sector|plot\s+no)\b.*\b\d{6}\b/i,
-  /^\s*(?:mr\.|mrs\.|ms\.|dr\.|shri|smt)\s+[A-Z\s]{4,}$/i, // Standalone customer name header line e.g. "MR. WASIM SALIM SAYYED"
+  /^\s*(?:mr\.|mrs\.|ms\.|dr\.|shri|smt|m\/s\.?)\s+[A-Z0-9\s.&'-]{3,}$/i, // Standalone customer name header line e.g. "MR. WASIM SALIM SAYYED", "M/S. CONGO TECHNOLOGIES"
 ];
 
 /**

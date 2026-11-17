@@ -30,10 +30,34 @@ export {
   parseCSV,
 };
 
+function extractPage1HeaderMetaText(pdfData: PDFExtractionResult): string {
+  const page1 = pdfData.pages[0];
+  if (!page1) return '';
+  if (page1.gridRows && page1.gridRows.length > 0) {
+    const nonTxnLines: string[] = [];
+    for (const row of page1.gridRows) {
+      const joined = row.join(' ').trim();
+      if (!joined) continue;
+      // Exclude transaction rows (lines starting with DD/MM/YY or SrNo + Date)
+      if (/^\d{1,2}[/\-.]\d{1,2}[/\-.]\d{2,4}\b/.test(joined)) continue;
+      if (/^\d{1,4}\s+\d{1,2}[/\-.]\d{1,2}[/\-.]\d{2,4}\b/.test(joined)) continue;
+      nonTxnLines.push(joined);
+    }
+    if (nonTxnLines.length > 0) {
+      return nonTxnLines.join(' ');
+    }
+  }
+  return page1.fullText || '';
+}
+
 /**
  * Unified PDF parser dispatch:
  * Detects Paytm UPI, Google Pay, Bank of Maharashtra, Bank of India, HDFC Bank,
  * and falls through gracefully to Generic PDF on unrecognised formats.
+ *
+ * Uses Page-1 non-transaction metadata for bank identification so transaction
+ * narrations mentioning another bank or wallet (e.g. "Bank of India", "@paytm", "GPay")
+ * never hijack statement routing.
  */
 export async function parseStatementPDF(
   buffer: ArrayBuffer | Uint8Array,
@@ -43,46 +67,46 @@ export async function parseStatementPDF(
   const password = options && 'password' in options ? (options as any).password : undefined;
   const pdfData = preExtracted || (await extractPDFRawData(buffer, password));
   const firstPageText = pdfData.pages[0]?.fullText || pdfData.fullDocumentText;
-  const fullText = pdfData.fullDocumentText;
+  const headerMetaText = extractPage1HeaderMetaText(pdfData) || firstPageText;
 
-  // 1. Paytm / PhonePe UPI
-  if (isPaytmStatement(firstPageText) || isPaytmStatement(fullText)) {
+  // 1. Paytm / PhonePe UPI (strict header/table markers)
+  if (isPaytmStatement(headerMetaText)) {
     const res = await parsePaytmUPI(buffer, pdfData);
     if (res.rows.length > 0 && !res.parseError) {
       return res;
     }
   }
 
-  // 2. Google Pay (GPay)
-  if (isGPayStatement(firstPageText) || isGPayStatement(fullText)) {
+  // 2. Google Pay (GPay) (strict header/table markers)
+  if (isGPayStatement(headerMetaText)) {
     const res = await parseGPayPDF(buffer, pdfData);
     if (res.rows.length > 0 && !res.parseError) {
       return res;
     }
   }
 
-  // 3. Bank of Maharashtra (BOM)
-  if (isBOMStatement(firstPageText) || isBOMStatement(fullText)) {
+  // 3. HDFC Bank (checked using Page-1 header/footer before regional/generic banks)
+  if (isHDFCStatement(headerMetaText) || isHDFCStatement(firstPageText)) {
+    return parsePDFHDFC(buffer, pdfData);
+  }
+
+  // 4. Bank of Maharashtra (BOM)
+  if (isBOMStatement(headerMetaText)) {
     const res = await parseBOM(buffer, pdfData);
     if (res.rows.length > 0 && !res.parseError) {
       return res;
     }
   }
 
-  // 4. Bank of India (BOI)
-  if (isBOIStatement(firstPageText) || isBOIStatement(fullText)) {
+  // 5. Bank of India (BOI)
+  if (isBOIStatement(headerMetaText)) {
     const res = await parseBOI(buffer, pdfData);
     if (res.rows.length > 0 && !res.parseError) {
       return res;
     }
   }
 
-  // 5. Existing HDFC Bank parser (unchanged)
-  if (isHDFCStatement(firstPageText)) {
-    return parsePDFHDFC(buffer, pdfData);
-  }
-
-  // 6. Generic fallback (unchanged)
+  // 6. Generic fallback (intelligent anchor parser across SBI, ICICI, Axis, Kotak, etc.)
   return parsePDFGeneric(buffer, pdfData);
 }
 

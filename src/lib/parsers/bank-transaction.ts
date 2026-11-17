@@ -161,9 +161,10 @@ export function parseBankNarration(
     text = text.slice(leadingDateMatch[0].length).trim();
   }
 
-  // STEP 4D: Strip trailing -SAVING-UPI PAYMENT, -UPI PAYMENT, -UPI
+  // STEP 4D: Strip trailing -SAVING-UPI PAYMENT, -UPI PAYMENT, -UPI, and Paytm OID order-id suffixes
   text = text.replace(/[-/\s]+(?:SAVING-)?UPI\s+PAYMENT$/i, '');
   text = text.replace(/[-/\s]+SAVING-UPI$/i, '');
+  text = text.replace(/-OID\d+(?:@PAY)?$/gi, '').trim();
 
   const effectiveFallbackRef = leadingUtrRef || fallbackRef;
 
@@ -510,11 +511,37 @@ export function parseBankNarration(
       }
     } else {
       // Old statement format without UPI prefix: [SENDER-]VPA_USER@BANK-IFSC-UTR
-      const vpaMatch = working.match(/^(?:.*?-)?([a-zA-Z0-9._%+-]+)@[a-zA-Z][a-zA-Z0-9.-]*/);
-      if (vpaMatch && vpaMatch[1]) {
-        let vpaUser = vpaMatch[1].trim();
-        vpaUser = vpaUser.replace(/[._]+/g, ' ').trim();
-        working = vpaUser;
+      const atIdx = working.search(/\s*@[a-zA-Z][a-zA-Z0-9.-]*/);
+      if (atIdx !== -1) {
+        const beforeAt = working.slice(0, atIdx).trim();
+        const parts = beforeAt
+          .split('-')
+          .map((p) => p.trim())
+          .filter(Boolean);
+
+        // Strip trailing numeric discriminator (e.g. "-1", "-69772955")
+        while (parts.length >= 2 && /^\d+$/.test(parts[parts.length - 1])) {
+          parts.pop();
+        }
+        // Strip preceding wallet tag (e.g. "HANS-PAYTM-64179453@PAYTM" -> "HANS")
+        if (
+          parts.length >= 2 &&
+          /^(?:PAYTM|GPAY|G-?PAY|PHONEPE|BHARATPE|BHIM|WHATSAPP)$/i.test(parts[parts.length - 1])
+        ) {
+          parts.pop();
+        }
+
+        let candidate = parts[parts.length - 1] || '';
+        // Preserve multi-word wallet actions like "WALLET-ADD-MONEY"
+        if (parts.length >= 2 && /^(?:MONEY|TRANSFER|PAYMENT)$/i.test(candidate)) {
+          candidate = parts.join(' ');
+        }
+        // Strip terminal numeric merchant ID after dot (e.g. "DHONEMOTORS.99585249" -> "DHONEMOTORS")
+        candidate = candidate.replace(/\.\d{5,}$/, '');
+        candidate = candidate.replace(/[._]+/g, ' ').trim();
+        if (candidate) {
+          working = candidate;
+        }
       }
     }
 
@@ -550,9 +577,63 @@ export function parseBankNarration(
   }
 
   // ==========================================
-  // 11. Fallback (no recognized prefix)
+  // 11. Old/Compact Bank IFSC-UTR-Remark (e.g. "ICIC0003182-300127212468-MONTHLY SAVING", "ZAXIS-UTIB0000000-339560365329-NA")
+  //     and Account Mask Transfers (e.g. "C-XXXXXXXX0921-FAMILY")
   // ==========================================
-  let extractedRef = fallbackRef;
+  const acctMaskMatch = text.match(/^C-([X*]+\d{4})-(?:NA-ID-[X*]+\d{4}-)?(.+)$/i);
+  if (acctMaskMatch) {
+    const acctMask = acctMaskMatch[1].toUpperCase();
+    const purpose = acctMaskMatch[2].replace(/-(?:NA|N A)$/i, '').trim();
+    const desc =
+      purpose && !INVALID_STANDALONE_DESCRIPTIONS.has(purpose.toUpperCase())
+        ? `${purpose} (A/c ${acctMask.slice(-4)})`
+        : `Account Transfer (${acctMask.slice(-4)})`;
+    return {
+      description: desc,
+      reference: effectiveFallbackRef,
+      transactionType: 'OTHER',
+    };
+  }
+
+  const ifscUtrMatch = text.match(
+    /^(?:([A-Z0-9\s]{2,28})-)?([A-Z]{4}0[A-Z0-9]{6}|(?:YESBOYBLUPI|ESBOYBLUPI|YESB0YESUPI|YBL|OKAXIS|OKICICI|OKSBI|PAYTM))-(\d{10,16})(?:-(.*))?$/i
+  ) || text.match(/^(YESBOYBLUPI|ESBOYBLUPI)-(\d{10,16})(?:-(.*))?$/i);
+  if (ifscUtrMatch) {
+    const hasFourGroups = ifscUtrMatch.length === 5;
+    const prefix = hasFourGroups ? (ifscUtrMatch[1] || '').trim() : '';
+    const utr = hasFourGroups ? ifscUtrMatch[3] : ifscUtrMatch[2];
+    const rawRemark = (hasFourGroups ? ifscUtrMatch[4] : ifscUtrMatch[3]) || '';
+    const remark = rawRemark
+      .replace(/\bOID\d+\b/gi, '')
+      .replace(/^[-/\s]+|[-/\s]+$/g, '')
+      .trim();
+    const hasUsefulRemark =
+      remark.length > 0 && !INVALID_STANDALONE_DESCRIPTIONS.has(remark.toUpperCase());
+    const hasUsefulPrefix =
+      prefix.length >= 3 &&
+      !/^(?:YTM|UTIB|ICIC|HDFC|SBIN|PYTM)$/i.test(prefix) &&
+      !INVALID_STANDALONE_DESCRIPTIONS.has(prefix.toUpperCase());
+
+    let desc = '';
+    if (hasUsefulRemark) {
+      desc = remark;
+    } else if (hasUsefulPrefix) {
+      desc = `${prefix} UPI Transfer`;
+    } else {
+      desc = `UPI Transfer (${utr.slice(-4)})`;
+    }
+
+    return {
+      description: desc,
+      reference: utr || effectiveFallbackRef,
+      transactionType: 'UPI',
+    };
+  }
+
+  // ==========================================
+  // 12. Fallback (no recognized prefix)
+  // ==========================================
+  let extractedRef = effectiveFallbackRef;
   const utrMatch = text.match(/(?:^|[-/\s])(\d{12})(?=$|[-/\s])/);
   if (utrMatch) {
     extractedRef = utrMatch[1];

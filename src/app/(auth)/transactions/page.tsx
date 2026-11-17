@@ -16,7 +16,7 @@ import {
   createManualTransaction,
   bulkUpdateTransactions,
 } from '../../../lib/actions/transactions';
-import { apiPatch } from '../../../lib/api-client';
+import { apiDelete, apiGet, apiPatch } from '../../../lib/api-client';
 import { getAccounts } from '../../../lib/actions/accounts';
 import { getCategories } from '../../../lib/actions/categories';
 import { getWorkspaces } from '../../../lib/actions/workspaces';
@@ -40,6 +40,7 @@ import {
   CheckCircle2,
   AlertCircle,
   RefreshCw,
+  Trash2,
 } from 'lucide-react';
 
 export default function TransactionsPage() {
@@ -76,6 +77,18 @@ export default function TransactionsPage() {
   const [activeTransactionForDrawer, setActiveTransactionForDrawer] = useState<Transaction | null>(null);
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [bannerMessage, setBannerMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [gmailImportedCount, setGmailImportedCount] = useState(0);
+  const [confirmDeleteGmail, setConfirmDeleteGmail] = useState(false);
+  const [isDeletingGmail, setIsDeletingGmail] = useState(false);
+
+  const loadGmailCount = useCallback(async () => {
+    try {
+      const status = await apiGet<{ gmail_imported_count?: number }>('/api/gmail/status');
+      setGmailImportedCount(status?.gmail_imported_count ?? 0);
+    } catch {
+      // Ignore status fetch failure on ledger load
+    }
+  }, []);
 
   // Load supporting entities once
   useEffect(() => {
@@ -94,7 +107,8 @@ export default function TransactionsPage() {
       }
     }
     loadMetadata();
-  }, []);
+    loadGmailCount();
+  }, [loadGmailCount]);
 
   // Fetch transactions (or grouped self-transfer pairs on Transfers tab)
   const loadLedger = useCallback(async () => {
@@ -244,7 +258,19 @@ export default function TransactionsPage() {
           </div>
 
           {/* Action buttons */}
-          <div className="flex items-center gap-2.5 shrink-0">
+          <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+            {gmailImportedCount > 0 && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="text-red-600 border-red-200 dark:border-red-900/50 hover:bg-red-50 dark:hover:bg-red-950/30"
+                onClick={() => setConfirmDeleteGmail((prev) => !prev)}
+                disabled={isDeletingGmail}
+                leftIcon={<Trash2 className="w-3.5 h-3.5" />}
+              >
+                Delete Gmail Data ({gmailImportedCount})
+              </Button>
+            )}
             {filters.accountIds.length === 1 && (
               <Button
                 variant="destructive"
@@ -266,7 +292,7 @@ export default function TransactionsPage() {
                         text: `All transactions for ${accName} cleared successfully.`,
                       });
                       setTimeout(() => setBannerMessage(null), 4000);
-                      await loadLedger();
+                      await Promise.all([loadLedger(), loadGmailCount()]);
                     } catch (err: any) {
                       setBannerMessage({
                         type: 'error',
@@ -282,7 +308,10 @@ export default function TransactionsPage() {
             <Button
               variant="outline"
               size="sm"
-              onClick={() => loadLedger()}
+              onClick={() => {
+                loadLedger();
+                loadGmailCount();
+              }}
               leftIcon={<RefreshCw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin' : ''}`} />}
             >
               Refresh
@@ -297,6 +326,71 @@ export default function TransactionsPage() {
             </Button>
           </div>
         </div>
+
+        {/* Inline Confirm Bar for Deleting All Gmail-Imported Data */}
+        {confirmDeleteGmail && (
+          <div className="mt-4 p-4 rounded-xl border border-red-200 dark:border-red-900/60 bg-red-50 dark:bg-red-950/40 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+            <div className="space-y-0.5">
+              <p className="font-semibold text-red-900 dark:text-red-200">
+                Delete all {gmailImportedCount} Gmail-imported transaction{gmailImportedCount === 1 ? '' : 's'}?
+              </p>
+              <p className="text-red-700 dark:text-red-300">
+                Manual bank statement uploads will not be deleted, and affected account balances will be recalculated automatically.
+              </p>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <Button
+                variant="destructive"
+                size="sm"
+                isLoading={isDeletingGmail}
+                leftIcon={<Trash2 className="w-3.5 h-3.5" />}
+                onClick={async () => {
+                  setIsDeletingGmail(true);
+                  try {
+                    const res = await apiDelete<{
+                      success: boolean;
+                      deleted_transactions: number;
+                      preserved_statement_transactions: number;
+                      affected_accounts: number;
+                    }>('/api/gmail/data');
+                    if (typeof window !== 'undefined') {
+                      try {
+                        window.localStorage.removeItem('zaboraa_gmail_banner_dismissed_sync');
+                      } catch {}
+                    }
+                    setConfirmDeleteGmail(false);
+                    setGmailImportedCount(0);
+                    setSelectedIds([]);
+                    setBannerMessage({
+                      type: 'success',
+                      text: `Deleted ${res.deleted_transactions} Gmail-imported transaction${res.deleted_transactions === 1 ? '' : 's'} and recalculated ${res.affected_accounts} account balance${res.affected_accounts === 1 ? '' : 's'}.`,
+                    });
+                    setTimeout(() => setBannerMessage(null), 5000);
+                    const [, accs] = await Promise.all([loadLedger(), getAccounts(), loadGmailCount()]);
+                    setAccounts(accs);
+                  } catch (err: any) {
+                    setBannerMessage({
+                      type: 'error',
+                      text: err.message || 'Failed to delete Gmail-imported data.',
+                    });
+                  } finally {
+                    setIsDeletingGmail(false);
+                  }
+                }}
+              >
+                Confirm Delete
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={isDeletingGmail}
+                onClick={() => setConfirmDeleteGmail(false)}
+              >
+                Cancel
+              </Button>
+            </div>
+          </div>
+        )}
 
         {/* Feedback Banner */}
         {bannerMessage && (

@@ -30,6 +30,13 @@ export interface GmailSyncResult {
   last_synced_at: string;
 }
 
+export interface DeleteGmailDataResult {
+  success: boolean;
+  deleted_transactions: number;
+  preserved_statement_transactions: number;
+  affected_accounts: number;
+}
+
 async function categoriseSingleGmailTransaction(params: {
   payeeName: string;
   amount: number;
@@ -501,47 +508,13 @@ export async function runGmailSyncForUser(
   // Step 8: Recompute authoritative current_balance chronologically for every touched account
   for (const accountId of touchedAccountIds) {
     try {
-      const txns: any[] = [];
-      const PAGE_SIZE = 1000;
-      let from = 0;
-      while (true) {
-        const { data: pageRows, error: pageErr } = await serviceSupabase
-          .from('transactions')
-          .select('txn_date, debit, credit, balance, balance_after')
-          .eq('account_id', accountId)
-          .eq('user_id', userId)
-          .order('txn_date', { ascending: true })
-          .order('created_at', { ascending: true })
-          .range(from, from + PAGE_SIZE - 1);
-        if (pageErr || !pageRows || pageRows.length === 0) break;
-        txns.push(...pageRows);
-        if (pageRows.length < PAGE_SIZE) break;
-        from += PAGE_SIZE;
-      }
-
-      const openBal = openingBalanceByAccountId.get(accountId) ?? 0;
-      const { ordered: chronologicalTxns } = orderTransactionsChronologically(txns);
-      let nextBal = computeAuthoritativeAccountBalance(openBal, chronologicalTxns);
-
-      const alert = latestBalanceAlertByAccount.get(accountId);
-      if (alert) {
-        const latestTxnDate =
-          chronologicalTxns.length > 0
-            ? chronologicalTxns[chronologicalTxns.length - 1].txn_date || ''
-            : '';
-        if (!latestTxnDate || alert.dateIso >= latestTxnDate) {
-          nextBal = alert.balance;
-        }
-      }
-
-      await serviceSupabase
-        .from('accounts')
-        .update({
-          current_balance: nextBal,
-          updated_at: new Date().toISOString(),
-        })
-        .eq('id', accountId)
-        .eq('user_id', userId);
+      await recomputeAccountBalanceForUser(
+        serviceSupabase,
+        userId,
+        accountId,
+        openingBalanceByAccountId.get(accountId),
+        latestBalanceAlertByAccount.get(accountId)
+      );
     } catch (balErr: any) {
       console.warn('[gmail-sync] Account balance recompute warning:', balErr?.message);
     }
@@ -568,5 +541,218 @@ export async function runGmailSyncForUser(
     transactions_added: transactionsAdded,
     errors_count: errorsCount,
     last_synced_at: nowIso,
+  };
+}
+
+async function recomputeAccountBalanceForUser(
+  db: any,
+  userId: string,
+  accountId: string,
+  openingBalanceOverride?: number,
+  latestBalanceAlert?: { balance: number; dateIso: string }
+): Promise<number> {
+  let openBal = openingBalanceOverride;
+  if (openBal === undefined) {
+    const { data: acc } = await db
+      .from('accounts')
+      .select('opening_balance')
+      .eq('id', accountId)
+      .eq('user_id', userId)
+      .maybeSingle();
+    openBal = Number(acc?.opening_balance ?? 0);
+  }
+
+  const txns: any[] = [];
+  const PAGE_SIZE = 1000;
+  let from = 0;
+  while (true) {
+    const q = db
+      .from('transactions')
+      .select('txn_date, debit, credit, balance, balance_after')
+      .eq('account_id', accountId)
+      .eq('user_id', userId)
+      .order('txn_date', { ascending: true })
+      .order('created_at', { ascending: true });
+    const { data: pageRows, error: pageErr } =
+      typeof q.range === 'function' ? await q.range(from, from + PAGE_SIZE - 1) : await q;
+    if (pageErr || !pageRows || pageRows.length === 0) break;
+    txns.push(...pageRows);
+    if (typeof q.range !== 'function' || pageRows.length < PAGE_SIZE) break;
+    from += PAGE_SIZE;
+  }
+
+  const { ordered: chronologicalTxns } = orderTransactionsChronologically(txns);
+  let nextBal = computeAuthoritativeAccountBalance(openBal ?? 0, chronologicalTxns);
+
+  if (latestBalanceAlert) {
+    const latestTxnDate =
+      chronologicalTxns.length > 0
+        ? chronologicalTxns[chronologicalTxns.length - 1].txn_date || ''
+        : '';
+    if (!latestTxnDate || latestBalanceAlert.dateIso >= latestTxnDate) {
+      nextBal = latestBalanceAlert.balance;
+    }
+  }
+
+  await db
+    .from('accounts')
+    .update({
+      current_balance: nextBal,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', accountId)
+    .eq('user_id', userId);
+
+  return nextBal;
+}
+
+/**
+ * Deletes all purely Gmail-imported transactions (source = 'gmail_auto' and upload_id IS NULL),
+ * preserves any cross-source statement-backed rows by reclassifying them as 'statement_import',
+ * clears Gmail sync logs/parse errors, resets profiles.gmail_last_synced (preserving OAuth connection),
+ * and recalculates affected account balances.
+ */
+export async function deleteGmailImportedData(
+  db: any,
+  userId: string
+): Promise<DeleteGmailDataResult> {
+  if (!db) {
+    throw new Error('Database client is required to delete Gmail imported data.');
+  }
+
+  const gmailRows: Array<{ id: string; account_id: string | null; upload_id: string | null }> = [];
+  const PAGE_SIZE = 1000;
+  let from = 0;
+
+  while (true) {
+    const q = db
+      .from('transactions')
+      .select('id, account_id, upload_id')
+      .eq('user_id', userId)
+      .eq('source', 'gmail_auto');
+    const { data, error } =
+      typeof q.range === 'function' ? await q.range(from, from + PAGE_SIZE - 1) : await q;
+    if (error) {
+      throw new Error(`Failed to query Gmail transactions: ${error.message}`);
+    }
+    if (!data || data.length === 0) break;
+    gmailRows.push(...data);
+    if (typeof q.range !== 'function' || data.length < PAGE_SIZE) break;
+    from += PAGE_SIZE;
+  }
+
+  const gmailOnlyIds: string[] = [];
+  const statementLinkedIds: string[] = [];
+  const affectedAccountIds = new Set<string>();
+
+  for (const row of gmailRows) {
+    if (row.account_id) affectedAccountIds.add(row.account_id);
+    if (row.upload_id) {
+      statementLinkedIds.push(row.id);
+    } else {
+      gmailOnlyIds.push(row.id);
+    }
+  }
+
+  const nowIso = new Date().toISOString();
+  const CHUNK_SIZE = 150;
+
+  for (let i = 0; i < gmailOnlyIds.length; i += CHUNK_SIZE) {
+    const chunk = gmailOnlyIds.slice(i, i + CHUNK_SIZE);
+
+    // Unlink any counterpart self-transfer rows pointing to deleted Gmail rows
+    try {
+      await db
+        .from('transactions')
+        .update({
+          transfer_pair_id: null,
+          is_self_transfer: false,
+          is_transfer: false,
+          updated_at: nowIso,
+        })
+        .eq('user_id', userId)
+        .in('transfer_pair_id', chunk);
+    } catch {
+      // Ignore if transfer_pair_id column is absent in minimal mocks
+    }
+
+    // Unlink any invoice references pointing to deleted Gmail rows
+    try {
+      await db
+        .from('invoices')
+        .update({ linked_transaction_id: null, updated_at: nowIso })
+        .eq('user_id', userId)
+        .in('linked_transaction_id', chunk);
+    } catch {
+      // Best-effort cleanup
+    }
+
+    const { error: delErr } = await db
+      .from('transactions')
+      .delete()
+      .eq('user_id', userId)
+      .in('id', chunk);
+
+    if (delErr) {
+      throw new Error(`Failed to delete Gmail transactions: ${delErr.message}`);
+    }
+  }
+
+  // Preserve rows that are also backed by a manual statement upload
+  for (let i = 0; i < statementLinkedIds.length; i += CHUNK_SIZE) {
+    const chunk = statementLinkedIds.slice(i, i + CHUNK_SIZE);
+    const { error: updErr } = await db
+      .from('transactions')
+      .update({ source: 'statement_import', updated_at: nowIso })
+      .eq('user_id', userId)
+      .in('id', chunk);
+    if (updErr) {
+      throw new Error(`Failed to preserve statement-linked transactions: ${updErr.message}`);
+    }
+  }
+
+  // Clear Gmail sync logs & parse error logs (best-effort)
+  await Promise.all([
+    Promise.resolve(db.from('gmail_sync_log').delete().eq('user_id', userId)).catch(() => {}),
+    Promise.resolve(db.from('email_parse_errors').delete().eq('user_id', userId)).catch(() => {}),
+  ]);
+
+  // Reset gmail_last_synced so a future Sync Now can re-fetch alerts cleanly
+  await db
+    .from('profiles')
+    .update({ gmail_last_synced: null, updated_at: nowIso })
+    .eq('user_id', userId);
+
+  // Recalculate current_balance for all affected accounts
+  for (const accountId of affectedAccountIds) {
+    try {
+      await recomputeAccountBalanceForUser(db, userId, accountId);
+    } catch (balErr: any) {
+      console.warn('[gmail-sync] Balance recalculation warning after Gmail wipe:', balErr?.message);
+    }
+  }
+
+  try {
+    await db.from('audit_log').insert({
+      user_id: userId,
+      table_name: 'transactions',
+      record_id: userId,
+      action: 'delete',
+      old_data: {
+        source: 'gmail_auto',
+        deleted_transactions: gmailOnlyIds.length,
+        preserved_statement_transactions: statementLinkedIds.length,
+      },
+      new_data: null,
+    });
+  } catch {
+    // Non-blocking audit log
+  }
+
+  return {
+    success: true,
+    deleted_transactions: gmailOnlyIds.length,
+    preserved_statement_transactions: statementLinkedIds.length,
+    affected_accounts: affectedAccountIds.size,
   };
 }

@@ -20,6 +20,8 @@ import {
   countChronologicalBreaks,
   computeAuthoritativeAccountBalance,
 } from '../../src/lib/balance-utils';
+import { deleteGmailImportedData } from '../../src/lib/gmail-sync-service';
+import type { PDFExtractionResult } from '../../src/lib/parsers/pdf';
 
 function toArrayBuffer(filePath: string): ArrayBuffer {
   const buf = fs.readFileSync(path.resolve(process.cwd(), filePath));
@@ -82,6 +84,46 @@ describe('Multi-Bank Manual Statement Parsers (PDF)', () => {
     expect(txns[153].description).toBe('Saber Sadeque Syed');
     const rtgsRow = txns.find((t) => t.reference_number === 'HDFCR52024110859480657');
     expect(rtgsRow).toBeDefined();
+    expect(txns.some((t) => /AddressCity|CONGO TECHNOLOGIES State/i.test(t.description + ' ' + (t.raw_description || '')))).toBe(false);
+  });
+
+  it('never misroutes an HDFC statement to BOI/BOM/Paytm/GPay when transaction narrations mention those banks or wallets', async () => {
+    const mockPdf: PDFExtractionResult = {
+      openingBalance: 53577.32,
+      closingBalance: 102077.32,
+      fullDocumentText:
+        'HDFC BANK LIMITED Statement From : 01/01/2023 To : 01/01/2024 Date Narration Chq./Ref.No. Value Dt Withdrawal Amt. Deposit Amt. Closing Balance 01/01/23 ICIC0003182-300127212468-MONTHLY SAVING 0000300127212468 01/01/23 50000.00 103577.32 02/01/23 UPI-BANK OF INDIA-123@OKSBI-SBIN0001-300255127239-SENT USING PAYTM 0000300255127239 02/01/23 1500.00 102077.32',
+      allGridRows: [
+        ['Date', 'Narration', 'Chq./Ref.No.', 'Value Dt', 'Withdrawal Amt.', 'Deposit Amt.', 'Closing Balance'],
+        ['01/01/23', 'ICIC0003182-300127212468-MONTHLY SAVING', '0000300127212468', '01/01/23', '50,000.00', '1,03,577.32'],
+        ['02/01/23', 'UPI-BANK OF INDIA-123@OKSBI-SBIN0001-300255127239-SENT USING PAYTM GPAY', '0000300255127239', '02/01/23', '1,500.00', '1,02,077.32'],
+        ['HDFC BANK LIMITED'],
+      ],
+      pages: [
+        {
+          pageNumber: 1,
+          fullText:
+            'Date Narration Chq./Ref.No. Value Dt Withdrawal Amt. Deposit Amt. Closing Balance 01/01/23 ICIC0003182-300127212468-MONTHLY SAVING 0000300127212468 01/01/23 50,000.00 1,03,577.32 02/01/23 UPI-BANK OF INDIA-123@OKSBI-SBIN0001-300255127239-SENT USING PAYTM GPAY 0000300255127239 02/01/23 1,500.00 1,02,077.32 HDFC BANK LIMITED',
+          textItems: [],
+          gridRows: [
+            ['Date', 'Narration', 'Chq./Ref.No.', 'Value Dt', 'Withdrawal Amt.', 'Deposit Amt.', 'Closing Balance'],
+            ['01/01/23', 'ICIC0003182-300127212468-MONTHLY SAVING', '0000300127212468', '01/01/23', '50,000.00', '1,03,577.32'],
+            ['02/01/23', 'UPI-BANK OF INDIA-123@OKSBI-SBIN0001-300255127239-SENT USING PAYTM GPAY', '0000300255127239', '02/01/23', '1,500.00', '1,02,077.32'],
+            ['HDFC BANK LIMITED'],
+          ],
+        },
+      ],
+    };
+
+    const res = await parseStatementPDF(new Uint8Array(0), { preExtracted: mockPdf });
+    expect(res.detected_bank).toBe('HDFC Bank');
+    expect(res.transactions).toHaveLength(2);
+    expect(res.transactions?.[0].credit).toBe(50000);
+    expect(res.transactions?.[0].debit).toBeNull();
+    expect(res.transactions?.[0].reference_number).toBe('300127212468');
+    expect(res.transactions?.[1].debit).toBe(1500);
+    expect(res.transactions?.[1].credit).toBeNull();
+    expect(res.transactions?.[1].reference_number).toBe('300255127239');
   });
 
   it('parses Bank of Maharashtra FY 24-25 statement with exact 86 txns and zero column shift', async () => {
@@ -637,5 +679,200 @@ describe('UPI Narration Cleanup & Intra-Day Balance Continuity Healing', () => {
       { txn_date: '2026-11-12', debit: null, credit: 5000, balance: null, balance_after: null }, // Gmail credit
     ];
     expect(computeAuthoritativeAccountBalance(0, txs)).toBe(24505.58);
+  });
+
+  it('cleans 2023 HDFC compact/truncated UPI & IFSC-UTR narrations without returning bare numeric IDs', () => {
+    expect(parseBankNarration('ICIC0003182-300127212468-MONTHLY SAVING')).toEqual({
+      description: 'MONTHLY SAVING',
+      reference: '300127212468',
+      transactionType: 'UPI',
+    });
+    expect(parseBankNarration('COMPA-MAHESHJAGTAP330-1@OKSBI-SBIN0011698-300543939673-UPI')).toEqual({
+      description: 'MAHESHJAGTAP330',
+      reference: '300543939673',
+      transactionType: 'UPI',
+    });
+    expect(parseBankNarration('HANS-PAYTM-64179453@PAYTM-PYTM0123456-340069732816-OID20230203510')).toEqual({
+      description: 'HANS',
+      reference: '340069732816',
+      transactionType: 'UPI',
+    });
+    expect(parseBankNarration('MOTORS-DHONEMOTORS.99585249@HDFCBANK-HDFC0000001-302050193473-NA')).toEqual({
+      description: 'DHONEMOTORS',
+      reference: '302050193473',
+      transactionType: 'UPI',
+    });
+    expect(parseBankNarration('C-XXXXXXXX0921-FAMILY', '0000300112504365')).toEqual({
+      description: 'FAMILY (A/c 0921)',
+      reference: '300112504365',
+      transactionType: 'OTHER',
+    });
+  });
+});
+
+describe('Delete All Gmail Imported Data', () => {
+  it('deletes pure gmail_auto rows, preserves statement-linked rows as statement_import, unlinks transfers, clears logs, and recalculates balances', async () => {
+    const store: Record<string, any[]> = {
+      transactions: [
+        {
+          id: 'tx-stmt-1',
+          user_id: 'u1',
+          account_id: 'acc-1',
+          upload_id: 'up-1',
+          txn_date: '2026-11-10',
+          debit: 500,
+          credit: null,
+          balance: 20000,
+          balance_after: 20000,
+          source: 'statement_import',
+          transfer_pair_id: 'tx-gmail-1',
+          is_self_transfer: true,
+          is_transfer: true,
+          created_at: '2026-11-10T10:00:00Z',
+        },
+        {
+          id: 'tx-gmail-linked',
+          user_id: 'u1',
+          account_id: 'acc-1',
+          upload_id: 'up-1',
+          txn_date: '2026-11-11',
+          debit: 200,
+          credit: null,
+          balance: 19800,
+          balance_after: 19800,
+          source: 'gmail_auto',
+          transfer_pair_id: null,
+          is_self_transfer: false,
+          is_transfer: false,
+          created_at: '2026-11-11T10:00:00Z',
+        },
+        {
+          id: 'tx-gmail-1',
+          user_id: 'u1',
+          account_id: 'acc-1',
+          upload_id: null,
+          txn_date: '2026-11-12',
+          debit: null,
+          credit: 5000,
+          balance: null,
+          balance_after: null,
+          source: 'gmail_auto',
+          transfer_pair_id: 'tx-stmt-1',
+          is_self_transfer: true,
+          is_transfer: true,
+          created_at: '2026-11-12T10:00:00Z',
+        },
+      ],
+      accounts: [
+        { id: 'acc-1', user_id: 'u1', opening_balance: 0, current_balance: 24800 },
+      ],
+      profiles: [
+        {
+          user_id: 'u1',
+          gmail_connected: true,
+          gmail_last_synced: '2026-11-16T10:00:00Z',
+        },
+      ],
+      gmail_sync_log: [{ id: 'log-1', user_id: 'u1' }],
+      email_parse_errors: [{ id: 'err-1', user_id: 'u1' }],
+      invoices: [{ id: 'inv-1', user_id: 'u1', linked_transaction_id: 'tx-gmail-1' }],
+      audit_log: [],
+    };
+
+    const makeBuilder = (table: string) => {
+      const filters: Array<(r: any) => boolean> = [];
+      let op: 'select' | 'update' | 'delete' | 'insert' = 'select';
+      let patch: any = null;
+      let rangeSlice: [number, number] | null = null;
+      let singleMode = false;
+
+      const exec = async () => {
+        const rows = store[table] || [];
+        if (op === 'insert') {
+          const items = Array.isArray(patch) ? patch : [patch];
+          rows.push(...items);
+          return { data: items, error: null };
+        }
+        const matched = rows.filter((r) => filters.every((fn) => fn(r)));
+        if (op === 'delete') {
+          const matchedSet = new Set(matched);
+          store[table] = rows.filter((r) => !matchedSet.has(r));
+          return { data: matched, error: null };
+        }
+        if (op === 'update') {
+          for (const r of matched) Object.assign(r, patch);
+          return { data: matched, error: null };
+        }
+        const out = rangeSlice ? matched.slice(rangeSlice[0], rangeSlice[1] + 1) : matched;
+        if (singleMode) {
+          return { data: out[0] ?? null, error: null };
+        }
+        return { data: out, error: null };
+      };
+
+      const builder: any = {
+        select: () => {
+          op = 'select';
+          return builder;
+        },
+        update: (p: any) => {
+          op = 'update';
+          patch = p;
+          return builder;
+        },
+        delete: () => {
+          op = 'delete';
+          return builder;
+        },
+        insert: (p: any) => {
+          op = 'insert';
+          patch = p;
+          return exec();
+        },
+        eq: (col: string, val: any) => {
+          filters.push((r) => r[col] === val);
+          return builder;
+        },
+        in: (col: string, vals: any[]) => {
+          filters.push((r) => vals.includes(r[col]));
+          return builder;
+        },
+        order: () => builder,
+        range: (from: number, to: number) => {
+          rangeSlice = [from, to];
+          return builder;
+        },
+        single: () => {
+          singleMode = true;
+          return builder;
+        },
+        maybeSingle: () => {
+          singleMode = true;
+          return builder;
+        },
+        then: (resolve: any, reject: any) => exec().then(resolve, reject),
+      };
+      return builder;
+    };
+
+    const mockDb = { from: (t: string) => makeBuilder(t) };
+    const result = await deleteGmailImportedData(mockDb, 'u1');
+
+    expect(result).toEqual({
+      success: true,
+      deleted_transactions: 1,
+      preserved_statement_transactions: 1,
+      affected_accounts: 1,
+    });
+    expect(store.transactions.map((t) => t.id)).toEqual(['tx-stmt-1', 'tx-gmail-linked']);
+    expect(store.transactions[1].source).toBe('statement_import');
+    expect(store.transactions[0].transfer_pair_id).toBeNull();
+    expect(store.transactions[0].is_self_transfer).toBe(false);
+    expect(store.invoices[0].linked_transaction_id).toBeNull();
+    expect(store.gmail_sync_log).toHaveLength(0);
+    expect(store.email_parse_errors).toHaveLength(0);
+    expect(store.profiles[0].gmail_last_synced).toBeNull();
+    expect(store.profiles[0].gmail_connected).toBe(true);
+    expect(store.accounts[0].current_balance).toBe(19800);
   });
 });

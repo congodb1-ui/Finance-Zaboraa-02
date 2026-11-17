@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../ui/Card';
 import { Button } from '../ui/Button';
-import { apiGet, apiPatch, apiPost } from '../../lib/api-client';
+import { apiDelete, apiGet, apiPatch, apiPost } from '../../lib/api-client';
 import { requestGmailReadonlyGrant } from '../../lib/firebase-gmail';
 import { useAuth } from '../../lib/auth';
 import { useUserPreferences } from '../../lib/contexts/UserPreferencesContext';
@@ -11,6 +11,7 @@ import {
   Mail,
   RefreshCw,
   ShieldCheck,
+  Trash2,
   Unplug,
 } from 'lucide-react';
 
@@ -19,6 +20,7 @@ interface GmailStatusResponse {
   gmail_email: string | null;
   gmail_last_synced: string | null;
   gmail_sync_enabled: boolean;
+  gmail_imported_count?: number;
   has_offline_refresh_support?: boolean;
   last_sync_summary: {
     last_synced_at: string;
@@ -54,6 +56,8 @@ export const GmailIntegrationSection: React.FC = () => {
   const [isToggling, setIsToggling] = useState(false);
   const [isDisconnecting, setIsDisconnecting] = useState(false);
   const [confirmDisconnect, setConfirmDisconnect] = useState(false);
+  const [isDeletingData, setIsDeletingData] = useState(false);
+  const [confirmDeleteData, setConfirmDeleteData] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [infoMsg, setInfoMsg] = useState<string | null>(null);
 
@@ -178,8 +182,51 @@ export const GmailIntegrationSection: React.FC = () => {
     }
   };
 
+  const handleDeleteGmailData = async () => {
+    setErrorMsg(null);
+    setInfoMsg(null);
+    setIsDeletingData(true);
+    try {
+      const res = await apiDelete<{
+        success: boolean;
+        deleted_transactions: number;
+        preserved_statement_transactions: number;
+        affected_accounts: number;
+      }>('/api/gmail/data');
+
+      if (typeof window !== 'undefined') {
+        try {
+          window.localStorage.removeItem('zaboraa_gmail_banner_dismissed_sync');
+        } catch {}
+      }
+
+      setConfirmDeleteData(false);
+      const parts = [
+        `Deleted ${res.deleted_transactions} Gmail-imported transaction${res.deleted_transactions === 1 ? '' : 's'}`,
+      ];
+      if (res.preserved_statement_transactions > 0) {
+        parts.push(
+          `preserved ${res.preserved_statement_transactions} statement-linked transaction${res.preserved_statement_transactions === 1 ? '' : 's'}`
+        );
+      }
+      if (res.affected_accounts > 0) {
+        parts.push(
+          `recalculated ${res.affected_accounts} account balance${res.affected_accounts === 1 ? '' : 's'}`
+        );
+      }
+      setInfoMsg(`${parts.join(' · ')}. Your manual statements and Gmail connection remain intact.`);
+      await Promise.all([loadStatus(), refreshPreferences()]);
+    } catch (err: any) {
+      setErrorMsg(extractErrorMessage(err, 'Failed to delete Gmail imported data.'));
+    } finally {
+      setIsDeletingData(false);
+    }
+  };
+
   const isConnected = Boolean(status?.gmail_connected);
   const lastAdded = status?.last_sync_summary?.transactions_added;
+  const gmailImportedCount = status?.gmail_imported_count ?? 0;
+  const hasGmailDataToDelete = isConnected || gmailImportedCount > 0 || Boolean(status?.gmail_last_synced);
 
   return (
     <Card className="border-slate-200 dark:border-slate-800">
@@ -336,6 +383,54 @@ export const GmailIntegrationSection: React.FC = () => {
                   }`}
                 />
               </button>
+            </div>
+          </div>
+        )}
+
+        {!isLoading && hasGmailDataToDelete && (
+          <div className="p-3.5 rounded-lg bg-red-50/60 dark:bg-red-950/20 border border-red-200/80 dark:border-red-900/50 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="space-y-0.5 text-xs">
+              <div className="font-medium text-slate-900 dark:text-slate-100">
+                Gmail Imported Data ({gmailImportedCount} transaction{gmailImportedCount === 1 ? '' : 's'})
+              </div>
+              <p className="text-slate-600 dark:text-slate-400">
+                Removes all transactions imported solely by Gmail sync, clears Gmail sync logs, and recalculates account balances. Manual bank statement uploads are untouched.
+              </p>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2 shrink-0">
+              {!confirmDeleteData ? (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="text-red-600 border-red-200 dark:border-red-900/60 hover:bg-red-50 dark:hover:bg-red-950/40"
+                  onClick={() => setConfirmDeleteData(true)}
+                  disabled={isSyncing || isDisconnecting || isDeletingData}
+                  leftIcon={<Trash2 className="w-3.5 h-3.5" />}
+                >
+                  Delete All Gmail Data
+                </Button>
+              ) : (
+                <div className="flex items-center gap-1.5">
+                  <Button
+                    variant="destructive"
+                    size="sm"
+                    onClick={handleDeleteGmailData}
+                    isLoading={isDeletingData}
+                    leftIcon={<Trash2 className="w-3.5 h-3.5" />}
+                  >
+                    Confirm Delete Gmail Data
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setConfirmDeleteData(false)}
+                    disabled={isDeletingData}
+                  >
+                    Cancel
+                  </Button>
+                </div>
+              )}
             </div>
           </div>
         )}

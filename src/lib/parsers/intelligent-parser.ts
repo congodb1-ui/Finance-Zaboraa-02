@@ -166,7 +166,7 @@ export function mergeWordFragments(name: string): string {
     .replace(/\bS\s+AYYED\b/gi, 'SAYYED')
     .replace(/\bFR\s+OM\b/gi, 'FROM')
     .replace(/\bPA\s+YTM\b/gi, 'PAYTM')
-    .replace(/\bAddresscity\s+State\b/gi, ' ')
+    .replace(/\bAddress\s*city(?:\s+[^]*?)?\s+State\b/gi, ' ')
     .replace(/\s{2,}/g, ' ')
     .trim();
 }
@@ -290,6 +290,7 @@ export function stripFooterBleed(narration: string): string {
     /\s*subject to realis.*/i,
     /\s*Page\s*No\s*\.?\s*:.*/i,
     /\s*Account\s+Branch\s*:.*/i,
+    /\s*Address\s*City\b[^]*?\bState\b/gi,
 
     // Universal summary block keywords
     /\s*STATEMENT\s+SUMMARY.*/i,
@@ -554,6 +555,12 @@ export async function parsePDFIntelligent(
   }
 
   const allVisualLines: VisualLine[] = [];
+  let persistedBounds: VisualLine['colBounds'] | undefined;
+
+  const TOP_META_MARKER_RE =
+    /(?:Page\s*No\s*\.?\s*:|Statement\s+of\s+account|Statement\s+From\s*:|Account\s+Branch\s*:|Account\s+No\s*:|Account\s+Type\s*:|Nomination\s*:|Cust\s+ID\s*:|RTGS\/NEFT\s+IFSC|OD\s+Limit\s*:|Email\s*:|Joint\s+Holders)/i;
+  const BOTTOM_FOOTER_MARKER_RE =
+    /(?:HDFC\s+BANK\s+LIMITED|\*Closing\s+balance\s+includes|Contents\s+of\s+this\s+statement|Registered\s+Office\s+Address|computer\s+generated\s+statement|does\s+not\s+require\s+(?:any\s+)?signature|State\s+account\s+branch\s+GST)/i;
 
   for (const page of pdfData.pages) {
     if (summaryReached) break;
@@ -571,12 +578,18 @@ export async function parsePDFIntelligent(
       }
 
       // Detect dynamic column boundaries from page header row (supports HDFC, SBI, ICICI, Axis, Kotak, etc.)
-      let pageBounds: VisualLine['colBounds'] | undefined;
+      let pageBounds: VisualLine['colBounds'] | undefined = persistedBounds;
       let headerY: number | null = null;
+      let firstDateRowY: number | null = null;
+      let lastDateRowY: number | null = null;
 
       for (const line of linesMap) {
         line.items.sort((a, b) => a.x - b.x);
         line.text = line.items.map((i) => i.text).join(' ');
+        if (/^\s*\d{1,2}[\/\-.]\d{1,2}[\/\-.]\d{2,4}\b/.test(line.text)) {
+          if (firstDateRowY === null) firstDateRowY = line.y;
+          lastDateRowY = line.y;
+        }
         const isHeader =
           line.items.some((i) => /narration|particulars|description|remarks/i.test(i.text)) &&
           line.items.some((i) => /debit|withdrawal|credit|deposit|balance|amount/i.test(i.text));
@@ -598,8 +611,10 @@ export async function parsePDFIntelligent(
           const refMinX = refIt ? refIt.x - 6 : narrMaxX;
           const refMaxX = valDtIt ? valDtIt.x - 2 : (w ? w.x - 6 : 365);
           const amtMinX = valDtIt ? valDtIt.x + 28 : (w ? w.x - 30 : 380);
-          const debitMaxX = w && d ? (w.x + d.x) / 2 + 12 : (b ? b.x - 70 : 460);
-          const creditMaxX = d && b ? (d.x + b.x) / 2 + 12 : (b ? b.x - 10 : 535);
+          const wRight = w ? w.x + (w.width || 45) : 455;
+          const dCenter = d ? d.x + (d.width || 45) / 2 : 510;
+          const debitMaxX = w && d ? (wRight + d.x) / 2 + 4 : (b ? b.x - 70 : 478);
+          const creditMaxX = d && b ? (dCenter + b.x) / 2 + 6 : (b ? b.x - 10 : 548);
 
           pageBounds = {
             dateMaxX,
@@ -611,6 +626,32 @@ export async function parsePDFIntelligent(
             debitMaxX,
             creditMaxX,
           };
+          persistedBounds = pageBounds;
+        }
+      }
+
+      // On continuation pages (e.g. HDFC Page 2+), the top address/metadata block repeats without a column header row.
+      // Identify the lowest top-metadata Y above the first date row so all address/branch lines above it are excluded.
+      let topCutoffY: number | null = headerY;
+      if (topCutoffY === null) {
+        const ceilingY = firstDateRowY ?? -Infinity;
+        for (const line of linesMap) {
+          if (line.y > ceilingY && TOP_META_MARKER_RE.test(line.text)) {
+            if (topCutoffY === null || line.y < topCutoffY) {
+              topCutoffY = line.y;
+            }
+          }
+        }
+      }
+
+      // Identify bottom-of-page footer disclaimer zone below the last date row
+      let bottomFooterY: number | null = null;
+      const floorY = lastDateRowY ?? Infinity;
+      for (const line of linesMap) {
+        if (line.y < floorY && BOTTOM_FOOTER_MARKER_RE.test(line.text)) {
+          if (bottomFooterY === null || line.y > bottomFooterY) {
+            bottomFooterY = line.y;
+          }
         }
       }
 
@@ -619,8 +660,12 @@ export async function parsePDFIntelligent(
           summaryReached = true;
           break;
         }
-        // Skip repeated page headers/footers above the table header or matching universal noise rules
-        if (headerY !== null && line.y >= headerY - 2) {
+        // Skip repeated page headers/address blocks above the table/metadata cutoff
+        if (topCutoffY !== null && line.y >= topCutoffY - 2) {
+          continue;
+        }
+        // Skip bottom disclaimer/footer zone below the last transaction on the page
+        if (bottomFooterY !== null && line.y <= bottomFooterY + 2) {
           continue;
         }
         if (isStatementNoiseLine(line.text)) {
@@ -787,7 +832,7 @@ export async function parsePDFIntelligent(
       for (const it of amountItems) {
         const n = cleanNumber(it.text);
         if (n !== null) {
-          extractedAmts.push({ num: n, x: it.x });
+          extractedAmts.push({ num: n, x: it.x + (it.width || 0) / 2 });
         }
       }
 

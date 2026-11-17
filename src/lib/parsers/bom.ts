@@ -31,7 +31,17 @@ const BOM_MAPPING: ColumnMapping = {
  */
 export function isBOMStatement(text: string): boolean {
   const lower = (text || '').toLowerCase();
-  return lower.includes('bank of maharashtra') || lower.includes('mahabank');
+  if (!lower.includes('bank of maharashtra') && !lower.includes('mahabank')) return false;
+  if (
+    lower.includes('hdfc bank') ||
+    lower.includes('hdfcbank') ||
+    lower.includes('icici bank') ||
+    lower.includes('state bank of india') ||
+    lower.includes('axis bank')
+  ) {
+    return false;
+  }
+  return true;
 }
 
 function isBOMHeaderRow(cells: string[]): boolean {
