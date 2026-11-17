@@ -82,8 +82,8 @@ const UNIVERSAL_NOISE_PATTERNS: RegExp[] = [
   /^\s*BANK\s+OF\s+INDIA\s*$/i,
   /^\s*BANK\s+OF\s+MAHARASHTRA\s*$/i,
 
-  // Common customer address artifacts (like "KOOL HOMES", "FLAT NO", "BLDG NO" etc. accompanied by PIN)
-  /\b(?:kool\s+homes|flat\s+no|bldg|building|chsl|nagar|road|marg|sector|plot\s+no)\b.*\b\d{6}\b/i,
+  // Address components accompanied by PIN
+  /\b(?:flat\s+no|bldg|building|chsl|nagar|road|marg|sector|plot\s+no|colony|tower|wing)\b.*\b\d{6}\b/i,
   /^\s*(?:mr\.|mrs\.|ms\.|dr\.|shri|smt)\s+[A-Z\s]{4,}$/i, // Standalone customer name header line e.g. "MR. WASIM SALIM SAYYED"
 ];
 

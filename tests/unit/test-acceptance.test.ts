@@ -7,8 +7,11 @@ describe('Bank Statement Parser Acceptance Tests', () => {
   const pass2022 = '46818820';
 
   it('passes all 7 acceptance criteria for 2022 HDFC statement', async () => {
-    const buf2022 = fs.readFileSync(p2022);
-    const res = await parseStatementPDF(new Uint8Array(buf2022), { password: pass2022 });
+    const file2022 = 'C:/Users/admin/Downloads/Acct_Statement_XXXXXXXX3597_20072026_unlockedd.pdf';
+    const file1111 = 'C:/Users/admin/Downloads/Acct_Statement_XXXXXXXX3597_11112026.pdf';
+    const buf2022 = fs.readFileSync(fs.existsSync(file2022) ? file2022 : p2022);
+    const options = fs.existsSync(file2022) ? {} : { password: pass2022 };
+    const res = await parseStatementPDF(new Uint8Array(buf2022), options);
 
     console.log('Sample rows 1-5:', res.rows.slice(0, 5));
     const musarrat = res.rows.find(r => r.Narration.includes('MUSARRAT'));
@@ -92,9 +95,10 @@ describe('Bank Statement Parser Acceptance Tests', () => {
   }, 30000);
 
   it('correctly parses 2026 HDFC statement without inversion', async () => {
-    if (fs.existsSync('Acct_Statement_XXXXXXXX3597_20072026_unlocked.pdf')) {
-      const buf2026 = fs.readFileSync('Acct_Statement_XXXXXXXX3597_20072026_unlocked.pdf');
-      const res = await parseStatementPDF(new Uint8Array(buf2026));
+    const file1111 = 'C:/Users/admin/Downloads/Acct_Statement_XXXXXXXX3597_11112026.pdf';
+    if (fs.existsSync(file1111)) {
+      const buf2026 = fs.readFileSync(file1111);
+      const res = await parseStatementPDF(new Uint8Array(buf2026), { password: '46818820' });
       console.log('2026 Total rows:', res.rows.length);
       expect(res.rows.length).toBeGreaterThan(0);
 
