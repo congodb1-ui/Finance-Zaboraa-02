@@ -109,22 +109,57 @@ export function normalizeDateToISO(dateStr: string): string {
   return `${year}-${month}-${day}`;
 }
 
-// STEP 7: NARRATION CLEANERS
-export function stripUTRPrefix(narration: string): string {
-  let result = narration.replace(/^\d{10,16}\s+/, '');
+// STEP 7: NARRATION CLEANERS & JOINERS
+
+export function smartJoin(existing: string, continuation: string): string {
+  if (!existing) return continuation;
+  if (!continuation) return existing;
+
+  const existingEndsInLetter = /[A-Za-z]$/.test(existing);
+  const continuationStartsLetter = /^[A-Za-z]/.test(continuation);
+  const fragmentIsShort = continuation.split(' ')[0].length <= 4;
+  const existingLastWordIsLong = (existing.split(' ').pop() || '').length >= 4;
+
+  if (
+    existingEndsInLetter &&
+    continuationStartsLetter &&
+    fragmentIsShort &&
+    existingLastWordIsLong
+  ) {
+    return existing + continuation;
+  }
+
+  return existing + ' ' + continuation;
+}
+
+export function mergeWordFragments(name: string): string {
+  return name.replace(/([A-Za-z]{4,})\s+([A-Za-z]{1,3})(?=\s|$)/g, '$1$2');
+}
+
+export function stripUTRPrefix(narration: string): { narration: string; ref: string } {
+  const utrMatch = narration.match(/^(\d{10,16})\s+/);
+  let ref = '';
+  let result = narration;
+  if (utrMatch) {
+    ref = utrMatch[1].replace(/^0+/, '') || utrMatch[1];
+    result = result.slice(utrMatch[0].length);
+  }
   result = result.replace(/^\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}\s+/, '');
-  return result.trim();
+  return { narration: result.trim(), ref };
 }
 
 export function extractReference(narration: string, explicitRef?: string): { ref: string; narration: string } {
   if (explicitRef && explicitRef.trim()) {
-    const cleanRef = explicitRef.trim();
-    return { ref: cleanRef, narration: narration.replace(cleanRef, '').trim() };
+    const rawRef = explicitRef.trim();
+    // Strip leading zeros for numeric UTRs (keeping last 10-16 digits)
+    const cleanRef = /^\d+$/.test(rawRef) ? (rawRef.replace(/^0+/, '') || rawRef) : rawRef;
+    return { ref: cleanRef, narration: narration.replace(rawRef, '').trim() };
   }
   const refMatch = narration.match(/\b(\d{10,16})\b/);
   if (refMatch) {
+    const stripped = refMatch[1].replace(/^0+/, '') || refMatch[1];
     return {
-      ref: refMatch[1],
+      ref: stripped,
       narration: narration.replace(refMatch[0], '').trim(),
     };
   }
@@ -140,13 +175,19 @@ export function extractPayeeName(narration: string): string {
   const upiPrefix = narration.match(
     /^UPI[-\/]([A-Z][A-Z0-9\s\.]{2,40}?)[-\/][A-Z0-9]+[@\-]/i
   );
-  if (upiPrefix) return toTitleCase(upiPrefix[1].trim());
+  if (upiPrefix) {
+    const merged = mergeWordFragments(upiPrefix[1].trim());
+    return toTitleCase(merged);
+  }
 
   // Pattern 2: IMPS/REF/MASKED/PAYEE NAME/Purpose
   const impsSlash = narration.match(
     /^IMPS\/\d+\/[^\/]*\/([^\/]+)\//i
   );
-  if (impsSlash) return toTitleCase(impsSlash[1].trim());
+  if (impsSlash) {
+    const merged = mergeWordFragments(impsSlash[1].trim());
+    return toTitleCase(merged);
+  }
 
   // Pattern 3: VPA@BANK without UPI prefix: take before @, take after last -
   const atSign = narration.match(/^(.*?)@/);
@@ -155,9 +196,8 @@ export function extractPayeeName(narration: string): string {
     const parts = beforeAt.split('-');
     const username = parts[parts.length - 1];
     if (username && username.length > 2) {
-      return toTitleCase(
-        username.replace(/\./g, ' ').replace(/\d+$/, '').trim()
-      );
+      const merged = mergeWordFragments(username.replace(/\./g, ' ').replace(/\d+$/, '').trim());
+      return toTitleCase(merged);
     }
   }
 
@@ -165,9 +205,12 @@ export function extractPayeeName(narration: string): string {
   const neft = narration.match(
     /^(?:NEFT|RTGS|IMPS)[-\/\s]+(.+?)(?:[-\/]\d{6,}|$)/i
   );
-  if (neft) return toTitleCase(neft[1].trim());
+  if (neft) {
+    const merged = mergeWordFragments(neft[1].trim());
+    return toTitleCase(merged);
+  }
 
-  return narration;
+  return mergeWordFragments(narration);
 }
 
 export function stripNoiseSuffixes(narration: string): string {
@@ -233,14 +276,15 @@ export function stripFooterBleed(narration: string): string {
 
 export function cleanNarrationPipeline(rawNarration: string, explicitRef?: string): { cleanDescription: string; reference: string } {
   const strippedFooter = stripFooterBleed(rawNarration);
-  const strippedUtr = stripUTRPrefix(strippedFooter);
-  const { ref, narration: narrWithoutRef } = extractReference(strippedUtr, explicitRef);
+  const { narration: strippedUtr, ref: utrRef } = stripUTRPrefix(strippedFooter);
+  const { ref: extractedRef, narration: narrWithoutRef } = extractReference(strippedUtr, explicitRef);
   const payeeExtracted = extractPayeeName(narrWithoutRef);
   const cleanDescription = stripNoiseSuffixes(payeeExtracted);
+  const finalRef = utrRef || extractedRef || (explicitRef ? (/^\d+$/.test(explicitRef.trim()) ? explicitRef.trim().replace(/^0+/, '') : explicitRef.trim()) : '');
 
   return {
     cleanDescription: cleanDescription || rawNarration.trim(),
-    reference: ref || (explicitRef ? explicitRef.trim() : ''),
+    reference: finalRef,
   };
 }
 
@@ -665,17 +709,17 @@ export async function parsePDFIntelligent(
         }
       }
 
-      // Collect narration from anchor items + continuation lines
+      // Collect narration from anchor items + continuation lines using smartJoin
       const anchorNarr = narrItms.map((it) => it.text).join(' ');
-      const contNarr = block.continuationLines
-        .map((cl) => {
-          const cNarrItms = cl.items.filter((it) => it.x >= 50 && it.x < 360);
-          return cNarrItms.map((it) => it.text).join(' ');
-        })
-        .filter(Boolean)
-        .join(' ');
-
-      const rawFullNarr = [anchorNarr, contNarr].filter(Boolean).join(' ') || joinedRawNarration;
+      let rawFullNarr = anchorNarr;
+      for (const cl of block.continuationLines) {
+        const cNarrItms = cl.items.filter((it) => it.x >= 50 && it.x < 360);
+        const cText = cNarrItms.map((it) => it.text).join(' ').trim();
+        if (cText) {
+          rawFullNarr = smartJoin(rawFullNarr, cText);
+        }
+      }
+      if (!rawFullNarr) rawFullNarr = joinedRawNarration;
       const { cleanDescription, reference } = cleanNarrationPipeline(rawFullNarr, explicitRef);
 
       parsedTxns.push({
