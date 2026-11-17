@@ -48,6 +48,7 @@ const PRESERVED_ACRONYMS = new Set([
   'LLP',
   'PVT',
   'LTD',
+  'P2P',
 ]);
 
 /**
@@ -119,9 +120,11 @@ export function parseBankNarration(
     };
   }
 
-  // 1. Normalize line-breaks, mid-word line-breaks, and collapse whitespace
+  // 1. Normalize line-breaks, leading dot/bullet noise, mid-word line-breaks, and collapse whitespace
   text = text.replace(/([a-zA-Z])-\s*\r?\n\s*([a-zA-Z])/g, '$1$2');
   text = text.replace(/\r?\n|\r/g, ' ').replace(/\s{2,}/g, ' ').trim();
+  text = text.replace(/^[.*•\s]+/, '').trim();
+  text = text.replace(/@\s+([A-Za-z])/g, '@$1');
 
   // Fix common PDF wrapped split words and redaction artifacts
   text = text.replace(/\bLIM\s+ITED\b/gi, 'LIMITED');
@@ -138,6 +141,8 @@ export function parseBankNarration(
   text = text.replace(/\bSENT\s+FR\s+OM\b/gi, 'SENT FROM');
   text = text.replace(/\bPA\s+YTM\b/gi, 'PAYTM');
   text = text.replace(/\bE\s+NJOY\b/gi, 'ENJOY');
+  text = text.replace(/\bO\s+THER\b/gi, 'OTHER');
+  text = text.replace(/\bMA\s+INTENAN(?:CE)?\b/gi, (m) => (m.toUpperCase().endsWith('CE') ? 'MAINTENANCE' : 'MAINTENAN'));
   text = text.replace(/([A-Z]{3,})T\s+RANSACTION\b/gi, '$1 TRANSACTION');
   text = text.replace(/@OKIC\s+ICI/gi, '@OKICICI');
   text = text.replace(/@HDF\s+CBANK/gi, '@HDFCBANK');
@@ -306,6 +311,26 @@ export function parseBankNarration(
     }
 
     let working = text.replace(/^IMPS[\/\-\s]+(?:CR|DR)?[\/\-\s]*/i, '').trim();
+
+    // Handle HDFC ".IMPS P2P <12-digit-rrn>#<DD/MM/YYYY> [<DDMMYY>] [-<MIR_REF>|<PAYEE>]"
+    const p2pMatch = working.match(
+      /^P2P\s+(\d{10,16})(?:#(\d{1,2}\/\d{1,2}\/\d{2,4})(?:\s+\d{6})?)?(?:\s*[-/]\s*(.*))?$/i
+    );
+    if (p2pMatch) {
+      const rrn = p2pMatch[1];
+      const tail = (p2pMatch[3] || '').trim();
+      const isTailRef = /^[A-Z0-9]{10,24}$/i.test(tail);
+      const ref = (isTailRef ? tail : '') || fallbackRef || rrn;
+      const cleanDesc =
+        tail && !isTailRef && !INVALID_STANDALONE_DESCRIPTIONS.has(tail.toUpperCase())
+          ? tail
+          : `IMPS P2P Transfer (${rrn.slice(-4)})`;
+      return {
+        description: cleanDesc,
+        reference: ref,
+        transactionType: 'IMPS',
+      };
+    }
 
     const sep = working.includes('/') && !working.includes('-') ? '/' : '-';
     const segments = working.split(sep).map((s) => s.trim()).filter(Boolean);
@@ -495,12 +520,12 @@ export function parseBankNarration(
           if (parts.length >= 3 && /^\d{1,2}$/.test(parts[parts.length - 1])) {
             parts.pop();
           }
-          // Strip the VPA local-part segment right before @ (handles wrapped spaces like "ADIZAFFARSAYYED727 6" or "BHARATPE.90070652 442")
+          // Strip the VPA local-part segment right before @ (handles wrapped spaces like "ADIZAFFARSAYYED727 6", "BAJAJPAY.687972 9.05470945", "PAYTMQR2810050501011E TV0FS05SJ")
           const last = parts[parts.length - 1];
           const looksLikeVpaLocal =
             /^[*]{2,}/.test(last) ||
             /^[\d\s.]{5,}$/.test(last) ||
-            /^[A-Za-z0-9*._%+-]+(?:\s+[\dA-Za-z._%+-]{1,6})?$/.test(last);
+            /^[A-Za-z0-9*._%+-]+(?:\s+[A-Za-z0-9*._%+-]{1,24}){0,2}$/.test(last);
           if (parts.length >= 2 && looksLikeVpaLocal) {
             parts.pop();
           }
@@ -513,6 +538,11 @@ export function parseBankNarration(
           ) {
             parts.pop();
           }
+        } else if (parts.length === 1) {
+          // Strip dot-attached wallet/VPA handle tag on single-part VPAs (e.g. "AIRTEL PAYMENTS ENT.PAYTM@YBL")
+          parts[0] = parts[0]
+            .replace(/\.(?:PAYTM|GPAY|YBL|IBL|APL|AXL|BHARATPE|PHONEPE|OKAXIS|OKSBI|OKICICI|HDFCBANK|\d{4,})$/i, '')
+            .trim();
         }
 
         const joined = parts.join(sep === '/' ? ' ' : '-').trim();
@@ -672,3 +702,77 @@ export function parseBankNarration(
     transactionType: 'OTHER',
   };
 }
+
+/**
+ * Formats a clean, noise-free secondary line for UI tables (e.g. "UPI · Airtel Broadband" or "NEFT Credit")
+ * without exposing raw VPA handles (@OKBIZAXIS, paytmqr...), IFSC codes, or wallet boilerplate ("SENT USING PAYTM").
+ */
+export function formatTransactionSubtitle(
+  description: string,
+  rawDescription?: string | null,
+  referenceNumber?: string | null
+): string | null {
+  const raw = (rawDescription || '').trim();
+  if (!raw || raw === description) return null;
+
+  const cleanedRaw = raw.replace(/^[.*•\s]+/, '').trim();
+  let mode = 'Bank Transfer';
+  if (/^UPI[\/\-\s]/i.test(cleanedRaw) || /@[A-Za-z]/i.test(cleanedRaw)) {
+    mode = 'UPI Payment';
+  } else if (/^NEFT[\/\-\s]/i.test(cleanedRaw)) {
+    mode = 'NEFT Transfer';
+  } else if (/^RTGS[\/\-\s]/i.test(cleanedRaw)) {
+    mode = 'RTGS Transfer';
+  } else if (/^IMPS[\/\-\s]/i.test(cleanedRaw)) {
+    mode = 'IMPS Transfer';
+  } else if (/^(?:EFT|FT|INB)[\/\-\s]/i.test(cleanedRaw)) {
+    mode = 'NetBanking';
+  } else if (/^(?:POS|ATM|ATW)[\/\-\s]/i.test(cleanedRaw)) {
+    mode = 'Card / ATM';
+  } else if (/^CHQ[\/\-\s]/i.test(cleanedRaw)) {
+    mode = 'Cheque';
+  }
+
+  // Extract optional human remark after the 12-digit UTR for UPI rows
+  let note = '';
+  if (mode === 'UPI Payment') {
+    const tailMatch = cleanedRaw.match(/(?:^|[-/\s])\d{12}(?:\s+\d{1,2})?\s*-\s*(.+)$/);
+    if (tailMatch && tailMatch[1]) {
+      let candidate = tailMatch[1]
+        .replace(
+          /\b(?:SENT\s+US?ING\s+PAYT?M\s*U?|SENT\s+FR\s*OM\s+PHONE(?:\s*E)?|PAYMENT\s+FR\s*OM\s+PHON(?:\s*E)?|SENT\s+FROM\s+\w+|PAY\s+TO\s+BHARATPE\s+ME|VIA\s+NETBANKING|UPI|NA|S-NA)\b/gi,
+          ''
+        )
+        .replace(/\bOID\d+\b/gi, '')
+        .replace(/\bO\s+THER\b/gi, 'OTHER')
+        .replace(/\bMA\s+INTENAN\b/gi, 'MAINTENANCE')
+        .replace(/^[-/\s]+|[-/\s]+$/g, '')
+        .trim();
+
+      const descNorm = description.toLowerCase().replace(/[^a-z0-9]/g, '');
+      const candNorm = candidate.toLowerCase().replace(/[^a-z0-9]/g, '');
+      const isDuplicateOrTruncatedName =
+        !candNorm ||
+        candNorm.length < 3 ||
+        /^\d+$/.test(candNorm) ||
+        descNorm.includes(candNorm) ||
+        candNorm.includes(descNorm);
+
+      if (!isDuplicateOrTruncatedName) {
+        note = toTitleCase(candidate.toLowerCase());
+      }
+    }
+  } else if (mode === 'IMPS Transfer') {
+    const p2pDate = cleanedRaw.match(/^IMPS\s+P2P\s+(\d{10,16})#(\d{1,2}\/\d{1,2}\/\d{2,4})/i);
+    if (p2pDate) {
+      note = `${p2pDate[2]}`;
+    }
+  }
+
+  const refPart = referenceNumber ? `Ref: ${referenceNumber}` : '';
+  if (note) {
+    return `${mode.split(' ')[0]} · ${note}`;
+  }
+  return refPart ? `${mode} · ${refPart}` : mode;
+}
+

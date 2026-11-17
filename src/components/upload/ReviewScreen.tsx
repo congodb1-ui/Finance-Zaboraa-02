@@ -4,6 +4,7 @@ import { Card, CardHeader, CardTitle, CardContent } from '../ui/Card';
 import { Button } from '../ui/Button';
 import { formatINR } from '../../types/design-system';
 import { orderTransactionsChronologically } from '../../lib/balance-utils';
+import { formatTransactionSubtitle } from '../../lib/parsers/bank-transaction';
 import { EditUploadModal } from './EditUploadModal';
 import { RevertModal } from './RevertModal';
 import {
@@ -680,11 +681,18 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
                       <div className="font-medium text-slate-900 dark:text-white">
                         {tx.description}
                       </div>
-                      {tx.raw_description && tx.raw_description !== tx.description && (
-                        <div className="text-[10px] text-slate-400 font-mono break-words mt-0.5">
-                          {tx.raw_description}
-                        </div>
-                      )}
+                      {(() => {
+                        const subtitle = formatTransactionSubtitle(
+                          tx.description,
+                          tx.raw_description,
+                          tx.reference_number
+                        );
+                        return subtitle ? (
+                          <div className="text-[11px] text-slate-400 break-words mt-0.5">
+                            {subtitle}
+                          </div>
+                        ) : null;
+                      })()}
                     </td>
                     <td className="py-3 px-4 whitespace-nowrap font-mono text-[11px] text-slate-500">
                       {tx.reference_number || <span className="text-slate-300 dark:text-slate-700">—</span>}

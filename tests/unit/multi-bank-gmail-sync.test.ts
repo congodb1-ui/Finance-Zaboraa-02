@@ -13,7 +13,7 @@ import {
   type DedupCandidateTx,
   type IncomingDedupRow,
 } from '../../src/lib/dedup-sync';
-import { parseBankNarration } from '../../src/lib/parsers/bank-transaction';
+import { parseBankNarration, formatTransactionSubtitle } from '../../src/lib/parsers/bank-transaction';
 import { toTitleCase } from '../../src/lib/parsers/intelligent-parser';
 import {
   orderTransactionsChronologically,
@@ -985,5 +985,59 @@ describe('Delete All Gmail Imported Data', () => {
     expect(p4.description).toBe('SAHU');
     expect(p4.reference).toBe('304337355253');
   });
+
+  it('cleans 2025 HDFC IMPS P2P, wrapped VPA handles, spaced @ OKBIZAXIS, and grey subtitle cleanly', () => {
+    const imps = parseBankNarration('.IMPS P2P 436020341706#25/12/2024 251224 -MIR2500254810095');
+    expect(imps.transactionType).toBe('IMPS');
+    expect(imps.description).toBe('IMPS P2P Transfer (1706)');
+    expect(imps.reference).toBe('MIR2500254810095');
+
+    const bajaj = parseBankNarration(
+      'UPI-SHAMSHUDDIN ABDUL RA-BAJAJPAY.687972 9.05470945@INDB0000006-INDBMERCHA-501052621462 2-SENT USING PAYTM U'
+    );
+    expect(bajaj.description).toBe('SHAMSHUDDIN ABDUL RA');
+    expect(bajaj.reference).toBe('501052621462');
+
+    const relief = parseBankNarration(
+      'UPI-RELIEF CHEMIST-PAYTMQR2810050501011E TV0FS05SJ@PAYTM-PYTM0123456-501272898695-NA'
+    );
+    expect(relief.description).toBe('RELIEF CHEMIST');
+    expect(relief.reference).toBe('501272898695');
+
+    const spacedAt = parseBankNarration(
+      'UPI-MR MOHAMMED ABDUL-GPAY-11198252189@ OKBIZAXIS-UTIB0000553-501274325828-SENT USING PAYTM U'
+    );
+    expect(spacedAt.description).toBe('MR MOHAMMED ABDUL');
+    expect(spacedAt.reference).toBe('501274325828');
+
+    const airtel = parseBankNarration(
+      'UPI-AIRTEL PAYMENTS ENT.PAYTM@YBL-YESB0YBLUPI-500357274514 -AIRTEL BROADBAND R'
+    );
+    expect(airtel.description).toBe('AIRTEL PAYMENTS ENT');
+    expect(airtel.reference).toBe('500357274514');
+
+    const subUpi = formatTransactionSubtitle(
+      'Rohidas Chintoba Raw',
+      'UPI-ROHIDAS CHINTOBA RAW-Q551721378@YBL-YESB0YBLUPI-500138183605-SENT USING PAYTM U',
+      '500138183605'
+    );
+    expect(subUpi).toBe('UPI Payment · Ref: 500138183605');
+    expect(subUpi).not.toMatch(/UPI-|@YBL|SENT USING PAYTM|paytmqr|@OKBIZAXIS/i);
+
+    const subNote = formatTransactionSubtitle(
+      'Airtel Payments Ent',
+      'UPI-AIRTEL PAYMENTS ENT.PAYTM@YBL-YESB0YBLUPI-500357274514 -AIRTEL BROADBAND R',
+      '500357274514'
+    );
+    expect(subNote).toBe('UPI · Airtel Broadband R');
+
+    const subImps = formatTransactionSubtitle(
+      'IMPS P2P Transfer (1706)',
+      '.IMPS P2P 436020341706#25/12/2024 251224 -MIR2500254810095',
+      'MIR2500254810095'
+    );
+    expect(subImps).toBe('IMPS · 25/12/2024');
+  });
 });
+
 

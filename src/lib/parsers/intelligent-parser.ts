@@ -74,7 +74,7 @@ const PRESERVED_ACRONYMS = new Set([
   'EMI', 'SI', 'ACH', 'NACH', 'GST', 'TDS', 'BBPS', 'HDFC', 'ICICI', 'SBI',
   'PNB', 'BOB', 'IDFC', 'KOTAK', 'AXIS', 'NSE', 'BSE', 'CLI', 'LLP', 'PVT',
   'LTD', 'OKAXIS', 'OKICICI', 'OKSBI', 'OKHDFCBANK', 'PAYTM', 'YBL', 'IBL',
-  'AXL', 'YESB', 'YESBOYBLUPI', 'WDL', 'CR', 'DR', 'INR', 'NA'
+  'AXL', 'YESB', 'YESBOYBLUPI', 'WDL', 'CR', 'DR', 'INR', 'NA', 'P2P'
 ]);
 
 /**
@@ -188,6 +188,8 @@ export function mergeWordFragments(name: string): string {
     .replace(/\bFR\s+OM\b/gi, 'FROM')
     .replace(/\bPA\s+YTM\b/gi, 'PAYTM')
     .replace(/\bE\s+NJOY\b/gi, 'ENJOY')
+    .replace(/\bO\s+THER\b/gi, 'OTHER')
+    .replace(/\bMA\s+INTENAN\b/gi, 'MAINTENANCE')
     .replace(/([A-Z]{3,})T\s+RANSACTION\b/gi, '$1 TRANSACTION')
     .replace(/\bAddress\s*city(?:\s+[^]*?)?\s+State\b/gi, ' ')
     .replace(/\s{2,}/g, ' ')
