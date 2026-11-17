@@ -311,6 +311,7 @@ export async function processStatementUpload(
       reference_number: refNo,
       upi_ref_no,
       imps_ref_no,
+      pdf_row_index: String(row.pdf_row_index ?? row.pdfRowIndex ?? 0),
       source: 'statement_import' as const,
       is_duplicate: false,
     };
@@ -400,6 +401,7 @@ export async function confirmMappingAndStaging(
     reference_number: string | null;
     upi_ref_no: string | null;
     imps_ref_no: string | null;
+    pdf_row_index?: string | number | null;
     source: 'statement_import';
     is_duplicate: boolean;
     duplicate_of_id: null;
@@ -408,7 +410,8 @@ export async function confirmMappingAndStaging(
   let minDate = '';
   let maxDate = '';
 
-  for (const existing of existingStaged) {
+  for (let idx = 0; idx < existingStaged.length; idx++) {
+    const existing = existingStaged[idx];
     let rawRow: Record<string, string> | null = null;
     if (existing.raw_description) {
       try {
@@ -450,6 +453,7 @@ export async function confirmMappingAndStaging(
         reference_number: existingRef,
         upi_ref_no: existing.upi_ref_no || upi_ref_no,
         imps_ref_no: existing.imps_ref_no || imps_ref_no,
+        pdf_row_index: existing.pdf_row_index ?? String(idx),
         source: 'statement_import',
         is_duplicate: false,
         duplicate_of_id: null,
@@ -514,6 +518,7 @@ export async function confirmMappingAndStaging(
       reference_number: cleanRef,
       upi_ref_no: existing.upi_ref_no || upi_ref_no,
       imps_ref_no: existing.imps_ref_no || imps_ref_no,
+      pdf_row_index: existing.pdf_row_index ?? String(rawRow.pdf_row_index ?? rawRow.pdfRowIndex ?? idx),
       source: 'statement_import',
       is_duplicate: false,
       duplicate_of_id: null,
@@ -701,7 +706,7 @@ export async function getUploadDetails(
       .select('*')
       .eq('upload_id', uploadId)
       .eq('user_id', user.id)
-      .order('txn_date', { ascending: false }),
+      .order('pdf_row_index', { ascending: true }),
   ]);
 
   return {

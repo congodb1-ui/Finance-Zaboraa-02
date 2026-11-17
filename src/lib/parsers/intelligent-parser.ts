@@ -143,6 +143,8 @@ export function isFooterLine(line: string): boolean {
   if (/^\s*regd\.?\s*(?:office|address)/i.test(line)) return true;
   if (/^\s*gst(?:n|in)?\s*:/i.test(line)) return true;
   if (/^\s*cin\s*:/i.test(line)) return true;
+  if (/Page\s*\.?\s*No\s*\.?\s*[:\-]?\s*\d+/i.test(line)) return true;
+  if (/PageNo\s*\.?\s*\d+/i.test(line)) return true;
 
   return false;
 }
@@ -169,7 +171,19 @@ export function stripFooterBleedFromNarration(narration: string): string {
     /\s*Regd\.?\s*(?:Office|Address)\s*:.*/i,
     /\s*GST(?:N|IN)?\s*:.*/i,
     /\s*CIN\s*:.*/i,
-    /\s*www\.[a-z0-9.-]+\.[a-z]{2,}.*/i,
+    /\bwww\.[a-z0-9.-]+\.[a-z]{2,}.*/i,
+    /Page\s*\.?\s*No\s*\.?\s*[:\-]?\s*\d+.*/i,
+    /Account\s+Branch\s*:.*/i,
+    /AddressCity.*/i,
+    /CustID.*/i,
+    /A\/C\s+Open\s+Date.*/i,
+    /Account\s+Status.*/i,
+    /RTGS\/NEFT\s+IFSC.*/i,
+    /Branch\s+Code.*/i,
+    /Account\s+Type.*/i,
+    /OD\s+Limit.*/i,
+    /Phone\s+no\..*/i,
+    /(?<=[A-Z\d])(PageNo|AccountBranch|AddressCity|CustID).*/i,
   ];
 
   for (const pattern of cutPatterns) {
@@ -200,7 +214,6 @@ export function extractPayeeName(rawNarration: string): string {
 
   // GRAMMAR 1: UPI
   // Structure: UPI-{NAME}-{VPA}@{BANK}-{IFSC}-{REF}-{SUFFIX}
-  // Payee = everything between first - and the segment containing @
   if (/^UPI[-\/]/i.test(narration)) {
     const withoutPrefix = narration.replace(/^UPI[-\/]/i, '');
     const atIndex = withoutPrefix.indexOf('@');
@@ -208,20 +221,22 @@ export function extractPayeeName(rawNarration: string): string {
       const beforeAt = withoutPrefix.substring(0, atIndex);
       const segments = beforeAt.split('-');
       const nameSegments: string[] = [];
+
       for (let i = 0; i < segments.length; i++) {
         const seg = segments[i].trim();
-        if (
-          seg.length >= 2 &&
-          !/^\d+$/.test(seg) &&                        // not all digits
-          !/^[A-Z]{4}\d{7}$/i.test(seg) &&             // not IFSC format
-          !/^(IN|UPI|IMPS|NEFT|RTGS|NA|CR|DR)$/i.test(seg) && // not type code
-          !/^\d+[A-Z]$/i.test(seg)                     // not digit-letter like 1A
-        ) {
+        const isVPACode =
+          /^\d+$/.test(seg) ||           // pure digits: 330, 1
+          seg.length <= 1 ||              // single char
+          /\d{3,}$/.test(seg);           // ends in 3+ digits: MAHESHJAGTAP330
+
+        if (isVPACode && nameSegments.length > 0) {
+          break;
+        }
+        if (!isVPACode && seg.length >= 2) {
           nameSegments.push(seg);
-        } else {
-          if (nameSegments.length > 0) break;
         }
       }
+
       if (nameSegments.length > 0) {
         return toTitleCase(
           mergeWordFragments(nameSegments.join(' ').replace(/\./g, ' ').trim())
@@ -266,6 +281,74 @@ export function extractPayeeName(rawNarration: string): string {
     const dashParts = afterType.split('-');
     if (dashParts[0].trim().length >= 3) {
       return toTitleCase(mergeWordFragments(dashParts[0].trim()));
+    }
+  }
+
+  // GRAMMAR 6: Inward transfer with CR- or DR- prefix
+  // Structure: CR-{BANKIFSC}-{SENDER NAME}-{RECEIVER}-{REF}-{MEMO}
+  // or: CR-{BANKIFSC}-{SENDER NAME}-{RECEIVER}
+  if (/^(CR|DR)-/i.test(narration)) {
+    const withoutPrefix = narration.replace(/^(CR|DR)-/i, '');
+    const segments = withoutPrefix.split('-');
+    // segment[0] is IFSC/bank code (e.g. dohb0000001)
+    // segment[1] is Sender Name (e.g. ebla Computer Consul Tancy)
+    // segment[2] is Receiver (e.g. wasim Salim Sayyed)
+    if (segments.length >= 2) {
+      const senderCandidate = segments[1].trim();
+      if (
+        senderCandidate.length >= 2 &&
+        !/^[A-Z]{4}[0-9A-Z]{7}$/i.test(senderCandidate) &&
+        !/^\d+$/.test(senderCandidate)
+      ) {
+        return toTitleCase(mergeWordFragments(senderCandidate));
+      }
+    }
+    const nameSegments: string[] = [];
+    for (let i = 1; i < segments.length; i++) {
+      const seg = segments[i].trim();
+      if (
+        /^[A-Z]{4}[0-9A-Z]{7}$/i.test(seg) || // IFSC code
+        /^[Xx*]{4,}/.test(seg) ||               // masked account
+        /^\d{6,}$/.test(seg) ||                 // long reference number
+        /^\d+\s+[A-Za-z]+/i.test(seg) ||        // memo like '1 Employees'
+        /^[A-Z]{4}\d{10}$/i.test(seg) ||        // transaction ref like DOHBH2627300472
+        /^(salary|shorte|sep|oct|nov|dec|jan|feb|mar|apr|may|jun|jul|aug|payment|memo)/i.test(seg)
+      ) {
+        if (nameSegments.length > 0) break;
+        continue;
+      }
+      if (seg.length >= 2) nameSegments.push(seg);
+      if (nameSegments.length >= 4) break;
+    }
+    if (nameSegments.length > 0) {
+      return toTitleCase(mergeWordFragments(nameSegments.join(' ').trim()));
+    }
+  }
+
+  // GRAMMAR 7: Reference-first inward transfer
+  // Structure: {REF}-{NAME}-{BANK}-{MASKED ACCT}-{MEMO}
+  if (/^\d{9,16}-/.test(narration)) {
+    const withoutRef = narration.replace(/^\d{9,16}-/, '');
+    const segments = withoutRef.split('-');
+    const nameSegments: string[] = [];
+    for (let i = 0; i < segments.length; i++) {
+      const seg = segments[i].trim();
+      if (
+        /^[A-Z]{4}[0-9A-Z]{7}$/i.test(seg) ||
+        /^[Xx*]{4,}/.test(seg) ||
+        /^\d{6,}$/.test(seg) ||
+        /^[A-Za-z]{3,4}$/i.test(seg) ||           // bank codes like HSBC or HDFC
+        /^[A-Za-z]{3}\s+[A-Za-z]$/i.test(seg) || // bank short codes like 'hdf C' or 'mah B'
+        seg.length <= 2
+      ) {
+        if (nameSegments.length > 0) break;
+        continue;
+      }
+      if (seg.length >= 2) nameSegments.push(seg);
+      if (nameSegments.length >= 4) break;
+    }
+    if (nameSegments.length > 0) {
+      return toTitleCase(mergeWordFragments(nameSegments.join(' ').trim()));
     }
   }
 
@@ -323,6 +406,18 @@ export function stripStructuralNoise(narration: string): string {
  */
 export function sanitizeFinalDescription(narration: string, rawNarration: string): string {
   let cleaned = narration.trim();
+
+  const upper = cleaned.toUpperCase();
+  if (
+    /^[X\*]+\d*$/.test(upper) ||          // XXXXX or XXXXX0921
+    /^[X\*]{3,}\d{0,6}$/.test(upper) ||   // at least 3 X chars with optional digits
+    /^\d+$/.test(upper) ||                 // pure digits
+    /^[-\/\s]+$/.test(upper) ||            // only punctuation
+    /^(NA|NULL|UNDEFINED|UNKNOWN|UPI)$/.test(upper) ||
+    upper.length === 0
+  ) {
+    return 'UNREADABLE_NARRATION';
+  }
 
   // If extraction left noise or was too short (< 2 chars), fallback to raw cleaned
   if (!cleaned || cleaned === 'UNREADABLE_NARRATION' || cleaned.length < 2) {

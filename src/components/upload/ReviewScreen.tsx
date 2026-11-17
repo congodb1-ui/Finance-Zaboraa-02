@@ -88,7 +88,12 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
   // Balance continuity check across staged transactions
   const balanceDiscontinuity = React.useMemo(() => {
     if (!transactions || transactions.length < 2) return null;
-    const rowsWithBalance = transactions.filter(
+    const orderedForCheck = [...transactions].sort((a, b) => {
+      const idxA = a.pdf_row_index !== undefined && a.pdf_row_index !== null ? Number(a.pdf_row_index) : 0;
+      const idxB = b.pdf_row_index !== undefined && b.pdf_row_index !== null ? Number(b.pdf_row_index) : 0;
+      return idxA - idxB;
+    });
+    const rowsWithBalance = orderedForCheck.filter(
       (t) => typeof t.balance === 'number' && !isNaN(t.balance)
     );
     if (rowsWithBalance.length < 2) return null;
@@ -96,9 +101,9 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
     let ascendingDiscontinuities = 0;
     let descendingDiscontinuities = 0;
 
-    for (let i = 0; i < transactions.length - 1; i++) {
-      const cur = transactions[i];
-      const next = transactions[i + 1];
+    for (let i = 0; i < orderedForCheck.length - 1; i++) {
+      const cur = orderedForCheck[i];
+      const next = orderedForCheck[i + 1];
       if (typeof cur.balance === 'number' && typeof next.balance === 'number') {
         const expectedNext = cur.balance - (next.debit || 0) + (next.credit || 0);
         if (Math.abs(expectedNext - next.balance) > 0.05) {
