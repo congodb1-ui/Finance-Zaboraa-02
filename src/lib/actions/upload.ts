@@ -146,6 +146,18 @@ export async function processStatementUpload(
     throw new Error('Unauthorized');
   }
 
+  // If password was not explicitly passed in function invocation, fallback to stored account pdf_password
+  if (!password && accountId) {
+    const { data: acc } = await supabase
+      .from('accounts')
+      .select('pdf_password')
+      .eq('id', accountId)
+      .maybeSingle();
+    if (acc?.pdf_password) {
+      password = acc.pdf_password;
+    }
+  }
+
   // STEP 2 — Validate File type and size
   const maxBytes = 20 * 1024 * 1024; // 20 MB
   if (file.size > maxBytes) {

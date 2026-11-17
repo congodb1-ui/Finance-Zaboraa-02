@@ -55,6 +55,7 @@ export const AccountForm: React.FC<AccountFormProps> = ({
   const [last4, setLast4] = useState(initialData?.account_number_last4 || '');
   const [ifsc, setIfsc] = useState(initialData?.ifsc || '');
   const [upiId, setUpiId] = useState(initialData?.upi_id || '');
+  const [pdfPassword, setPdfPassword] = useState(initialData?.pdf_password || '');
   const [accountHolderName, setAccountHolderName] = useState(
     initialData?.account_holder_name || ''
   );
@@ -96,6 +97,7 @@ export const AccountForm: React.FC<AccountFormProps> = ({
       setLast4(initialData.account_number_last4 || '');
       setIfsc(initialData.ifsc || '');
       setUpiId(initialData.upi_id || '');
+      setPdfPassword(initialData.pdf_password || '');
       setAccountHolderName(initialData.account_holder_name || '');
       setOperatedByOwner(initialData.operated_by_owner ?? true);
       setOpeningBalance(
@@ -171,6 +173,7 @@ export const AccountForm: React.FC<AccountFormProps> = ({
       account_number_last4: last4.trim() ? last4.trim() : null,
       ifsc: ifsc.trim() ? ifsc.trim().toUpperCase() : null,
       upi_id: upiId.trim() ? upiId.trim() : null,
+      pdf_password: pdfPassword.trim() ? pdfPassword.trim() : null,
       account_holder_name: accountHolderName.trim() ? accountHolderName.trim() : null,
       operated_by_owner: operatedByOwner,
       opening_balance: openingBalance.trim() ? Number(openingBalance) : 0,
@@ -314,6 +317,16 @@ export const AccountForm: React.FC<AccountFormProps> = ({
                 disabled={busy}
               />
             </div>
+
+            {/* Default PDF Password for Statement Imports */}
+            <Input
+              label="Statement PDF Password (Optional)"
+              type="password"
+              placeholder="Saved password used to automatically unlock uploaded PDF statements"
+              value={pdfPassword}
+              onChange={(e) => setPdfPassword(e.target.value)}
+              disabled={busy}
+            />
 
             {/* Opening Balance, Opening Date, Notes */}
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
