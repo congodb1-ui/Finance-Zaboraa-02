@@ -29,10 +29,11 @@ export const UploadDropzone: React.FC<UploadDropzoneProps> = ({
     }
 
     const name = file.name.toLowerCase();
-    const isSupported = name.endsWith('.csv') || name.endsWith('.xlsx') || name.endsWith('.pdf');
+    const isSupported =
+      name.endsWith('.csv') || name.endsWith('.xlsx') || name.endsWith('.xls') || name.endsWith('.pdf');
 
     if (!isSupported) {
-      setErrorMessage('Unsupported format. Please upload a PDF (.pdf), CSV (.csv), or Excel (.xlsx) bank statement.');
+      setErrorMessage('Unsupported format. Please upload a PDF (.pdf), CSV (.csv), or Excel (.xlsx, .xls) bank statement.');
       return;
     }
 
@@ -103,7 +104,7 @@ export const UploadDropzone: React.FC<UploadDropzoneProps> = ({
             type="file"
             ref={fileInputRef}
             onChange={handleInputChange}
-            accept=".csv, .xlsx, .pdf, application/pdf, application/vnd.openxmlformats-officedocument.spreadsheetml.sheet, text/csv"
+            accept=".csv, .xlsx, .xls, .pdf, application/pdf, application/vnd.openxmlformats-officedocument.spreadsheetml.sheet, application/vnd.ms-excel, text/csv"
             className="hidden"
           />
 
@@ -119,7 +120,7 @@ export const UploadDropzone: React.FC<UploadDropzoneProps> = ({
           </h3>
 
           <p className="text-xs text-slate-500 dark:text-slate-400 mt-2 max-w-sm leading-relaxed">
-            Supports PDF (.pdf), CSV (.csv), and Excel (.xlsx) statement exports from HDFC, SBI, ICICI, Kotak, Axis, Paytm & UPI.
+            Supports PDF (.pdf), CSV (.csv), and Excel (.xlsx, .xls) statement exports from HDFC, SBI, ICICI, Kotak, Axis, Paytm & UPI.
           </p>
 
           <div className="mt-5 flex items-center gap-4 text-[11px] text-slate-400">

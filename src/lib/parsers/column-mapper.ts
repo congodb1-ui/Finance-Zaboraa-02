@@ -62,17 +62,22 @@ const PATTERNS = {
     'balance (inr)',
   ],
   reference: [
+    'chq ref no',
+    'chq / ref no',
+    'chq/ref no',
+    'ref no cheque no',
+    'chq ref number',
+    'cheque ref no',
+    'reference number',
     'reference',
     'ref no',
+    'ref_no',
     'utr',
+    'utr number',
+    'utr no',
     'cheque no',
     'chq no',
     'transaction id',
-    'utr number',
-    'ref_no',
-    'chq/ref no',
-    'chq / ref no',
-    'reference number',
     'txn id',
   ],
   amount: [
@@ -87,25 +92,23 @@ const PATTERNS = {
 function normalizeHeader(h: string): string {
   return h
     .toLowerCase()
-    .replace(/[._\-]/g, ' ')
+    .replace(/[._\-\/]+/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
 }
 
 function findBestMatch(headers: string[], patterns: string[]): string | null {
-  // 1. Exact match against patterns
-  for (const header of headers) {
-    const norm = normalizeHeader(header);
-    for (const pat of patterns) {
-      if (norm === pat) return header;
+  // 1. Exact match prioritized in pattern list order (so 'Date' beats 'Value Dt')
+  for (const pat of patterns) {
+    for (const header of headers) {
+      if (normalizeHeader(header) === pat) return header;
     }
   }
 
-  // 2. Starts with / contains match
-  for (const header of headers) {
-    const norm = normalizeHeader(header);
-    for (const pat of patterns) {
-      if (norm.includes(pat)) return header;
+  // 2. Contains match prioritized in pattern list order
+  for (const pat of patterns) {
+    for (const header of headers) {
+      if (normalizeHeader(header).includes(pat)) return header;
     }
   }
 
@@ -116,19 +119,39 @@ export function detectBankFromHeaders(headers: string[]): string | null {
   const normList = headers.map(normalizeHeader);
   const allText = normList.join(' ');
 
-  if (allText.includes('chq / ref no') && allText.includes('narration') && allText.includes('closing balance')) {
+  if (
+    (allText.includes('chq ref no') || allText.includes('chq / ref no')) &&
+    allText.includes('narration') &&
+    allText.includes('closing balance')
+  ) {
     return 'HDFC Bank';
   }
-  if (allText.includes('txn date') && allText.includes('value date') && allText.includes('ref no./cheque no.')) {
+  if (
+    allText.includes('txn date') &&
+    allText.includes('value date') &&
+    (allText.includes('ref no cheque no') || allText.includes('ref no./cheque no.'))
+  ) {
     return 'State Bank of India (SBI)';
   }
-  if (allText.includes('transaction date') && allText.includes('transaction remarks') && allText.includes('balance(inr)')) {
+  if (
+    allText.includes('transaction date') &&
+    allText.includes('transaction remarks') &&
+    (allText.includes('balance(inr)') || allText.includes('balance inr'))
+  ) {
     return 'ICICI Bank';
   }
-  if (allText.includes('tran date') && allText.includes('chq/ref number') && allText.includes('balance')) {
+  if (
+    allText.includes('tran date') &&
+    (allText.includes('chq ref number') || allText.includes('chq/ref number')) &&
+    allText.includes('balance')
+  ) {
     return 'Axis Bank';
   }
-  if (allText.includes('transaction date') && allText.includes('particulars') && allText.includes('cr / dr')) {
+  if (
+    allText.includes('transaction date') &&
+    allText.includes('particulars') &&
+    (allText.includes('cr dr') || allText.includes('cr / dr'))
+  ) {
     return 'Kotak Mahindra Bank';
   }
   if (allText.includes('wallet') || allText.includes('order id') || allText.includes('upi reference id')) {

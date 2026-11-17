@@ -203,6 +203,12 @@ const ALLOWED_UPLOAD_MIMETYPES: Record<'csv' | 'xlsx' | 'pdf', string[]> = {
   xlsx: [
     'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     'application/vnd.ms-excel',
+    'application/msexcel',
+    'application/x-msexcel',
+    'application/x-ms-excel',
+    'application/x-excel',
+    'application/xls',
+    'application/xlsx',
     'application/octet-stream',
   ],
   pdf: ['application/pdf', 'application/x-pdf', 'application/octet-stream'],
@@ -958,12 +964,12 @@ export async function runServer() {
         const fileNameLower = file.originalname.toLowerCase();
         let fileType: 'csv' | 'xlsx' | 'pdf' | null = null;
         if (fileNameLower.endsWith('.csv')) fileType = 'csv';
-        else if (fileNameLower.endsWith('.xlsx')) fileType = 'xlsx';
+        else if (fileNameLower.endsWith('.xlsx') || fileNameLower.endsWith('.xls')) fileType = 'xlsx';
         else if (fileNameLower.endsWith('.pdf')) fileType = 'pdf';
 
         if (!fileType) {
           return res.status(400).json({
-            error: 'Invalid file type. Supported formats: .csv, .xlsx, .pdf.',
+            error: 'Invalid file type. Supported formats: .csv, .xlsx, .xls, .pdf.',
           });
         }
 
@@ -2142,6 +2148,8 @@ export async function runServer() {
         middlewareMode: true,
         host: HOST,
         port: PORT,
+        hmr: false,
+        watch: process.env.DISABLE_HMR === 'true' ? null : undefined,
       },
       appType: 'spa',
     });

@@ -190,12 +190,12 @@ export async function processStatementUpload(
   let fileType: 'csv' | 'xlsx' | 'pdf' | null = null;
   if (fileNameLower.endsWith('.csv')) {
     fileType = 'csv';
-  } else if (fileNameLower.endsWith('.xlsx')) {
+  } else if (fileNameLower.endsWith('.xlsx') || fileNameLower.endsWith('.xls')) {
     fileType = 'xlsx';
   } else if (fileNameLower.endsWith('.pdf')) {
     fileType = 'pdf';
   } else {
-    throw new Error('Invalid file format. Supported statement exports: .csv, .xlsx, .pdf.');
+    throw new Error('Invalid file format. Supported statement exports: .csv, .xlsx, .xls, .pdf.');
   }
 
   // STEP 3 — Compute SHA-256 hash BEFORE any parsing

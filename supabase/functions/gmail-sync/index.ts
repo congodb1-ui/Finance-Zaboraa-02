@@ -15,7 +15,7 @@ declare const Deno: {
 };
 
 const GMAIL_ALERT_QUERY =
-  '(from:(alerts@hdfcbank.bank.in OR alerts@hdfcbank.net OR mahaalert@mahabank.co.in OR mahaalerts@bankofmaharashtra.bank.in OR HO.starsandesh@bankofindia.co.in OR alerts@sbi.co.in OR alerts@icicibank.com OR alerts@axisbank.com OR bankalerts@kotak.com OR alerts@idfcfirstbank.com OR alerts@yesbank.in OR alerts@indusind.com) OR (subject:(IMPS OR NEFT OR RTGS OR UPI OR "Account update" OR "Transaction with") ("Rs." OR "INR"))) -subject:(OTP OR "One Time Password" OR "e-statement" OR "Account Statement")';
+  '(from:(alerts@hdfcbank.bank.in OR alerts@hdfcbank.net OR mahaalert@mahabank.co.in OR mahaalerts@bankofmaharashtra.bank.in OR HO.starsandesh@bankofindia.co.in OR alerts@sbi.co.in OR cbssbi.cas@sbi.co.in OR alerts@icicibank.com OR alerts@axisbank.com OR bankalerts@kotak.com OR alerts@idfcfirstbank.com OR alerts@yesbank.in OR alerts@indusind.com) OR (subject:(IMPS OR NEFT OR RTGS OR UPI OR ATM OR "Cash Withdrawal" OR "ATM Withdrawal" OR "Debit Card" OR "Account update" OR "Transaction with" OR "Transaction Alert" OR "Debit Alert" OR "Credit Alert") ("Rs." OR "Rs" OR "INR" OR "₹"))) -subject:(OTP OR "One Time Password" OR "e-statement" OR "Account Statement")';
 
 const MONTH_MAP: Record<string, string> = {
   JAN: '01',
@@ -34,7 +34,7 @@ const MONTH_MAP: Record<string, string> = {
 
 const STOP_WORDS = new Set([
   'hdfc', 'bank', 'ltd', 'limited', 'india', 'private', 'pvt',
-  'upi', 'imps', 'neft', 'rtgs', 'eft', 'tpt', 'ft', 'cr', 'dr',
+  'upi', 'imps', 'neft', 'rtgs', 'eft', 'atm', 'atw', 'cash', 'withdrawal', 'tpt', 'ft', 'cr', 'dr',
   'transfer', 'payment', 'payee', 'from', 'towards', 'via', 'online',
   'banking', 'netbanking', 'remitter', 'recipient', 'sender', 'account',
   'saving', 'savings', 'current', 'self', 'na',
@@ -44,6 +44,7 @@ const GENERIC_LABELS = new Set([
   'remitter', 'imps remitter', 'imps sender', 'imps recipient',
   'neft sender', 'neft recipient', 'rtgs sender', 'rtgs recipient',
   'hdfc online transfer', 'upi payment', 'upi sender', 'boi imps transfer',
+  'atm cash withdrawal', 'atm withdrawal', 'bom atm cash withdrawal', 'boi atm cash withdrawal',
 ]);
 
 function isGenericCounterpartyLabel(desc?: string | null): boolean {
@@ -211,7 +212,9 @@ function extractHdfcLast4(body: string): string {
   const m =
     body.match(/(?:account|A\/c)(?:\s+No\.?)?\s+ending(?:\s+in)?\s+(?:XX|\*{2,}|[Xx*]+)?\s*(\d{4})/i) ||
     body.match(/account\s+[Xx*]+(\d{4})/i) ||
-    body.match(/A\/c(?:\s+No\.?)?\s*[Xx*]*\s*(\d{4})/i);
+    body.match(/A\/c(?:\s+No\.?)?\s*[Xx*]*\s*(\d{4})/i) ||
+    body.match(/(?:Debit|ATM)?\s*Card(?:\s+(?:No\.?|ending(?:\s+in)?))?\s*(?:XX|\*{2,}|[Xx*]+)?\s*(\d{4})/i) ||
+    body.match(/\b[Xx*]{2,}(\d{4})\b/);
   return m?.[1] || '';
 }
 
@@ -244,9 +247,9 @@ function parseAlertEmail(msg: any) {
   const combined = `${subject} ${body}`;
   if (
     (/\bis your OTP\b|\bOne Time Password\b|NEVER share your OTP|do not share.{0,20}OTP/i.test(combined) &&
-      !/(?:debited|credited|deducted|added to your account)\s+(?:by\s+|for\s+|with\s+)?(?:Rs|INR)/i.test(combined)) ||
+      !/(?:debited|credited|deducted|withdrawn|added to your account)\s+(?:by\s+|for\s+|with\s+|at\s+)?(?:Rs|INR|₹)/i.test(combined)) ||
     /\b(?:e-statement|monthly statement|statement is ready)\b/i.test(subject) ||
-    (/\b(?:failed|declined|unsuccessful)\b/i.test(combined) && !/\bcredited|debited|deducted\b/i.test(combined))
+    (/\b(?:failed|declined|unsuccessful)\b/i.test(combined) && !/\bcredited|debited|deducted|withdrawn\b/i.test(combined))
   ) {
     return { type: 'ignored' as const, fromAddress, subject };
   }
@@ -260,66 +263,95 @@ function parseAlertEmail(msg: any) {
   if (isHdfc) {
     if (/\brtgs\b/i.test(body) || /\brtgs\b/i.test(subject)) {
       const isCredit = /\b(?:credited|has been successfully added|added to|received)\b/i.test(body) || /\bcredited|credit\b/i.test(subject);
-      const amount = parseAmount(body.match(/(?:Rs\.?\s*INR|Rs\.?|INR)\s*([\d,]+\.?\d*)/i)?.[1]);
+      const amount = parseAmount(body.match(/(?:Rs\.?\s*INR|Rs\.?|INR|₹)\s*([\d,]+\.?\d*)/i)?.[1]);
       const last4 = extractHdfcLast4(body);
       if (!amount || !last4) {
         return { type: 'error' as const, fromAddress, subject, reason: 'HDFC_RTGS missing amount/last4', snippet: truncate200(body) };
       }
       const utrMatch =
-        body.match(/(?:UTR|Ref(?:erence)?(?:\s+No\.?)?|RTGS\s*(?:Ref|UTR)?)[.:\s]+((?=[A-Z0-9]*\d)[A-Z0-9]{10,26})/i) ||
+        body.match(/(?:UTR|Ref(?:erence)?(?:\s+No\.?)?|RTGS\s*(?:Ref|UTR)?)[.:\s]+((?=[A-Z0-9]*\d)[A-Z0-9]{8,26})/i) ||
         body.match(/\b([A-Z]{4}[A-Z0-9]\d{10,20})\b/) ||
-        body.match(/RTGS[-\s]+(?:CR|DR)?[-\s]*[A-Z0-9]*[-\s]+.*?((?=[A-Z0-9]*\d)[A-Z0-9]{12,26})/i);
+        body.match(/RTGS[-\s]+(?:CR|DR)?[-\s]*[A-Z0-9]*[-\s]+.*?((?=[A-Z0-9]*\d)[A-Z0-9]{10,26})/i);
       const utrRef = normalizeRef(utrMatch?.[1]);
-      const balanceAfter = parseAmount(body.match(/available balance.*?(?:Rs\.?\s*INR|Rs\.?|INR)\s*([\d,]+\.?\d*)/i)?.[1]);
+      const balanceAfter = parseAmount(body.match(/(?:available balance|avl\.?\s*bal(?:ance)?).*?(?:Rs\.?\s*INR|Rs\.?|INR|₹)\s*([\d,]+\.?\d*)/i)?.[1]);
       const date = normalizeDate(body.match(/on\s+(\d{1,2}[-\s][A-Za-z]{3}[-\s]\d{2,4}|\d{1,2}[-\/]\d{1,2}[-\/]\d{2,4})/i)?.[1], msg.internalDate);
-      const senderMatch = body.match(/(?:from|by|to|towards)\s+([A-Za-z0-9 .&-]+?)(?:\s+with\s+UTR|\s+having|\s*\(|\s+on\s+\d|\s+Not you|\.\s|\s*$)/i);
+      const senderMatch = body.match(/(?:from|by|to|towards)\s+([A-Za-z0-9 .&-]+?)(?:\s+with\s+UTR|\s+via\s+RTGS|\s+having|\s*\(|\s+on\s+\d|\s+Not you|\.\s|\s*$)/i);
       const payee = cleanEntity(senderMatch?.[1]) || (isCredit ? 'RTGS Sender' : 'RTGS Recipient');
       return { type: 'tx' as const, bank: 'HDFC', method: 'RTGS' as const, direction: isCredit ? ('credit' as const) : ('debit' as const), amount, last4, date, payee, upiRef: null, impsRef: null, rtgsRef: utrRef, refNo: utrRef, balanceAfter, rawDesc: utrRef ? `RTGS-${utrRef}-${payee}` : `RTGS-${payee}`, fromAddress, subject };
     }
 
     if (/\bneft\b/i.test(body) || /\bneft\b/i.test(subject)) {
       const isCredit = /\b(?:credited|has been successfully added|added to|received)\b/i.test(body) || /\bcredited|credit\b/i.test(subject);
-      const amount = parseAmount(body.match(/(?:Rs\.?\s*INR|Rs\.?|INR)\s*([\d,]+\.?\d*)/i)?.[1]);
+      const amount = parseAmount(body.match(/(?:Rs\.?\s*INR|Rs\.?|INR|₹)\s*([\d,]+\.?\d*)/i)?.[1]);
       const last4 = extractHdfcLast4(body);
       if (!amount || !last4) {
         return { type: 'error' as const, fromAddress, subject, reason: 'HDFC_NEFT missing amount/last4', snippet: truncate200(body) };
       }
       const neftMatch =
-        body.match(/(?:NEFT\s*(?:Ref|UTR)?|UTR|Ref(?:erence)?(?:\s+No\.?)?)[.:\s]+((?=[A-Z0-9]*\d)[A-Z0-9]{10,26})/i) ||
+        body.match(/(?:NEFT\s*(?:Ref|UTR)?|UTR|Ref(?:erence)?(?:\s+No\.?)?)[.:\s]+((?=[A-Z0-9]*\d)[A-Z0-9]{8,26})/i) ||
         body.match(/\b([A-Z]{4}[A-Z0-9]\d{10,20})\b/) ||
         body.match(/NEFT[-\/](?:CR|DR)?[-\/]?.*?[-\/]((?=[A-Z0-9]*\d)[A-Z0-9]{10,24})/i);
       const neftRef = normalizeRef(neftMatch?.[1]);
-      const balanceAfter = parseAmount(body.match(/available balance.*?(?:Rs\.?\s*INR|Rs\.?|INR)\s*([\d,]+\.?\d*)/i)?.[1]);
+      const balanceAfter = parseAmount(body.match(/(?:available balance|avl\.?\s*bal(?:ance)?).*?(?:Rs\.?\s*INR|Rs\.?|INR|₹)\s*([\d,]+\.?\d*)/i)?.[1]);
       const date = normalizeDate(body.match(/on\s+(\d{1,2}[-\s][A-Za-z]{3}[-\s]\d{2,4}|\d{1,2}[-\/]\d{1,2}[-\/]\d{2,4})/i)?.[1], msg.internalDate);
-      const senderMatch = body.match(/(?:from|by|to|towards)\s+([A-Za-z0-9 .&-]+?)(?:\s+with\s+UTR|\s+having|\s*\(|\s+on\s+\d|\s+Not you|\.\s|\s*$)/i);
+      const senderMatch = body.match(/(?:from|by|to|towards)\s+([A-Za-z0-9 .&-]+?)(?:\s+with\s+UTR|\s+via\s+NEFT|\s+having|\s*\(|\s+on\s+\d|\s+Not you|\.\s|\s*$)/i);
       const payee = cleanEntity(senderMatch?.[1]) || (isCredit ? 'NEFT Sender' : 'NEFT Recipient');
       return { type: 'tx' as const, bank: 'HDFC', method: 'NEFT' as const, direction: isCredit ? ('credit' as const) : ('debit' as const), amount, last4, date, payee, upiRef: null, impsRef: null, neftRef, refNo: neftRef, balanceAfter, rawDesc: neftRef ? `NEFT-${neftRef}-${payee}` : `NEFT-${payee}`, fromAddress, subject };
     }
 
-    if (/\bimps\b/i.test(body) || /added to your account/i.test(body) || (/deducted from your account/i.test(body) && !/Online Banking|Transfer to payee/i.test(body))) {
-      const isCredit = /\bcredited|has been successfully added\b/i.test(body) && !/\bis debited\b|\bis deducted\b/i.test(body);
+    if (
+      (/\b(?:atm(?:\s+cash)?(?:\s+withdrawal)?|cash\s+withdrawal|withdrawn(?:\s+at\s+atm)?|atw)\b/i.test(body) ||
+        /\b(?:atm|cash\s+withdrawal)\b/i.test(subject)) &&
+      !/\bVPA\b|\bUPI\s+transaction\b|\bIMPS\s+Ref\b/i.test(body)
+    ) {
+      const amount = parseAmount(body.match(/(?:Rs\.?\s*INR|Rs\.?|INR|₹)\s*([\d,]+\.?\d*)/i)?.[1]);
+      const last4 = extractHdfcLast4(body);
+      if (!amount || !last4) {
+        return { type: 'error' as const, fromAddress, subject, reason: 'HDFC_ATM_WITHDRAWAL missing amount/last4', snippet: truncate200(body) };
+      }
+      const refNo = normalizeRef(
+        (body.match(/(?:RRN|ATM\s*(?:Ref|Txn|ID)|Ref(?:erence)?(?:\s+No\.?)?|Txn\s*(?:Ref|ID|No\.?))[:\s#-]+((?=[A-Z0-9]*\d)[A-Z0-9]{6,22})/i) ||
+          body.match(/\b(\d{12})\b/))?.[1]
+      );
+      const atmLoc = cleanEntity(
+        body.match(/(?:at\s+(?:ATM\s*)?|location\s*[:\-]\s*)([A-Za-z0-9 .,\/&-]+?)(?:\s+on\s+\d|\s+Ref|\s+RRN|\s+Avl|\s+Available|\s+Not\s+you|\.\s|\s*$)/i)?.[1]
+      );
+      const payee = atmLoc ? `ATM Cash Withdrawal - ${atmLoc}` : 'ATM Cash Withdrawal';
+      const balanceAfter = parseAmount(body.match(/(?:available balance|avl\.?\s*bal(?:ance)?).*?(?:Rs\.?\s*INR|Rs\.?|INR|₹)\s*([\d,]+\.?\d*)/i)?.[1]);
+      const date = normalizeDate(body.match(/on\s+(\d{1,2}[-\s][A-Za-z]{3}[-\s]\d{2,4}|\d{1,2}[-\/]\d{1,2}[-\/]\d{2,4})/i)?.[1], msg.internalDate);
+      return { type: 'tx' as const, bank: 'HDFC', method: 'ATM' as const, direction: 'debit' as const, amount, last4, date, payee, upiRef: null, impsRef: null, refNo, balanceAfter, rawDesc: refNo ? `ATM/${refNo}/${payee}` : `ATM/${payee}`, fromAddress, subject };
+    }
+
+    if (/\bimps\b/i.test(body) || /\bimps\b/i.test(subject) || /added to your account/i.test(body) || (/deducted from your account/i.test(body) && !/Online Banking|Transfer to payee/i.test(body))) {
+      const isCredit = /\bcredited|has been successfully added|received\b/i.test(body) && !/\bis debited\b|\bis deducted\b/i.test(body);
       const amount = parseAmount(
         (isCredit
-          ? body.match(/(?:Rs\.?\s*INR|Rs\.?|INR)\s*([\d,]+\.?\d*)\s+has been successfully added/i) ||
-            body.match(/is credited (?:for|with|by)\s*(?:Rs\.?\s*INR|Rs\.?|INR)\s*([\d,]+\.?\d*)/i)
-          : body.match(/(?:Rs\.?\s*INR|Rs\.?|INR)\s*([\d,]+\.?\d*)\s+is deducted/i) ||
-            body.match(/is debited (?:for|with|by)\s*(?:Rs\.?\s*INR|Rs\.?|INR)\s*([\d,]+\.?\d*)/i) ||
-            body.match(/(?:Rs\.?\s*INR|Rs\.?|INR)\s*([\d,]+\.?\d*)/i)
+          ? body.match(/(?:Rs\.?\s*INR|Rs\.?|INR|₹)\s*([\d,]+\.?\d*)\s+has been successfully added/i) ||
+            body.match(/is credited (?:for|with|by)\s*(?:Rs\.?\s*INR|Rs\.?|INR|₹)\s*([\d,]+\.?\d*)/i) ||
+            body.match(/(?:Rs\.?\s*INR|Rs\.?|INR|₹)\s*([\d,]+\.?\d*)/i)
+          : body.match(/(?:Rs\.?\s*INR|Rs\.?|INR|₹)\s*([\d,]+\.?\d*)\s+is deducted/i) ||
+            body.match(/is debited (?:for|with|by)\s*(?:Rs\.?\s*INR|Rs\.?|INR|₹)\s*([\d,]+\.?\d*)/i) ||
+            body.match(/(?:Rs\.?\s*INR|Rs\.?|INR|₹)\s*([\d,]+\.?\d*)/i)
         )?.[1]
       );
       const last4 = extractHdfcLast4(body);
       if (!amount || !last4) {
         return { type: 'error' as const, fromAddress, subject, reason: 'HDFC_IMPS missing amount/last4', snippet: truncate200(body) };
       }
-      const impsRef = normalizeRef((body.match(/IMPS\s*Ref\s*(?:No\.?)?[:\s]+(\d{9,16})/i) || body.match(/IMPS[-\/\s]+(\d{9,16})\b/i))?.[1]);
+      const impsRef = normalizeRef(
+        (body.match(/IMPS\s*(?:Ref|RRN|UTR)\s*(?:No\.?)?[:\s]+((?=[A-Z0-9]*\d)[A-Z0-9]{8,22})/i) ||
+          body.match(/IMPS[-\/\s]+(\d{8,16})\b/i) ||
+          body.match(/(?:Ref(?:erence)?\s*(?:No\.?)?|RRN)[:\s]+(\d{8,16})/i))?.[1]
+      );
       const pairedAcct = body.match(/and\s+(A\/c\s+[Xx*]+\d{4})\s+is\s+credited/i)?.[1];
       const payee =
         cleanEntity(
           (isCredit ? body.match(/IMPS-\d+-([^-]+)-/i)?.[1] : body.match(/added to IMPS-\d+-([^-]+)-/i)?.[1] || body.match(/IMPS-\d+-([^-]+)-/i)?.[1]) ||
             pairedAcct ||
+            body.match(/(?:from|by|to|towards)\s+([A-Za-z0-9 .&-]+?)(?:\s+with\s+(?:Ref|UTR)|\s*\(|\s+on\s+\d|\.\s|\s*$)/i)?.[1] ||
             ''
         ) || (isCredit ? 'IMPS Sender' : 'IMPS Recipient');
-      const balanceAfter = parseAmount(body.match(/available balance.*?(?:Rs\.?\s*INR|Rs\.?|INR)\s*([\d,]+\.?\d*)/i)?.[1]);
+      const balanceAfter = parseAmount(body.match(/(?:available balance|avl\.?\s*bal(?:ance)?).*?(?:Rs\.?\s*INR|Rs\.?|INR|₹)\s*([\d,]+\.?\d*)/i)?.[1]);
       const date = normalizeDate(body.match(/on\s+(\d{1,2}[-\s][A-Za-z]{3}[-\s]\d{2,4}|\d{1,2}[-\/]\d{1,2}[-\/]\d{2,4})/i)?.[1], msg.internalDate);
       return { type: 'tx' as const, bank: 'HDFC', method: 'IMPS' as const, direction: isCredit ? ('credit' as const) : ('debit' as const), amount, last4, date, payee, upiRef: null, impsRef, refNo: impsRef, balanceAfter, rawDesc: impsRef ? `IMPS-${impsRef}-${payee}` : `IMPS-${payee}`, fromAddress, subject };
     }
@@ -378,21 +410,40 @@ function parseAlertEmail(msg: any) {
   }
 
   if (fromAddress.includes('mahabank') || fromAddress.includes('bankofmaharashtra')) {
-    const last4 = body.match(/A\/c(?:\s+No\.?)?\s*[Xx*\s]*(\d{4})/i)?.[1] || '';
-    const dir = body.match(/\b(credited|debited|CR|DR)\b/i)?.[1]?.toLowerCase() || '';
-    const amount = parseAmount((body.match(/(?:by|for|of)\s*(?:INR|Rs\.?)\s*([\d,]+\.?\d*)/i) || body.match(/(?:INR|Rs\.?)\s*([\d,]+\.?\d*)/i))?.[1]);
+    const last4 =
+      body.match(/A\/c(?:\s+No\.?)?\s*[Xx*\s]*(\d{4})/i)?.[1] ||
+      body.match(/account(?:\s+ending)?\s*[Xx*\s]*(\d{4})/i)?.[1] ||
+      body.match(/(?:Debit|ATM)?\s*Card(?:\s+(?:No\.?|ending(?:\s+in)?))?\s*[Xx*\s]*(\d{4})/i)?.[1] ||
+      '';
+    const dir = body.match(/\b(credited|debited|withdrawn|deducted|paid|transferred|received|deposited|CR|DR)\b/i)?.[1]?.toLowerCase() || '';
+    const amount = parseAmount((body.match(/(?:by|for|of)\s*(?:INR|Rs\.?|₹)\s*([\d,]+\.?\d*)/i) || body.match(/(?:INR|Rs\.?|₹)\s*([\d,]+\.?\d*)/i))?.[1]);
     if (!last4 || !dir || !amount) {
       return { type: 'error' as const, fromAddress, subject, reason: 'BOM alert missing required fields', snippet: truncate200(body) };
     }
-    const method = /\bRTGS\b/i.test(body) ? ('RTGS' as const) : /\bNEFT\b/i.test(body) ? ('NEFT' as const) : /\bUPI\b/i.test(body) ? ('UPI' as const) : ('IMPS' as const);
-    const direction = dir === 'credited' || dir === 'cr' ? ('credit' as const) : ('debit' as const);
+    const method =
+      /\bRTGS\b/i.test(body) || /\bRTGS\b/i.test(subject)
+        ? ('RTGS' as const)
+        : /\bNEFT\b/i.test(body) || /\bNEFT\b/i.test(subject)
+          ? ('NEFT' as const)
+          : /\b(?:atm(?:\s+cash)?(?:\s+withdrawal)?|cash\s+withdrawal|withdrawn|atw)\b/i.test(body) || /\b(?:atm|cash\s+withdrawal)\b/i.test(subject)
+            ? ('ATM' as const)
+            : /\bUPI\b/i.test(body) || /\bUPI\b/i.test(subject)
+              ? ('UPI' as const)
+              : ('IMPS' as const);
+    const direction = dir === 'credited' || dir === 'cr' || dir === 'received' || dir === 'deposited' ? ('credit' as const) : ('debit' as const);
     const refMatch =
-      body.match(/(?:by\s+)?(?:IMPS|UPI|NEFT|RTGS)(?:\s+(?:Ref|UTR)(?:\s*No\.?)?)?[:\s\-\/]+((?=[A-Z0-9]*\d)[A-Z0-9]{8,26})/i) ||
+      body.match(/(?:by\s+)?(?:IMPS|UPI|NEFT|RTGS|ATM|RRN)(?:\s+(?:Ref|UTR)(?:\s*No\.?)?)?[:\s\-\/#]+((?=[A-Z0-9]*\d)[A-Z0-9]{8,26})/i) ||
       body.match(/\b([A-Z]{4}[A-Z0-9]\d{10,20})\b/) ||
       body.match(/\b(\d{12})\b/);
     const rawRef = normalizeRef(refMatch?.[1]);
-    const payee = cleanEntity(body.match(/(?:from|to|towards)\s+([A-Za-z0-9 .&-]+?)(?=\.\s*A\/c|\s+A\/c|\s+AVL|\s+on\s+\d|\.\s|\s*$)/i)?.[1]) || `BOM ${method}`;
-    const balanceAfter = parseAmount(body.match(/(?:A\/c Bal(?:ance)?|AVL Bal)(?:\s+is)?(?:\s+INR|\s+Rs\.?)?\s*([\d,]+\.?\d*)/i)?.[1]);
+    const atmLoc = method === 'ATM' ? cleanEntity(body.match(/(?:at\s+(?:ATM\s*)?|location\s*[:\-]\s*)([A-Za-z0-9 .,\/&-]+?)(?=\.\s*A\/c|\s+A\/c|\s+AVL|\s+on\s+\d|\s+Ref|\s+RRN|\.\s|\s*$)/i)?.[1]) : '';
+    const payee =
+      method === 'ATM'
+        ? atmLoc
+          ? `ATM Cash Withdrawal - ${atmLoc}`
+          : 'ATM Cash Withdrawal'
+        : cleanEntity(body.match(/(?:from|to|towards)\s+([A-Za-z0-9 .&-]+?)(?=\.\s*A\/c|\s+A\/c|\s+AVL|\s+on\s+\d|\.\s|\s*$)/i)?.[1]) || `BOM ${method}`;
+    const balanceAfter = parseAmount(body.match(/(?:A\/c Bal(?:ance)?|AVL Bal)(?:\s+is)?(?:\s+INR|\s+Rs\.?|\s*₹)?\s*([\d,]+\.?\d*)/i)?.[1]);
     const date = normalizeDate(body.match(/on\s+(\d{1,2}[-\s][A-Za-z]{3}[-\s]\d{2,4}|\d{1,2}[-\/]\d{1,2}[-\/]\d{2,4})/i)?.[1], msg.internalDate);
     return {
       type: 'tx' as const,
@@ -413,26 +464,52 @@ function parseAlertEmail(msg: any) {
     };
   }
 
-  if (fromAddress.includes('bankofindia') || (/(?:INR|Rs\.?|₹)\s*[\d,]+/i.test(body) && /\b(?:credited|debited|deducted|transferred|paid)\b/i.test(body) && /\b(?:UPI|IMPS|NEFT|RTGS|A\/c|Account)\b/i.test(body))) {
+  if (
+    fromAddress.includes('bankofindia') ||
+    (/(?:INR|Rs\.?|₹)\s*[\d,]+/i.test(body) &&
+      /\b(?:credited|debited|deducted|transferred|paid|withdrawn|spent)\b/i.test(body) &&
+      /\b(?:UPI|IMPS|NEFT|RTGS|ATM|Cash|Debit Card|Card|A\/c|Acct|Account)\b/i.test(combined))
+  ) {
     const bank = inferBankCode(fromAddress, body);
-    const last4 = body.match(/(?:A\/c|Account|Acct)(?:\s+(?:No\.?|ending(?:\s+in)?|bearing))?\s*[Xx*\s]*(\d{4})/i)?.[1] || '';
+    const last4 =
+      body.match(/(?:A\/c|Account|Acct)(?:\s+(?:No\.?|ending(?:\s+in)?|bearing))?\s*[Xx*\s]*(\d{4})/i)?.[1] ||
+      body.match(/(?:Debit|ATM)?\s*Card(?:\s+(?:No\.?|ending(?:\s+in)?|bearing))?\s*[Xx*\s]*(\d{4})/i)?.[1] ||
+      body.match(/\b[Xx*]{2,}(\d{4})\b/)?.[1] ||
+      '';
     const isCredit = /\b(?:credited|received|deposited|CR)\b/i.test(body);
-    const isDebit = /\b(?:debited|deducted|paid|transferred|DR)\b/i.test(body);
+    const isDebit = /\b(?:debited|deducted|paid|transferred|spent|withdrawn|DR)\b/i.test(body);
     const amount = parseAmount(body.match(/(?:INR|Rs\.?|₹)\s*([\d,]+\.?\d*)/i)?.[1]);
     if (!last4 || (!isCredit && !isDebit) || !amount) {
       return { type: 'error' as const, fromAddress, subject, reason: `${bank} alert missing required fields`, snippet: truncate200(body) };
     }
     const direction = isCredit && !isDebit ? ('credit' as const) : ('debit' as const);
-    const method = /\bRTGS\b/i.test(body) ? ('RTGS' as const) : /\bNEFT\b/i.test(body) ? ('NEFT' as const) : /\bIMPS\b/i.test(body) ? ('IMPS' as const) : /\bUPI\b|@[a-zA-Z0-9.-]+/i.test(body) ? ('UPI' as const) : ('EFT' as const);
+    const method =
+      /\bRTGS\b/i.test(body) || /\bRTGS\b/i.test(subject)
+        ? ('RTGS' as const)
+        : /\bNEFT\b/i.test(body) || /\bNEFT\b/i.test(subject)
+          ? ('NEFT' as const)
+          : /\b(?:atm(?:\s+cash)?(?:\s+withdrawal)?|cash\s+withdrawal|atw)\b/i.test(body) || /\b(?:atm|cash\s+withdrawal)\b/i.test(subject) || (/\bwithdrawn\b/i.test(body) && /\b(?:atm|card)\b/i.test(body))
+            ? ('ATM' as const)
+            : /\bIMPS\b/i.test(body) || /\bIMPS\b/i.test(subject)
+              ? ('IMPS' as const)
+              : /\bUPI\b|@[a-zA-Z0-9.-]+/i.test(body) || /\bUPI\b/i.test(subject)
+                ? ('UPI' as const)
+                : ('EFT' as const);
     const refMatch =
-      body.match(/(?:UPI|IMPS|NEFT|RTGS|UTR|Ref(?:erence)?(?:\s*No\.?)?)(?:\s+is\s+|[:\s\-\/#]+)((?=[A-Z0-9]*\d)[A-Z0-9]{8,26})/i) ||
+      body.match(/(?:UPI|IMPS|NEFT|RTGS|UTR|RRN|ATM\s*(?:Ref|Txn|ID)|Ref(?:erence)?(?:\s*No\.?)?)(?:\s+is\s+|[:\s\-\/#]+)((?=[A-Z0-9]*\d)[A-Z0-9]{8,26})/i) ||
       body.match(/\b([A-Z]{4}[A-Z0-9]\d{10,20})\b/) ||
       body.match(/\b(\d{12})\b/);
     const rawRef = normalizeRef(refMatch?.[1]);
     const balanceAfter = parseAmount(body.match(/(?:Avl\.?\s*Bal(?:ance)?|Available\s*Balance|Bal(?:ance)?)[:\s]*(?:is\s*)?(?:INR|Rs\.?|₹)?\s*([\d,]+\.?\d*)/i)?.[1]);
     const date = normalizeDate(body.match(/(?:on|dated?)\s+(\d{1,2}[-\s][A-Za-z]{3}[-\s]\d{2,4}|\d{1,2}[-\/]\d{1,2}[-\/]\d{2,4})/i)?.[1], msg.internalDate);
+    const atmLoc = method === 'ATM' ? cleanEntity(body.match(/(?:at\s+(?:ATM\s*)?|location\s*[:\-]\s*)([A-Za-z0-9 .,\/&-]+?)(?:\s+on\s+\d|\s+Ref|\s+RRN|\s+Avl|\s+Bal|\.\s|\s*$)/i)?.[1]) : '';
     const counterpartyMatch = body.match(/(?:from|to|towards|Info)[:\s]+([A-Za-z0-9 .&-]+?)(?:\s+on|\s+Ref|\s+UTR|\.\s|\s*$)/i);
-    const payee = cleanEntity(counterpartyMatch?.[1]) || (rawRef ? `${bank} ${method} ${rawRef}` : `${bank} ${method}`);
+    const payee =
+      method === 'ATM'
+        ? atmLoc
+          ? `ATM Cash Withdrawal - ${atmLoc}`
+          : 'ATM Cash Withdrawal'
+        : cleanEntity(counterpartyMatch?.[1]) || (rawRef ? `${bank} ${method} ${rawRef}` : `${bank} ${method}`);
     return {
       type: 'tx' as const,
       bank,

@@ -51,6 +51,10 @@ const STOP_WORDS = new Set([
   'neft',
   'rtgs',
   'eft',
+  'atm',
+  'atw',
+  'cash',
+  'withdrawal',
   'tpt',
   'ft',
   'cr',
@@ -93,6 +97,10 @@ const GENERIC_LABELS = new Set([
   'neft transfer',
   'rtgs transfer',
   'eft transfer',
+  'atm cash withdrawal',
+  'atm withdrawal',
+  'bom atm cash withdrawal',
+  'boi atm cash withdrawal',
   'bank transaction',
 ]);
 

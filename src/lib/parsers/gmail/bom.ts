@@ -18,26 +18,35 @@ export function parseBomAlert(params: {
 
   const accountMatch =
     body.match(/A\/c(?:\s+No\.?)?\s*[Xx*\s]*(\d{4})/i) ||
-    body.match(/account(?:\s+ending)?\s*[Xx*\s]*(\d{4})/i);
-  const directionMatch = body.match(/\b(credited|debited|CR|DR)\b/i);
+    body.match(/account(?:\s+ending)?\s*[Xx*\s]*(\d{4})/i) ||
+    body.match(/(?:Debit|ATM)?\s*Card(?:\s+(?:No\.?|ending(?:\s+in)?))?\s*[Xx*\s]*(\d{4})/i);
+  const directionMatch = body.match(
+    /\b(credited|debited|withdrawn|deducted|paid|transferred|received|deposited|CR|DR)\b/i
+  );
   const amountMatch =
-    body.match(/(?:by|for|of)\s*(?:INR|Rs\.?)\s*([\d,]+\.?\d*)/i) ||
-    body.match(/(?:INR|Rs\.?)\s*([\d,]+\.?\d*)/i);
+    body.match(/(?:by|for|of)\s*(?:INR|Rs\.?|₹)\s*([\d,]+\.?\d*)/i) ||
+    body.match(/(?:INR|Rs\.?|₹)\s*([\d,]+\.?\d*)/i);
   const dateMatch = body.match(
     /on\s+(\d{1,2}[-\s][A-Za-z]{3}[-\s]\d{2,4}|\d{1,2}[-\/]\d{1,2}[-\/]\d{2,4})/i
   );
   const balanceMatch = body.match(
-    /(?:A\/c Bal(?:ance)?|AVL Bal)(?:\s+is)?(?:\s+INR|\s+Rs\.?)?\s*([\d,]+\.?\d*)/i
+    /(?:A\/c Bal(?:ance)?|AVL Bal)(?:\s+is)?(?:\s+INR|\s+Rs\.?|\s*₹)?\s*([\d,]+\.?\d*)/i
   );
 
-  let method: 'IMPS' | 'NEFT' | 'RTGS' | 'UPI' = 'IMPS';
-  let kind: 'BOM_IMPS' | 'BOM_NEFT' | 'BOM_RTGS' | 'BOM_UPI' = 'BOM_IMPS';
+  let method: 'IMPS' | 'NEFT' | 'RTGS' | 'UPI' | 'ATM' = 'IMPS';
+  let kind: 'BOM_IMPS' | 'BOM_NEFT' | 'BOM_RTGS' | 'BOM_UPI' | 'BOM_ATM' = 'BOM_IMPS';
   if (/\bRTGS\b/i.test(body) || /\bRTGS\b/i.test(subject)) {
     method = 'RTGS';
     kind = 'BOM_RTGS';
   } else if (/\bNEFT\b/i.test(body) || /\bNEFT\b/i.test(subject)) {
     method = 'NEFT';
     kind = 'BOM_NEFT';
+  } else if (
+    /\b(?:atm(?:\s+cash)?(?:\s+withdrawal)?|cash\s+withdrawal|withdrawn|atw)\b/i.test(body) ||
+    /\b(?:atm|cash\s+withdrawal)\b/i.test(subject)
+  ) {
+    method = 'ATM';
+    kind = 'BOM_ATM';
   } else if (/\bUPI\b/i.test(body) || /\bUPI\b/i.test(subject)) {
     method = 'UPI';
     kind = 'BOM_UPI';
@@ -60,23 +69,36 @@ export function parseBomAlert(params: {
   }
 
   const direction: 'debit' | 'credit' =
-    dirStr === 'credited' || dirStr === 'cr' ? 'credit' : 'debit';
+    dirStr === 'credited' || dirStr === 'cr' || dirStr === 'received' || dirStr === 'deposited'
+      ? 'credit'
+      : 'debit';
 
   const refMatch =
     body.match(
-      /(?:by\s+)?(?:IMPS|UPI|NEFT|RTGS)(?:\s+(?:Ref|UTR)(?:\s*No\.?)?)?[:\s\-\/]+((?=[A-Z0-9]*\d)[A-Z0-9]{8,26})/i
+      /(?:by\s+)?(?:IMPS|UPI|NEFT|RTGS|ATM|RRN)(?:\s+(?:Ref|UTR)(?:\s*No\.?)?)?[:\s\-\/#]+((?=[A-Z0-9]*\d)[A-Z0-9]{8,26})/i
     ) ||
-    body.match(/(?:UTR|Ref(?:erence)?(?:\s+No\.?)?)[:\s]+((?=[A-Z0-9]*\d)[A-Z0-9]{8,26})/i) ||
+    body.match(/(?:UTR|RRN|Ref(?:erence)?(?:\s+No\.?)?)[:\s]+((?=[A-Z0-9]*\d)[A-Z0-9]{8,26})/i) ||
     body.match(/\b([A-Z]{4}[A-Z0-9]\d{10,20})\b/) ||
     body.match(/\b(\d{12})\b/);
 
   const rawRef = normalizeRef(refMatch?.[1]);
+  const atmLocMatch =
+    method === 'ATM'
+      ? body.match(
+          /(?:at\s+(?:ATM\s*)?|location\s*[:\-]\s*)([A-Za-z0-9 .,\/&-]+?)(?=\.\s*A\/c|\s+A\/c|\s+AVL|\s+on\s+\d|\s+Ref|\s+RRN|\.\s|\s*$)/i
+        )
+      : null;
   const senderMatch = body.match(
     /(?:from|to|towards)\s+([A-Za-z0-9 .&-]+?)(?=\.\s*A\/c|\s+A\/c|\s+AVL|\s+on\s+\d|\s+with|\.\s|\s*$)/i
   );
+  const atmLoc = cleanBankEntityName(atmLocMatch?.[1]);
   const senderOrPayee =
-    cleanBankEntityName(senderMatch?.[1]) ||
-    (direction === 'credit' ? `${method} Remitter` : `${method} Recipient`);
+    method === 'ATM'
+      ? atmLoc
+        ? `ATM Cash Withdrawal - ${atmLoc}`
+        : 'ATM Cash Withdrawal'
+      : cleanBankEntityName(senderMatch?.[1]) ||
+        (direction === 'credit' ? `${method} Remitter` : `${method} Recipient`);
   const balanceAfter = parseIndianAmount(balanceMatch?.[1]);
   const txnDate = normalizeGmailDate(dateMatch?.[1], internalDate);
 

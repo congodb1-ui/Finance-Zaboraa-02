@@ -37,6 +37,7 @@ export function parseGenericBankAlert(params: {
 
   const accountMatch =
     body.match(/(?:A\/c|Account|Acct)(?:\s+(?:No\.?|ending(?:\s+in)?|bearing))?\s*[Xx*\s]*(\d{4})/i) ||
+    body.match(/(?:Debit|ATM)?\s*Card(?:\s+(?:No\.?|ending(?:\s+in)?|bearing))?\s*[Xx*\s]*(\d{4})/i) ||
     body.match(/\b[Xx*]{2,}(\d{4})\b/);
 
   const isCredit = /\b(?:credited|received|deposited|added to|CR)\b/i.test(body);
@@ -60,15 +61,21 @@ export function parseGenericBankAlert(params: {
 
   const direction: 'credit' | 'debit' = isCredit && !isDebit ? 'credit' : isDebit && !isCredit ? 'debit' : /\bcredited\b/i.test(body) ? 'credit' : 'debit';
 
-  let method: 'UPI' | 'IMPS' | 'NEFT' | 'RTGS' | 'EFT' = 'EFT';
+  let method: 'UPI' | 'IMPS' | 'NEFT' | 'RTGS' | 'EFT' | 'ATM' = 'EFT';
   if (/\bRTGS\b/i.test(body) || /\bRTGS\b/i.test(subject)) method = 'RTGS';
   else if (/\bNEFT\b/i.test(body) || /\bNEFT\b/i.test(subject)) method = 'NEFT';
-  else if (/\bIMPS\b/i.test(body) || /\bIMPS\b/i.test(subject)) method = 'IMPS';
+  else if (
+    /\b(?:atm(?:\s+cash)?(?:\s+withdrawal)?|cash\s+withdrawal|atw)\b/i.test(body) ||
+    /\b(?:atm|cash\s+withdrawal)\b/i.test(subject) ||
+    (/\bwithdrawn\b/i.test(body) && /\b(?:atm|card)\b/i.test(body))
+  ) {
+    method = 'ATM';
+  } else if (/\bIMPS\b/i.test(body) || /\bIMPS\b/i.test(subject)) method = 'IMPS';
   else if (/\bUPI\b|@[a-zA-Z0-9.-]+/i.test(body) || /\bUPI\b/i.test(subject)) method = 'UPI';
 
   const refMatch =
     body.match(
-      /(?:UPI|IMPS|NEFT|RTGS|UTR|Ref(?:erence)?(?:\s*No\.?)?)(?:\s+is\s+|[:\s\-\/#]+)((?=[A-Z0-9]*\d)[A-Z0-9]{8,26})/i
+      /(?:UPI|IMPS|NEFT|RTGS|UTR|RRN|ATM\s*(?:Ref|Txn|ID)|Ref(?:erence)?(?:\s*No\.?)?)(?:\s+is\s+|[:\s\-\/#]+)((?=[A-Z0-9]*\d)[A-Z0-9]{8,26})/i
     ) ||
     body.match(/\b([A-Z]{4}[A-Z0-9]\d{10,20})\b/) ||
     body.match(/\b(\d{12})\b/);
@@ -77,13 +84,23 @@ export function parseGenericBankAlert(params: {
   const vpaMatch = body.match(/(?:VPA|to|from)\s+([a-zA-Z0-9.*_-]+@[a-zA-Z0-9.-]+)/i);
   const payeeVpa = vpaMatch?.[1] || null;
 
+  const atmLocMatch =
+    method === 'ATM'
+      ? body.match(/(?:at\s+(?:ATM\s*)?|location\s*[:\-]\s*)([A-Za-z0-9 .,\/&-]+?)(?:\s+on\s+\d|\s+Ref|\s+RRN|\s+Avl|\.\s|\s*$)/i)
+      : null;
+  const atmLoc = cleanBankEntityName(atmLocMatch?.[1]);
+
   const counterpartyMatch =
     body.match(/\bInfo[:\s]+([A-Za-z0-9 .&*/-]+?)(?:\.\s|\s+Avl|\s+Ref|\s*$)/i) ||
     body.match(/(?:from|to|towards)\s+(?:VPA\s+\S+\s*\()?([A-Za-z0-9 .&-]+?)(?:\)|\s+with|\s+on\s+\d|\s+Ref|\s+UTR|\.\s|\s*$)/i);
   const payeeName =
-    cleanBankEntityName(counterpartyMatch?.[1]) ||
-    payeeVpa ||
-    `${bank} ${method} ${direction === 'credit' ? 'Credit' : 'Debit'}`;
+    method === 'ATM'
+      ? atmLoc
+        ? `ATM Cash Withdrawal - ${atmLoc}`
+        : 'ATM Cash Withdrawal'
+      : cleanBankEntityName(counterpartyMatch?.[1]) ||
+        payeeVpa ||
+        `${bank} ${method} ${direction === 'credit' ? 'Credit' : 'Debit'}`;
 
   const dateMatch = body.match(
     /(?:on|dated?)\s+(\d{1,2}[-\s][A-Za-z]{3}[-\s]\d{2,4}|\d{1,2}[-\/]\d{1,2}[-\/]\d{2,4})/i

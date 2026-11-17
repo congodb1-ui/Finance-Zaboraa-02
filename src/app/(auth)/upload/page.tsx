@@ -38,6 +38,7 @@ import type {
   UploadApiResponse,
   OverlapCheckResult,
 } from '../../../types/uploads';
+import * as XLSX from 'xlsx';
 import {
   UploadCloud,
   FileSpreadsheet,
@@ -51,6 +52,7 @@ import {
   RefreshCw,
   Mail,
   KeyRound,
+  Download,
 } from 'lucide-react';
 
 export default function StatementUploadPage() {
@@ -165,6 +167,72 @@ export default function StatementUploadPage() {
       reconciliation_warning: response.reconciliation_warning ?? upload.reconciliation_warning,
       reconciliation_diff: response.reconciliation_diff ?? upload.reconciliation_diff,
     };
+  };
+
+  const handleDownloadExcelTemplate = () => {
+    const templateHeaders = [
+      'Date',
+      'Narration',
+      'Chq./Ref.No.',
+      'Value Dt',
+      'Withdrawal Amt.',
+      'Deposit Amt.',
+      'Closing Balance',
+    ];
+    const sampleRows = [
+      [
+        '01/01/22',
+        'UPI-ANSARI NAZIR HUSAIN-PAYTMQR2810050501011VMKGYAK062C@PAYTM-PYTM0123456-200118540577-UPI',
+        '0000200118540577',
+        '01/01/22',
+        20,
+        '',
+        31788.26,
+      ],
+      [
+        '01/01/22',
+        'UPI-BALAJI FOOD TRADERS-BALAJIFOODTRADERS.28116949@HDFCBANK-HDFC0000001-200120181168-UPI',
+        '0000200120181168',
+        '01/01/22',
+        2864,
+        '',
+        28924.26,
+      ],
+      [
+        '02/01/22',
+        'UPI-AZIZ PAYA AND CHICKE-GPAY-11176256288@OKBIZAXIS-UTIB0000000-200230337950-UPI',
+        '0000200230337950',
+        '02/01/22',
+        200,
+        '',
+        28724.26,
+      ],
+    ];
+
+    const ws = XLSX.utils.aoa_to_sheet([templateHeaders, ...sampleRows]);
+    // Preserve Date, Chq./Ref.No., and Value Dt as text so leading zeros and DD/MM/YY dates stay exact
+    for (let r = 1; r <= sampleRows.length; r++) {
+      for (const colIdx of [0, 2, 3]) {
+        const ref = XLSX.utils.encode_cell({ r, c: colIdx });
+        if (ws[ref]) {
+          ws[ref].t = 's';
+          ws[ref].z = '@';
+        }
+      }
+    }
+    ws['!cols'] = [
+      { wch: 12 },
+      { wch: 68 },
+      { wch: 20 },
+      { wch: 12 },
+      { wch: 16 },
+      { wch: 14 },
+      { wch: 16 },
+    ];
+
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Statement');
+    XLSX.writeFile(wb, 'zaboraa-statement-template.xlsx');
   };
 
   const handleClearFile = () => {
@@ -578,6 +646,15 @@ export default function StatementUploadPage() {
             type="button"
             variant="outline"
             size="sm"
+            onClick={handleDownloadExcelTemplate}
+            leftIcon={<Download className="w-3.5 h-3.5" />}
+          >
+            Excel Template (.xlsx)
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
             onClick={() => {
               window.location.href = '/settings';
             }}
@@ -784,6 +861,35 @@ export default function StatementUploadPage() {
                 onClearFile={handleClearFile}
                 isUploading={isProcessing}
               />
+
+              {/* Structured Excel Column Format Hint */}
+              {!selectedFile && (
+                <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700/80 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+                  <div className="flex items-start gap-2.5 text-slate-600 dark:text-slate-300">
+                    <FileSpreadsheet className="w-4 h-4 text-indigo-600 dark:text-indigo-400 shrink-0 mt-0.5" />
+                    <div>
+                      <span className="font-semibold text-slate-900 dark:text-white">
+                        Excel Feed Format:
+                      </span>{' '}
+                      Format your spreadsheet with columns{' '}
+                      <span className="font-mono text-[11px] text-indigo-700 dark:text-indigo-300">
+                        Date | Narration | Chq./Ref.No. | Value Dt | Withdrawal Amt. | Deposit Amt. | Closing Balance
+                      </span>{' '}
+                      for instant auto-detection.
+                    </div>
+                  </div>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={handleDownloadExcelTemplate}
+                    leftIcon={<Download className="w-3.5 h-3.5" />}
+                    className="shrink-0"
+                  >
+                    Download Sample .xlsx
+                  </Button>
+                </div>
+              )}
 
               {/* Local PDF Password Check Notice when a .pdf file is chosen */}
               {selectedFile &&

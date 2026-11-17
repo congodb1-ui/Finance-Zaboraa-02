@@ -1,5 +1,6 @@
 import { extractEmailAddress, truncateSnippet200 } from './helpers';
 import {
+  parseHdfcAtmWithdrawal,
   parseHdfcBalanceAlert,
   parseHdfcEftTransfer,
   parseHdfcImpsCredit,
@@ -39,7 +40,7 @@ export const CONFIRMED_BANK_SENDERS = [
 ] as const;
 
 export const GMAIL_ALERT_QUERY_BASE =
-  '(from:(alerts@hdfcbank.bank.in OR alerts@hdfcbank.net OR mahaalert@mahabank.co.in OR mahaalerts@bankofmaharashtra.bank.in OR HO.starsandesh@bankofindia.co.in OR alerts@sbi.co.in OR alerts@icicibank.com OR alerts@axisbank.com OR bankalerts@kotak.com OR alerts@idfcfirstbank.com OR alerts@yesbank.in OR alerts@indusind.com) OR (subject:(IMPS OR NEFT OR RTGS OR UPI OR "Account update" OR "Transaction with") ("Rs." OR "INR"))) -subject:(OTP OR "One Time Password" OR "e-statement" OR "Account Statement")';
+  '(from:(alerts@hdfcbank.bank.in OR alerts@hdfcbank.net OR mahaalert@mahabank.co.in OR mahaalerts@bankofmaharashtra.bank.in OR HO.starsandesh@bankofindia.co.in OR alerts@sbi.co.in OR cbssbi.cas@sbi.co.in OR alerts@icicibank.com OR alerts@axisbank.com OR bankalerts@kotak.com OR alerts@idfcfirstbank.com OR alerts@yesbank.in OR alerts@indusind.com) OR (subject:(IMPS OR NEFT OR RTGS OR UPI OR ATM OR "Cash Withdrawal" OR "ATM Withdrawal" OR "Debit Card" OR "Account update" OR "Transaction with" OR "Transaction Alert" OR "Debit Alert" OR "Credit Alert") ("Rs." OR "Rs" OR "INR" OR "₹"))) -subject:(OTP OR "One Time Password" OR "e-statement" OR "Account Statement")';
 
 export function decodeBase64UrlText(data: string): string {
   if (!data) return '';
@@ -138,7 +139,7 @@ function isOtpOrNonTxnEmail(subject: string, body: string): boolean {
     /\bis your OTP\b|\bOne Time Password\b|NEVER share your OTP|do not share.{0,20}OTP/i.test(
       text
     ) &&
-    !/(?:debited|credited|deducted|added to your account)\s+(?:by\s+|for\s+|with\s+)?(?:Rs|INR)/i.test(
+    !/(?:debited|credited|deducted|withdrawn|added to your account)\s+(?:by\s+|for\s+|with\s+|at\s+)?(?:Rs|INR|₹)/i.test(
       text
     )
   ) {
@@ -147,7 +148,7 @@ function isOtpOrNonTxnEmail(subject: string, body: string): boolean {
   if (/\b(?:e-statement|monthly statement|statement is ready)\b/i.test(subject)) {
     return true;
   }
-  if (/\b(?:failed|declined|unsuccessful)\b/i.test(text) && !/\bcredited|debited|deducted\b/i.test(text)) {
+  if (/\b(?:failed|declined|unsuccessful)\b/i.test(text) && !/\bcredited|debited|deducted|withdrawn\b/i.test(text)) {
     return true;
   }
   return false;
@@ -182,9 +183,22 @@ export function identifyGmailEmailType(
         ? 'HDFC_NEFT_CREDIT'
         : 'HDFC_NEFT_DEBIT';
     }
+    if (
+      (/\b(?:atm(?:\s+cash)?(?:\s+withdrawal)?|cash\s+withdrawal|withdrawn(?:\s+at\s+atm)?|atw)\b/i.test(
+        normalizedBody
+      ) ||
+        /\b(?:atm|cash\s+withdrawal)\b/i.test(subject)) &&
+      !/\bVPA\b|\bUPI\s+transaction\b|\bIMPS\s+Ref\b/i.test(normalizedBody)
+    ) {
+      return 'HDFC_ATM_WITHDRAWAL';
+    }
     // Check IMPS BEFORE generic debit/credit! (Matches gmail-01 "is debited for INR ... (IMPS Ref No. ...)")
-    if (/\bimps\b/i.test(normalizedBody) || /added to your account/i.test(normalizedBody)) {
-      return /credited|has been successfully added/i.test(normalizedBody) &&
+    if (
+      /\bimps\b/i.test(normalizedBody) ||
+      /\bimps\b/i.test(subject) ||
+      /added to your account/i.test(normalizedBody)
+    ) {
+      return /credited|has been successfully added|received/i.test(normalizedBody) &&
         !/\bis debited\b|\bis deducted\b/i.test(normalizedBody)
         ? 'HDFC_IMPS_CREDIT'
         : 'HDFC_IMPS_DEBIT';
@@ -229,23 +243,37 @@ export function identifyGmailEmailType(
     from.includes('mahabank') ||
     from.includes('bankofmaharashtra')
   ) {
-    if (/\bRTGS\b/i.test(normalizedBody)) return 'BOM_RTGS';
-    if (/\bNEFT\b/i.test(normalizedBody)) return 'BOM_NEFT';
-    if (/\bUPI\b/i.test(normalizedBody)) return 'BOM_UPI';
+    if (/\bRTGS\b/i.test(normalizedBody) || /\bRTGS\b/i.test(subject)) return 'BOM_RTGS';
+    if (/\bNEFT\b/i.test(normalizedBody) || /\bNEFT\b/i.test(subject)) return 'BOM_NEFT';
+    if (
+      /\b(?:atm(?:\s+cash)?(?:\s+withdrawal)?|cash\s+withdrawal|withdrawn|atw)\b/i.test(normalizedBody) ||
+      /\b(?:atm|cash\s+withdrawal)\b/i.test(subject)
+    ) {
+      return 'BOM_ATM';
+    }
+    if (/\bUPI\b/i.test(normalizedBody) || /\bUPI\b/i.test(subject)) return 'BOM_UPI';
     return 'BOM_IMPS';
   }
 
   if (from === 'ho.starsandesh@bankofindia.co.in' || from.includes('bankofindia')) {
-    if (/\bRTGS\b/i.test(normalizedBody)) return 'BOI_RTGS';
-    if (/\bNEFT\b/i.test(normalizedBody)) return 'BOI_NEFT';
-    if (/\bUPI\b/i.test(normalizedBody)) return 'BOI_UPI';
+    if (/\bRTGS\b/i.test(normalizedBody) || /\bRTGS\b/i.test(subject)) return 'BOI_RTGS';
+    if (/\bNEFT\b/i.test(normalizedBody) || /\bNEFT\b/i.test(subject)) return 'BOI_NEFT';
+    if (
+      /\b(?:atm(?:\s+cash)?(?:\s+withdrawal)?|cash\s+withdrawal|withdrawn|atw)\b/i.test(normalizedBody) ||
+      /\b(?:atm|cash\s+withdrawal)\b/i.test(subject)
+    ) {
+      return 'BOI_ATM';
+    }
+    if (/\bUPI\b/i.test(normalizedBody) || /\bUPI\b/i.test(subject)) return 'BOI_UPI';
     return 'BOI_IMPS';
   }
 
   if (
     /(?:INR|Rs\.?|₹)\s*[\d,]+/i.test(normalizedBody) &&
-    /\b(?:credited|debited|deducted|transferred|paid)\b/i.test(normalizedBody) &&
-    /\b(?:UPI|IMPS|NEFT|RTGS|A\/c|Account)\b/i.test(normalizedBody)
+    /\b(?:credited|debited|deducted|transferred|paid|withdrawn|spent)\b/i.test(normalizedBody) &&
+    /\b(?:UPI|IMPS|NEFT|RTGS|ATM|Cash|Debit Card|Card|A\/c|Acct|Account)\b/i.test(
+      `${subject} ${normalizedBody}`
+    )
   ) {
     return 'GENERIC_BANK_ALERT';
   }
@@ -329,6 +357,14 @@ export function parseGmailTransactionEmail(message: GmailMessage): GmailParseOut
         body,
         internalDate: message.internalDate,
       });
+    case 'HDFC_ATM_WITHDRAWAL':
+      return parseHdfcAtmWithdrawal({
+        msgId: message.id,
+        fromAddress,
+        subject,
+        body,
+        internalDate: message.internalDate,
+      });
     case 'HDFC_BALANCE_ALERT':
       return parseHdfcBalanceAlert({
         msgId: message.id,
@@ -339,6 +375,7 @@ export function parseGmailTransactionEmail(message: GmailMessage): GmailParseOut
     case 'BOM_IMPS':
     case 'BOM_NEFT':
     case 'BOM_RTGS':
+    case 'BOM_ATM':
     case 'BOM_UPI':
       return parseBomAlert({
         msgId: message.id,
@@ -350,6 +387,7 @@ export function parseGmailTransactionEmail(message: GmailMessage): GmailParseOut
     case 'BOI_IMPS':
     case 'BOI_NEFT':
     case 'BOI_RTGS':
+    case 'BOI_ATM':
     case 'BOI_UPI':
       return parseBoiAlert({
         msgId: message.id,
