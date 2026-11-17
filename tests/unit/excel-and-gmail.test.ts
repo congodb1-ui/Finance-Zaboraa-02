@@ -131,6 +131,246 @@ describe('Structured 7-Column Excel Statement Upload (image.png reference format
     expect(res.transactions?.[0].credit).toBe(50000);
     expect(res.opening_balance).toBe(31788.26);
   });
+
+  it('parses REV-UPI, UPIRET, POS, ATW, NEFT CR, IMPS, ACH C, CREDIT INTEREST CAPITALISED, BHAWANI, RELIEF CHEMIST, and XXXXXX8212 accurately', () => {
+    const wb = XLSX.utils.book_new();
+    const ws = XLSX.utils.aoa_to_sheet([
+      ['Date', 'Narration', 'Chq./Ref.No.', 'Value Dt', 'Withdrawal Amt.', 'Deposit Amt.', 'Closing Balance'],
+      [
+        '04/01/22',
+        'UPI-RELIEF CHEMIST-PAYTMQR28100505010112K8BIRB5VB0@PAYTM-PYTM0123456-200463667436-UPI',
+        '0000200463667436',
+        '04/01/22',
+        65,
+        '',
+        31743.26,
+      ],
+      [
+        '14/01/22',
+        'UPI-BHAWANI SUPER MARKE-PAYTMQR281005050101SN3GORJNOSQ1@PAYTM-PYTM0123456-201438203313-UPI',
+        '0000201438203313',
+        '14/01/22',
+        37,
+        '',
+        31706.26,
+      ],
+      [
+        '02/01/22',
+        'ATW-405988XXXXXX0875-P3ECPU33-PUNE',
+        '0000000000009859',
+        '02/01/22',
+        15000,
+        '',
+        16706.26,
+      ],
+      [
+        '08/01/22',
+        'POS 405988XXXXXX0875 KEDARI SERVICE',
+        '0000000000007439',
+        '08/01/22',
+        499,
+        '',
+        16207.26,
+      ],
+      [
+        '28/02/22',
+        'NEFT CR-HSBC0411002-SUNGARD AVAILABILITY SERVICES (INDI-WASIM SALIM SAYYED-HSBCN22059427439',
+        'HSBCN22059427439',
+        '28/02/22',
+        '',
+        72302,
+        88509.26,
+      ],
+      [
+        '31/01/22',
+        'UPIRET-20220129-202992473262',
+        '000000000000000',
+        '31/01/22',
+        '',
+        1800,
+        90309.26,
+      ],
+      [
+        '31/01/22',
+        'UPI-TANVEER TANVEER TANV-9096077863@YBL-HDFC0CMUSLM-203138811720-PAYMENT FROM PHONE',
+        '0000203138811720',
+        '31/01/22',
+        10,
+        '',
+        90299.26,
+      ],
+      [
+        '31/01/22',
+        'REV-UPI-50100124093597-9579662397@IBL-203138811720-PAYMENT FROM PHONEPE',
+        '0000203138811720',
+        '31/01/22',
+        '',
+        10,
+        90309.26,
+      ],
+      [
+        '05/01/22',
+        'BAJAJ FINEMI-BF-1218824-41789',
+        '000000000000000',
+        '05/01/22',
+        2450,
+        '',
+        87859.26,
+      ],
+      [
+        '13/02/22',
+        'ACH C- RELIANCE INDUSTRIES-9911223344',
+        '0000000099112233',
+        '14/02/22',
+        '',
+        1250,
+        89109.26,
+      ],
+      [
+        '31/03/22',
+        'CREDIT INTEREST CAPITALISED',
+        '',
+        '31/03/22',
+        '',
+        420,
+        89529.26,
+      ],
+      [
+        '15/02/22',
+        'XXXXXX8212',
+        '0000204611223344',
+        '15/02/22',
+        500,
+        '',
+        89029.26,
+      ],
+    ]);
+    XLSX.utils.book_append_sheet(wb, ws, 'Statement');
+    const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
+    const res = parseXLSX(buf);
+    const txns = res.transactions || [];
+    expect(txns).toHaveLength(12);
+
+    expect(txns[0]).toMatchObject({ description: 'RELIEF CHEMIST', upi_ref_no: '200463667436', debit: 65 });
+    expect(txns[1]).toMatchObject({ description: 'BHAWANI SUPER MARKE', upi_ref_no: '201438203313', debit: 37 });
+    expect(txns[2]).toMatchObject({ description: 'Card / ATM - Pune', reference_number: '9859', debit: 15000 });
+    expect(txns[3]).toMatchObject({ description: 'POS - Kedari Service', reference_number: '7439', debit: 499 });
+    expect(txns[4]).toMatchObject({
+      description: 'SUNGARD AVAILABILITY SERVICES (INDI - WASIM SALIM SAYYED',
+      reference_number: 'HSBCN22059427439',
+      credit: 72302,
+    });
+    expect(txns[5]).toMatchObject({
+      description: 'UPI Return / Reversal',
+      reference_number: '202992473262',
+      upi_ref_no: '202992473262',
+      credit: 1800,
+    });
+    expect(txns[6]).toMatchObject({
+      description: 'TANVEER TANVEER TANV',
+      upi_ref_no: '203138811720',
+      debit: 10,
+    });
+    expect(txns[7]).toMatchObject({
+      description: 'UPI Reversal - 9579662397',
+      upi_ref_no: '203138811720',
+      credit: 10,
+    });
+    expect(txns[8]).toMatchObject({
+      description: 'BAJAJ FINEMI-BF-1218824-41789',
+      reference_number: null,
+      debit: 2450,
+    });
+    // Value Dt (14/02/22) differs from Date (13/02/22) -> txn_date uses Date (2022-02-13)
+    expect(txns[9]).toMatchObject({
+      txn_date: '2022-02-13',
+      description: 'RELIANCE INDUSTRIES',
+      credit: 1250,
+    });
+    expect(res.rows[9]['Value Dt']).toBe('14/02/22');
+    expect(txns[10]).toMatchObject({ description: 'CREDIT INTEREST CAPITALISED', credit: 420 });
+    expect(txns[11]).toMatchObject({
+      description: 'UNREADABLE PAYEE - CHECK PDF',
+      reference_number: '204611223344',
+    });
+
+    // Opening & Closing match statement endpoints even when middle rows differ slightly
+    expect(res.opening_balance).toBe(31808.26);
+    expect(res.closing_balance).toBe(89029.26);
+
+    // Ensure same-account REV-UPI credit does NOT false-merge with original UPI debit sharing same UTR
+    const existingDebit: DedupCandidateTx[] = [
+      {
+        id: 'tx-debit-tanveer',
+        account_id: 'acc-1',
+        txn_date: '2022-01-31',
+        description: 'TANVEER TANVEER TANV',
+        raw_description: txns[6].raw_description,
+        debit: 10,
+        credit: null,
+        reference_number: '203138811720',
+        upi_ref_no: '203138811720',
+        imps_ref_no: null,
+        source: 'statement_import',
+      },
+    ];
+    const incomingRev: IncomingDedupRow = {
+      account_id: 'acc-1',
+      txn_date: '2022-01-31',
+      description: txns[7].description,
+      raw_description: txns[7].raw_description,
+      debit: null,
+      credit: 10,
+      reference_number: txns[7].reference_number,
+      upi_ref_no: txns[7].upi_ref_no,
+      imps_ref_no: null,
+      source: 'statement_import',
+    };
+    expect(findBestCrossSourceMatch(incomingRev, existingDebit)).toBeNull();
+  });
+
+  it('parses a 5-year 4,500-row single-sheet Excel workbook quickly with exact opening/closing math', () => {
+    const sheetRows: any[][] = [
+      ['Date', 'Narration', 'Chq./Ref.No.', 'Value Dt', 'Withdrawal Amt.', 'Deposit Amt.', 'Closing Balance'],
+    ];
+    let balance = 100000;
+    const totalRows = 4500;
+    const startMs = Date.UTC(2021, 0, 1);
+    for (let i = 0; i < totalRows; i++) {
+      const d = new Date(startMs + Math.floor(i / 3) * 86_400_000);
+      const dd = String(d.getUTCDate()).padStart(2, '0');
+      const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
+      const yy = String(d.getUTCFullYear()).slice(-2);
+      const dateStr = `${dd}/${mm}/${yy}`;
+      const utr = String(200000000001 + i);
+      const isCredit = i % 10 === 0;
+      const amt = isCredit ? 5000 : 100;
+      balance = Math.round((balance + (isCredit ? amt : -amt)) * 100) / 100;
+      sheetRows.push([
+        dateStr,
+        `UPI-MERCHANT ${i}-M${i}@PAYTM-PYTM0123456-${utr}-UPI`,
+        `0000${utr}`,
+        dateStr,
+        isCredit ? '' : amt,
+        isCredit ? amt : '',
+        balance,
+      ]);
+    }
+    const wb = XLSX.utils.book_new();
+    const ws = XLSX.utils.aoa_to_sheet(sheetRows);
+    XLSX.utils.book_append_sheet(wb, ws, '5YearStatement');
+    const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
+
+    const t0 = Date.now();
+    const res = parseXLSX(buf);
+    const elapsedMs = Date.now() - t0;
+
+    expect(res.rows).toHaveLength(totalRows);
+    expect(res.transactions).toHaveLength(totalRows);
+    expect(res.opening_balance).toBe(100000);
+    expect(res.closing_balance).toBe(balance);
+    expect(elapsedMs).toBeLessThan(10_000);
+  });
 });
 
 describe('Gmail Fetching: NEFT, IMPS, ATM Cash Withdrawal, and RTGS across Banks', () => {

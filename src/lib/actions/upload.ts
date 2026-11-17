@@ -333,7 +333,10 @@ export async function processStatementUpload(
       parsedTx?.reference_number ||
       (columnMapping?.reference_col ? row[columnMapping.reference_col] : null) ||
       null;
-    const refNo = normalizeReferenceNumber(rawRef) || rawRef?.trim() || null;
+    const trimmedRawRef = rawRef ? rawRef.trim() : '';
+    const refNo =
+      normalizeReferenceNumber(rawRef) ||
+      (trimmedRawRef && !/^0+$/.test(trimmedRawRef) ? trimmedRawRef : null);
     const rawNarration = (parsedTx?.raw_description || row['Raw Narration'] || '').trim();
     const enrichedRow =
       rawNarration && !row['Raw Narration']
@@ -571,11 +574,16 @@ export async function confirmMappingAndStaging(
         ? `${baseRawDesc} | ${paytmNotes}`
         : baseRawDesc;
 
+    const trimmedRef = reference ? reference.trim() : '';
+    const existingRefNonZero =
+      existing.reference_number && !/^0+$/.test(String(existing.reference_number).trim())
+        ? String(existing.reference_number).trim()
+        : null;
     const cleanRef =
       normalizeReferenceNumber(reference) ||
       normalizeReferenceNumber(existing.reference_number) ||
-      reference?.trim() ||
-      existing.reference_number ||
+      (trimmedRef && !/^0+$/.test(trimmedRef) ? trimmedRef : null) ||
+      existingRefNonZero ||
       null;
     const { upi_ref_no, imps_ref_no } = extractCrossSourceRefs({
       parserVersion: upload.parser_version,

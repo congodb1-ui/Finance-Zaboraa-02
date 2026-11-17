@@ -45,6 +45,7 @@ const GENERIC_LABELS = new Set([
   'neft sender', 'neft recipient', 'rtgs sender', 'rtgs recipient',
   'hdfc online transfer', 'upi payment', 'upi sender', 'boi imps transfer',
   'atm cash withdrawal', 'atm withdrawal', 'bom atm cash withdrawal', 'boi atm cash withdrawal',
+  'unreadable payee - check pdf',
 ]);
 
 function isGenericCounterpartyLabel(desc?: string | null): boolean {
@@ -741,8 +742,8 @@ async function gmailSyncForUser(supabase: any, userId: string) {
       const cu = normalizeRef(c.upi_ref_no);
       const ci = normalizeRef(c.imps_ref_no);
       const cr = normalizeRef(c.reference_number);
-      if (parsed.upiRef && (cu === parsed.upiRef || cr === parsed.upiRef) && (sameAcc || (cIsDebit === inIsDebit && sameAmt))) return true;
-      if (parsed.impsRef && (ci === parsed.impsRef || cr === parsed.impsRef) && (sameAcc || (cIsDebit === inIsDebit && sameAmt))) return true;
+      if (parsed.upiRef && (cu === parsed.upiRef || cr === parsed.upiRef) && cIsDebit === inIsDebit && sameAmt) return true;
+      if (parsed.impsRef && (ci === parsed.impsRef || cr === parsed.impsRef) && cIsDebit === inIsDebit && sameAmt) return true;
       if (refNum && refNum.length >= 8 && sameAcc && cIsDebit === inIsDebit && sameAmt && (cr === refNum || cu === refNum || ci === refNum)) return true;
       if (sameAcc && c.source !== 'gmail_auto' && cIsDebit === inIsDebit && sameAmt) {
         const cStrong = getEdgeStrongRef(c);

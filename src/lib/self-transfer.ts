@@ -90,13 +90,25 @@ export async function detectAndLinkSelfTransfers(
   const SELECT_FIELDS =
     'id, account_id, txn_date, description, raw_description, debit, credit, reference_number, upi_ref_no, imps_ref_no, is_transfer, is_self_transfer, transfer_pair_id, category_id, txn_type, status';
 
-  const [{ data: newRows, error: newErr }, { data: accounts }, { data: profile }, { data: selfTransferCat }] =
-    await Promise.all([
-      supabase
+  const IN_CHUNK = 150;
+  const queryNewRowsInChunks = async (): Promise<{ data: any[]; error: any }> => {
+    const collected: any[] = [];
+    for (let i = 0; i < newTransactionIds.length; i += IN_CHUNK) {
+      const slice = newTransactionIds.slice(i, i + IN_CHUNK);
+      const { data, error } = await supabase
         .from('transactions')
         .select(SELECT_FIELDS)
         .eq('user_id', userId)
-        .in('id', newTransactionIds),
+        .in('id', slice);
+      if (error) return { data: collected, error };
+      if (data) collected.push(...data);
+    }
+    return { data: collected, error: null };
+  };
+
+  const [{ data: newRows, error: newErr }, { data: accounts }, { data: profile }, { data: selfTransferCat }] =
+    await Promise.all([
+      queryNewRowsInChunks(),
       supabase
         .from('accounts')
         .select('id, operated_by_owner')
@@ -149,47 +161,62 @@ export async function detectAndLinkSelfTransfers(
   minWindow.setDate(minWindow.getDate() - 2);
   const maxWindow = new Date(maxDate);
   maxWindow.setDate(maxWindow.getDate() + 2);
+  const minWindowIso = minWindow.toISOString().split('T')[0];
+  const maxWindowIso = maxWindow.toISOString().split('T')[0];
 
-  const candidateQueries: Promise<any>[] = [
-    supabase
-      .from('transactions')
-      .select(SELECT_FIELDS)
-      .eq('user_id', userId)
-      .is('transfer_pair_id', null)
-      .gte('txn_date', minWindow.toISOString().split('T')[0])
-      .lte('txn_date', maxWindow.toISOString().split('T')[0]),
-  ];
-
-  if (impsRefs.length > 0) {
-    candidateQueries.push(
-      supabase
+  const fetchWindowCandidates = async (): Promise<any[]> => {
+    const collected: any[] = [];
+    const PAGE_SIZE = 1000;
+    let from = 0;
+    while (true) {
+      const q = supabase
         .from('transactions')
         .select(SELECT_FIELDS)
         .eq('user_id', userId)
-        .in('imps_ref_no', impsRefs)
-    );
-  }
+        .is('transfer_pair_id', null)
+        .gte('txn_date', minWindowIso)
+        .lte('txn_date', maxWindowIso);
+      const { data: pageRows, error: pageErr } =
+        typeof q.range === 'function' ? await q.range(from, from + PAGE_SIZE - 1) : await q;
+      if (pageErr || !pageRows || pageRows.length === 0) break;
+      collected.push(...pageRows);
+      if (typeof q.range !== 'function' || pageRows.length < PAGE_SIZE) break;
+      from += PAGE_SIZE;
+    }
+    return collected;
+  };
 
-  if (upiRefs.length > 0) {
-    candidateQueries.push(
-      supabase
+  const queryCandidateRefChunks = async (
+    column: 'imps_ref_no' | 'upi_ref_no',
+    values: string[]
+  ): Promise<any[]> => {
+    if (values.length === 0) return [];
+    const collected: any[] = [];
+    for (let i = 0; i < values.length; i += IN_CHUNK) {
+      const slice = values.slice(i, i + IN_CHUNK);
+      const { data } = await supabase
         .from('transactions')
         .select(SELECT_FIELDS)
         .eq('user_id', userId)
-        .in('upi_ref_no', upiRefs)
-    );
-  }
+        .in(column, slice);
+      if (data) collected.push(...data);
+    }
+    return collected;
+  };
 
-  const queryResults = await Promise.all(candidateQueries);
+  const [windowCandidates, impsCandidates, upiCandidates] = await Promise.all([
+    fetchWindowCandidates(),
+    queryCandidateRefChunks('imps_ref_no', impsRefs),
+    queryCandidateRefChunks('upi_ref_no', upiRefs),
+  ]);
+
   const candidateMap = new Map<string, CandidateTx>();
   for (const t of newTxns) {
     candidateMap.set(t.id, t);
   }
-  for (const res of queryResults) {
-    for (const row of res?.data || []) {
-      if (!candidateMap.has(row.id)) {
-        candidateMap.set(row.id, normalizeTxRow(row));
-      }
+  for (const row of [...windowCandidates, ...impsCandidates, ...upiCandidates]) {
+    if (!candidateMap.has(row.id)) {
+      candidateMap.set(row.id, normalizeTxRow(row));
     }
   }
 

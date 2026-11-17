@@ -393,10 +393,12 @@ export function parseXLSX(buffer: ArrayBuffer | Uint8Array): ParseResult {
       }
 
       const bal = mapping.balance_col ? parseMonetaryValue(row[mapping.balance_col]) : null;
+      const nonZeroFallbackRef =
+        rawRefCol && !/^0+$/.test(rawRefCol.trim()) ? rawRefCol.trim() : null;
       const normRef =
         normalizeReferenceNumber(parsedNarration?.reference) ||
         normalizeReferenceNumber(rawRefCol) ||
-        rawRefCol?.trim() ||
+        nonZeroFallbackRef ||
         null;
 
       const refs = extractCrossSourceRefs({

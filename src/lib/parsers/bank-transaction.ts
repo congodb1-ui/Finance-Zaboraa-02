@@ -80,9 +80,9 @@ export function toTitleCase(str: string): string {
 function cleanRef(ref?: string | null): string {
   if (!ref) return '';
   const trimmed = ref.trim();
-  // Strip leading zeros from numeric-only references
+  // Strip leading zeros from numeric-only references; treat all-zero placeholders as empty
   if (/^\d+$/.test(trimmed)) {
-    return trimmed.replace(/^0+/, '') || '0';
+    return trimmed.replace(/^0+/, '');
   }
   return trimmed;
 }
@@ -306,10 +306,14 @@ function parseMaskedCardNarration(
     return true;
   });
 
-  const cleanLocation = cleanParts.join(' - ').trim();
+  const explicitRail = m[1] ? m[1].toUpperCase() : '';
+  const hasExplicitPosRail = explicitRail === 'POS' || explicitRail === 'ECOM';
+  const joiner = tail.includes('-') ? ' - ' : ' ';
+  const cleanLocation = cleanParts.join(joiner).trim();
+  const labelPrefix = hasExplicitPosRail ? explicitRail : 'Card / ATM';
   const desc = cleanLocation
-    ? `Card / ATM - ${toTitleCase(cleanLocation)}`
-    : `Card / ATM Transaction (${cardLast4})`;
+    ? `${labelPrefix} - ${toTitleCase(cleanLocation.toLowerCase())}`
+    : `${labelPrefix} Transaction (${cardLast4})`;
 
   return {
     description: desc,
@@ -679,6 +683,61 @@ export function parseBankNarration(
   }
 
   // ==========================================
+  // 8b. UPI REVERSALS / RETURNS (REV-UPI-..., UPIRET-...)
+  // Must run before standard @VPA UPI extraction so account/phone fragments don't fall into UNREADABLE PAYEE
+  // ==========================================
+  if (/^REV[-/\s]+UPI(?:[-/\s]|$)/i.test(text)) {
+    const working = text.replace(/^REV[-/\s]+UPI[-/\s]*/i, '').trim();
+    const afterAtMatch = working.match(/@[a-zA-Z][a-zA-Z0-9.-]*[-/\s]+(\d{12,14})(?=$|[-/\s])/);
+    const ref12Match = text.match(/(?:^|[-/\s])(\d{12})(?=$|[-/\s])/);
+    const extractedRef =
+      (afterAtMatch ? afterAtMatch[1] : '') ||
+      (effectiveFallbackRef && /^\d{12}$/.test(effectiveFallbackRef) ? effectiveFallbackRef : '') ||
+      (ref12Match ? ref12Match[1] : '') ||
+      effectiveFallbackRef;
+
+    let payeeHint = '';
+    const atIdx = working.search(/\s*@[a-zA-Z][a-zA-Z0-9.-]*/);
+    if (atIdx !== -1) {
+      const beforeAt = working.slice(0, atIdx).trim();
+      const parts = beforeAt.split(/[-/]/).map((p) => p.trim()).filter(Boolean);
+      const nonAcctParts = parts.filter((p) => !/^\d{11,}$/.test(p));
+      const candidate = nonAcctParts[nonAcctParts.length - 1] || parts[parts.length - 1] || '';
+      if (candidate && (!isUnreadableOrMaskedPayee(candidate) || /^\d{10}$/.test(candidate))) {
+        payeeHint = candidate;
+      }
+    } else {
+      const firstSeg = working.split(/[-/]/)[0]?.trim() || '';
+      if (firstSeg && !isUnreadableOrMaskedPayee(firstSeg)) {
+        payeeHint = firstSeg;
+      }
+    }
+
+    return {
+      description: payeeHint ? `UPI Reversal - ${payeeHint}` : 'UPI Reversal',
+      reference: extractedRef || fallbackRef,
+      transactionType: 'UPI',
+    };
+  }
+
+  if (/^UPIRET(?:[-/\s]|$)/i.test(text)) {
+    const working = text.replace(/^UPIRET[-/\s]*/i, '').trim();
+    const utrMatch = working.match(/(?:^|[-/\s])(\d{12,14})(?=$|[-/\s])/);
+    const extractedRef = (utrMatch ? utrMatch[1] : '') || effectiveFallbackRef;
+    const nameParts = working
+      .split(/[-/]/)
+      .map((p) => p.trim())
+      .filter((p) => p && !/^\d{6,16}$/.test(p));
+
+    return {
+      description:
+        nameParts.length > 0 ? `UPI Return - ${nameParts.join(' ')}` : 'UPI Return / Reversal',
+      reference: extractedRef || fallbackRef,
+      transactionType: 'UPI',
+    };
+  }
+
+  // ==========================================
   // 9. UPI (with UPI prefix OR containing VPA @bank-letters, NOT @81.85 forex rate)
   // Format: UPI-<NAME>-<MASKED>@BANK-<IFSC>-<UTR>-<SUFFIX>
   // BOM Format: UPI <12-digit-UTR><NA|Note>
@@ -834,14 +893,20 @@ export function parseBankNarration(
   // 10. NACH / ACH / SI / EMI / MANDATE
   // ==========================================
   if (/^(?:NACH|ACH|SI|EMI|MANDATE)[\/\-\s]/i.test(text)) {
-    let working = text.replace(/^(?:NACH|ACH|SI|EMI|MANDATE)[\/\-\s]+/i, '').trim();
-    const splitMatch = working.match(/^(.*?)(?:-[*]{3,}|-\d{10,})/);
+    let working = text
+      .replace(/^(?:NACH|ACH|SI|EMI|MANDATE)(?:[\/\-\s]+(?:CR|DR|C|D))?[\/\-\s]+/i, '')
+      .trim();
+    let extractedRef = effectiveFallbackRef;
+    const splitMatch = working.match(/^(.*?)(?:-[*]{3,}|-(\d{10,}))/);
     if (splitMatch && splitMatch[1]) {
+      if (splitMatch[2] && !extractedRef) {
+        extractedRef = cleanRef(splitMatch[2]);
+      }
       working = splitMatch[1].trim();
     }
     return {
       description: working || 'Mandate Payment',
-      reference: fallbackRef,
+      reference: extractedRef || fallbackRef,
       transactionType: 'OTHER',
     };
   }
@@ -945,7 +1010,11 @@ export function formatTransactionSubtitle(
 
   const cleanedRaw = deSplitPdfWords(raw.replace(/^[.*•\s]+/, '').trim());
   let mode = 'Bank Transfer';
-  if (/^UPI[\/\-\s]/i.test(cleanedRaw) || /@[A-Za-z]/i.test(cleanedRaw)) {
+  if (/^REV[-/\s]+UPI(?:[-/\s]|$)/i.test(cleanedRaw)) {
+    mode = 'UPI Reversal';
+  } else if (/^UPIRET(?:[-/\s]|$)/i.test(cleanedRaw)) {
+    mode = 'UPI Return';
+  } else if (/^UPI[\/\-\s]/i.test(cleanedRaw) || /@[A-Za-z]/i.test(cleanedRaw)) {
     mode = 'UPI Payment';
   } else if (/^NEFT[\/\-\s]/i.test(cleanedRaw)) {
     mode = 'NEFT Transfer';

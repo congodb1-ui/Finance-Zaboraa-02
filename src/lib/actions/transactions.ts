@@ -387,24 +387,36 @@ export async function commitUploadTransactions(
   }
 
   // Enrich matched gmail_auto transactions with statement balance/upload_id/raw_description/refs
-  for (const enr of enrichmentUpdates) {
-    await supabase
-      .from('transactions')
-      .update({
-        ...enr.patch,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', enr.id)
-      .eq('user_id', user.id);
+  const UPDATE_BATCH_SIZE = 25;
+  const nowEnrichIso = new Date().toISOString();
+  for (let i = 0; i < enrichmentUpdates.length; i += UPDATE_BATCH_SIZE) {
+    const batch = enrichmentUpdates.slice(i, i + UPDATE_BATCH_SIZE);
+    await Promise.all(
+      batch.map((enr) =>
+        supabase
+          .from('transactions')
+          .update({
+            ...enr.patch,
+            updated_at: nowEnrichIso,
+          })
+          .eq('id', enr.id)
+          .eq('user_id', user.id)
+      )
+    );
   }
 
-  // Mark duplicate staged rows in DB
-  for (const dup of duplicateUpdates) {
-    await supabase
-      .from('staged_transactions')
-      .update({ is_duplicate: true, duplicate_of_id: dup.duplicate_of_id })
-      .eq('id', dup.id)
-      .eq('user_id', user.id);
+  // Mark duplicate staged rows in DB (batched concurrently for 5,000-row imports)
+  for (let i = 0; i < duplicateUpdates.length; i += UPDATE_BATCH_SIZE) {
+    const batch = duplicateUpdates.slice(i, i + UPDATE_BATCH_SIZE);
+    await Promise.all(
+      batch.map((dup) =>
+        supabase
+          .from('staged_transactions')
+          .update({ is_duplicate: true, duplicate_of_id: dup.duplicate_of_id })
+          .eq('id', dup.id)
+          .eq('user_id', user.id)
+      )
+    );
   }
 
   // STEP 4 — Apply transaction rules in priority order (+ staged suggestion + Paytm tag fallback)
@@ -603,14 +615,20 @@ export async function commitUploadTransactions(
     transferPairsFound = detection.pairsLinked;
 
     if (transferPairsFound > 0) {
-      const { data: refreshedLinks } = await supabase
-        .from('transactions')
-        .select('id, is_transfer, is_self_transfer, transfer_pair_id, category_id, txn_type, status')
-        .eq('user_id', user.id)
-        .in('id', newIds);
+      const refreshedLinks: any[] = [];
+      const IN_CHUNK = 150;
+      for (let i = 0; i < newIds.length; i += IN_CHUNK) {
+        const slice = newIds.slice(i, i + IN_CHUNK);
+        const { data: chunkRows } = await supabase
+          .from('transactions')
+          .select('id, is_transfer, is_self_transfer, transfer_pair_id, category_id, txn_type, status')
+          .eq('user_id', user.id)
+          .in('id', slice);
+        if (chunkRows) refreshedLinks.push(...chunkRows);
+      }
 
       const linkMap = new Map<string, any>();
-      for (const r of refreshedLinks || []) {
+      for (const r of refreshedLinks) {
         linkMap.set(r.id, r);
       }
       for (const tx of newlyInsertedTransactions) {
@@ -668,16 +686,26 @@ export async function commitUploadTransactions(
     if (isAiEnabled && newlyInsertedTransactions.length > 0) {
       const { batchCleanDescriptionsWithAI } = await import('../ai/clean-description');
       const cleanedResults = await batchCleanDescriptionsWithAI(newlyInsertedTransactions);
+      const txById = new Map(newlyInsertedTransactions.map((t) => [t.id, t]));
+      const cleanPatches: Array<{ id: string; cleaned_description: string }> = [];
       for (const c of cleanedResults) {
-        const tx = newlyInsertedTransactions.find((t) => t.id === c.transaction_id);
+        const tx = txById.get(c.transaction_id);
         if (tx && c.cleaned_description) {
           tx.description = c.cleaned_description;
-          await supabase
-            .from('transactions')
-            .update({ description: c.cleaned_description })
-            .eq('id', tx.id)
-            .eq('user_id', user.id);
+          cleanPatches.push({ id: tx.id, cleaned_description: c.cleaned_description });
         }
+      }
+      for (let i = 0; i < cleanPatches.length; i += 25) {
+        const batch = cleanPatches.slice(i, i + 25);
+        await Promise.all(
+          batch.map((p) =>
+            supabase
+              .from('transactions')
+              .update({ description: p.cleaned_description })
+              .eq('id', p.id)
+              .eq('user_id', user.id)
+          )
+        );
       }
 
       const uncategorized = newlyInsertedTransactions.filter(

@@ -102,6 +102,7 @@ const GENERIC_LABELS = new Set([
   'bom atm cash withdrawal',
   'boi atm cash withdrawal',
   'bank transaction',
+  'unreadable payee - check pdf',
 ]);
 
 export function isGenericCounterpartyLabel(desc?: string | null): boolean {
@@ -326,9 +327,9 @@ export function findBestCrossSourceMatch(
     const candImps = normalizeRefForDedup(cand.imps_ref_no);
     const candRef = normalizeRefForDedup(cand.reference_number);
 
-    // UPI ref match (same account, or cross-source same-direction + amount)
+    // UPI ref match (requires same direction & amount so REV-UPI reversals never false-dedup against original debit)
     if (inUpi && (candUpi === inUpi || candRef === inUpi)) {
-      if (sameAccount || (sameDirection && sameAmount)) {
+      if (sameDirection && sameAmount) {
         return {
           matched: cand,
           matchTier: 'tier1_ref',
@@ -337,9 +338,9 @@ export function findBestCrossSourceMatch(
       }
     }
 
-    // IMPS ref match (same account, or cross-source same-direction + amount; opposite leg across accounts = self-transfer!)
+    // IMPS ref match (requires same direction & amount; opposite leg across accounts = self-transfer, same-account opposite = reversal)
     if (inImps && (candImps === inImps || candRef === inImps)) {
-      if (sameAccount || (sameDirection && sameAmount)) {
+      if (sameDirection && sameAmount) {
         return {
           matched: cand,
           matchTier: 'tier1_ref',
