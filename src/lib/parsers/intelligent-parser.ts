@@ -561,21 +561,22 @@ export async function parsePDFIntelligent(
       const text = vLine.text.trim();
       if (!text) continue;
 
-      let dateMatch = text.match(DATE_REGEX);
-      let dateFound = dateMatch ? dateMatch[0].trim() : '';
-      if (!dateMatch) {
-        const srMatch = text.match(SR_NO_DATE_REGEX);
-        if (srMatch) {
-          dateFound = srMatch[1].trim();
-          dateMatch = srMatch;
-        }
+    let dateMatch = text.match(DATE_REGEX);
+    let dateFound = dateMatch ? dateMatch[0].trim() : '';
+    if (!dateMatch) {
+      const srMatch = text.match(SR_NO_DATE_REGEX);
+      if (srMatch) {
+        dateFound = srMatch[1].trim();
+        dateMatch = srMatch;
       }
+    }
 
-      const dateItem = vLine.items.find(
-        (i) => i.x < 120 && /^\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}/.test(i.text.trim())
-      );
+    const dateItem = vLine.items.find((i) => {
+      const t = i.text.trim();
+      return /^\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}/.test(t) || /^\d{1,4}$/.test(t);
+    });
 
-      if (dateMatch && dateItem) {
+    if (dateMatch && (dateItem || vLine.items.length > 0)) {
         if (currentBlock) {
           blocks.push(currentBlock);
         }
@@ -584,7 +585,7 @@ export async function parsePDFIntelligent(
           anchorText: text,
           continuationLines: [],
           continuationTexts: [],
-          dateStr: dateFound || dateItem.text.trim(),
+          dateStr: dateFound || (dateItem ? dateItem.text.trim() : ''),
         };
       } else if (currentBlock) {
         if (!isFooterLine(text)) {
