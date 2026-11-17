@@ -135,6 +135,18 @@ export function parseMonetaryValue(raw: string | number | null | undefined): num
   return isNeg ? -val : val;
 }
 
+export function normalizeReferenceNumber(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  const trimmed = raw.replace(/\s+/g, '').trim();
+  if (!trimmed || /^0+$/.test(trimmed)) return null;
+  if (/^\d+$/.test(trimmed)) {
+    const stripped = trimmed.replace(/^0+/, '');
+    return stripped || null;
+  }
+  // Alphanumeric UTRs like 000CMS3847171284 or KKBKR22026101725350598
+  return trimmed.toUpperCase();
+}
+
 function normalizeTwelveDigitRef(raw: string | null | undefined): string | null {
   if (!raw) return null;
   const digits = raw.replace(/\D/g, '');
@@ -154,6 +166,7 @@ function normalizeTwelveDigitRef(raw: string | null | undefined): string | null 
 export function extractImpsRef(text: string, refNo?: string | null): string | null {
   const src = text || '';
   const m =
+    src.match(/IMPS\/\d+\/(\d{12})(?:\b|\/)/i) ||
     src.match(/IMPS\/?[A-Z]*\/?(\d{12})\b/i) ||
     src.match(/IMPS[\/\s-]+(\d{12})\b/i) ||
     (/\bIMPS\b/i.test(src) ? src.match(/\b(\d{12})\b/) : null);
@@ -175,18 +188,19 @@ export function extractUpiRef(
 ): string | null {
   const src = text || '';
   const explicitMatch =
-    src.match(/UPI\s*Ref\s*No[:\s]+(\d{9,16})/i) ||
-    src.match(/UPI\s*(?:Transaction\s*ID|Txn\s*ID)[:\s]+(\d{9,16})/i) ||
+    src.match(/UPI\s*Ref\s*No\.?[:\s]+(\d{9,16})/i) ||
+    src.match(/UPI\s*(?:Transaction\s*ID|Txn\s*ID|transaction\s*reference\s*(?:no\.?|number)\s*is)[:\s]+(\d{9,16})/i) ||
     src.match(/UPI\/[A-Za-z0-9@._-]+\/(\d{12})\b/i) ||
+    src.match(/UPI\s+(\d{12})(?:[A-Za-z]|\b)/i) ||
     src.match(/UPI[\/\-][^\/\-\n]*?[\/\-](\d{12})\b/i);
   if (explicitMatch) {
     return normalizeTwelveDigitRef(explicitMatch[1]) || explicitMatch[1];
   }
 
-  const hasUpiContext = forceUpi || /\bUPI\b/i.test(src);
+  const hasUpiContext = forceUpi || /\bUPI\b/i.test(src) || /@[a-zA-Z][a-zA-Z0-9.-]*/.test(src);
   if (hasUpiContext) {
     // Look for a 12-digit numeric token inside a UPI narration (e.g., HDFC: UPI-SWIGGY-SWIGGY@ICICI-631803023475-...)
-    const tokenMatch = src.match(/(?:^|[\s\-\/,:])(\d{12})(?=$|[\s\-\/,:])/);
+    const tokenMatch = src.match(/(?:^|[\s\-\/,:])(\d{12})(?=$|[\s\-\/,:A-Za-z])/);
     if (tokenMatch) return tokenMatch[1];
 
     if (refNo) {
@@ -201,26 +215,48 @@ export function extractUpiRef(
 }
 
 /**
- * Computes cross-source dedup keys (upi_ref_no, imps_ref_no) for a statement row.
+ * Extracts an NEFT / RTGS UTR or alphanumeric bank reference number from narration or ref column.
+ */
+export function extractNeftRtgsRef(text: string, refNo?: string | null): string | null {
+  const src = text || '';
+  if (/\b(?:NEFT|RTGS)\b/i.test(src)) {
+    const bankUtr =
+      src.match(/\b([A-Z]{4}[A-Z0-9]\d{10,20})\b/) ||
+      src.match(/(?:NEFT|RTGS)[\/\s-]+(?:CR|DR)?[\/\s-]*(?:[A-Z]{4}0[A-Z0-9]{6}[-\/])?.*?[-\/]((?=[A-Z0-9]*\d)[A-Z0-9]{10,24})(?:\s|$)/i);
+    if (bankUtr) {
+      return normalizeReferenceNumber(bankUtr[1]);
+    }
+  }
+  if (refNo) {
+    const norm = normalizeReferenceNumber(refNo);
+    if (norm && norm.length >= 8) return norm;
+  }
+  return null;
+}
+
+/**
+ * Computes cross-source dedup keys (upi_ref_no, imps_ref_no, utr_ref_no) for a statement row.
  */
 export function extractCrossSourceRefs(params: {
   parserVersion?: string | null;
   description?: string | null;
   rawDescription?: string | null;
   referenceNumber?: string | null;
-}): { upi_ref_no: string | null; imps_ref_no: string | null } {
+  rawNarration?: string | null;
+}): { upi_ref_no: string | null; imps_ref_no: string | null; neft_rtgs_ref_no?: string | null } {
   const parser = (params.parserVersion || '').toLowerCase();
   const isPaytmOrGPay = parser.startsWith('paytm-upi') || parser.startsWith('gpay');
-  const combinedText = `${params.description || ''} ${params.rawDescription || ''}`.trim();
+  const combinedText = `${params.rawNarration || ''} ${params.description || ''} ${params.rawDescription || ''}`.trim();
   const ref = params.referenceNumber?.trim() || null;
 
   const imps_ref_no = extractImpsRef(combinedText, ref);
   let upi_ref_no = extractUpiRef(combinedText, ref, isPaytmOrGPay);
+  const neft_rtgs_ref_no = extractNeftRtgsRef(combinedText, ref);
 
   // If IMPS ref already claimed the same 12-digit number and text does not mention UPI, don't double-classify as UPI
   if (upi_ref_no && imps_ref_no && upi_ref_no === imps_ref_no && !/\bUPI\b/i.test(combinedText)) {
     upi_ref_no = null;
   }
 
-  return { upi_ref_no, imps_ref_no };
+  return { upi_ref_no, imps_ref_no, neft_rtgs_ref_no };
 }

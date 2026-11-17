@@ -100,6 +100,7 @@ export interface ParsedTransaction {
   account_hint?: string | null;
   timestamp?: string | null;
   raw_notes?: string | null;
+  raw_description?: string | null;
 }
 
 export interface ParseResult {
@@ -107,6 +108,7 @@ export interface ParseResult {
   rows: Array<Record<string, string>>;
   parser_version: string;
   detected_bank?: string;
+  detected_account_last4?: string | null;
   confidence?: MappingConfidence;
   suggested_mapping?: ColumnMapping;
   opening_balance?: number | null;
@@ -127,6 +129,7 @@ export interface UploadApiResponse {
   needs_mapping: boolean;
   headers: string[];
   detected_bank?: string;
+  detected_account_last4?: string | null;
   sample_rows?: Array<Record<string, string>>;
   error?: string;
   needs_resume?: boolean;

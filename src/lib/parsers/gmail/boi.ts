@@ -1,7 +1,13 @@
-import { normalizeGmailDate, parseIndianAmount, truncateSnippet200 } from './helpers';
+import {
+  cleanBankEntityName,
+  normalizeGmailDate,
+  normalizeRef,
+  parseIndianAmount,
+  truncateSnippet200,
+} from './helpers';
 import type { GmailParseOutcome } from './types';
 
-export function parseBoiImps(params: {
+export function parseBoiAlert(params: {
   msgId: string;
   fromAddress: string;
   subject: string;
@@ -10,11 +16,32 @@ export function parseBoiImps(params: {
 }): GmailParseOutcome {
   const { msgId, fromAddress, subject, body, internalDate } = params;
 
-  const accountMatch = body.match(/A\/c[.\s]+[Xx*]+(\d{4})/i);
-  const directionMatch = body.match(/credited|debited|\bCR\b|\bDR\b/i);
+  const accountMatch = body.match(/A\/c[.\s]+[Xx*\s]*(\d{4})/i);
+  const directionMatch = body.match(/\b(credited|debited|CR|DR)\b/i);
   const amountMatch = body.match(/(?:INR|Rs\.?)\s*([\d,]+\.?\d*)/i);
-  const dateMatch = body.match(/(\d{2}[-\/]\d{2}[-\/]\d{4}|\d{2}-[A-Z]{3}-\d{4})/i);
-  const impsRefMatch = body.match(/IMPS[\/\s]?(?:Ref)?[.:\s]+(\d{12})/i);
+  const dateMatch = body.match(
+    /(\d{1,2}[-\/]\d{1,2}[-\/]\d{2,4}|\d{1,2}[-\s][A-Za-z]{3}[-\s]\d{2,4})/i
+  );
+
+  let method: 'IMPS' | 'NEFT' | 'RTGS' | 'UPI' = 'IMPS';
+  let kind: 'BOI_IMPS' | 'BOI_NEFT' | 'BOI_RTGS' | 'BOI_UPI' = 'BOI_IMPS';
+  if (/\bRTGS\b/i.test(body) || /\bRTGS\b/i.test(subject)) {
+    method = 'RTGS';
+    kind = 'BOI_RTGS';
+  } else if (/\bNEFT\b/i.test(body) || /\bNEFT\b/i.test(subject)) {
+    method = 'NEFT';
+    kind = 'BOI_NEFT';
+  } else if (/\bUPI\b/i.test(body) || /\bUPI\b/i.test(subject)) {
+    method = 'UPI';
+    kind = 'BOI_UPI';
+  }
+
+  const refMatch =
+    body.match(
+      /(?:IMPS|UPI|NEFT|RTGS|UTR)[\/\s]?(?:Ref(?:\s*No\.?)?)?[.:\s]+((?=[A-Z0-9]*\d)[A-Z0-9]{8,26})/i
+    ) ||
+    body.match(/\b([A-Z]{4}[A-Z0-9]\d{10,20})\b/) ||
+    body.match(/\b(\d{12})\b/);
   const balanceMatch = body.match(/(?:Bal|Balance)[.:\s]+(?:Rs\.?\s*|INR\s*)?([\d,]+\.?\d*)/i);
 
   const fieldsExtracted = [
@@ -22,52 +49,62 @@ export function parseBoiImps(params: {
     directionMatch,
     amountMatch,
     dateMatch,
-    impsRefMatch,
+    refMatch,
     balanceMatch,
   ].filter(Boolean).length;
 
   const last4 = accountMatch?.[1] || '';
   const amount = parseIndianAmount(amountMatch?.[1]);
-  const dirRaw = directionMatch?.[0]?.toLowerCase() || '';
+  const dirRaw = directionMatch?.[1]?.toLowerCase() || '';
 
   if (fieldsExtracted === 0 || !last4 || !amount || amount <= 0 || !dirRaw) {
     return {
-      kind: 'BOI_IMPS',
+      kind,
       record_type: 'error',
       gmail_msg_id: msgId,
       from_address: fromAddress,
       subject,
       error_reason:
         fieldsExtracted === 0
-          ? 'BOI_IMPS yielded 0 extracted fields'
-          : 'BOI_IMPS missing required account last4, direction, or amount',
+          ? `${kind} yielded 0 extracted fields`
+          : `${kind} missing required account last4, direction, or amount`,
       raw_snippet: truncateSnippet200(body),
     };
   }
 
   const direction: 'debit' | 'credit' =
     dirRaw === 'credited' || dirRaw === 'cr' ? 'credit' : 'debit';
-  const impsRef = impsRefMatch?.[1]?.trim() || null;
+  const rawRef = normalizeRef(refMatch?.[1]);
   const balanceAfter = parseIndianAmount(balanceMatch?.[1]);
   const txnDate = normalizeGmailDate(dateMatch?.[1], internalDate);
-  const payeeName = impsRef ? `BOI IMPS ${impsRef}` : 'BOI IMPS Transfer';
+  const counterpartyMatch = body.match(
+    /(?:from|to|towards)\s+([A-Za-z0-9 .&-]+?)(?:\s+on|\s+Ref|\s+UTR|\.\s|\s*$)/i
+  );
+  const payeeName =
+    cleanBankEntityName(counterpartyMatch?.[1]) ||
+    (rawRef ? `BOI ${method} ${rawRef}` : `BOI ${method} Transfer`);
 
   return {
-    kind: 'BOI_IMPS',
+    kind,
     record_type: 'transaction',
     gmail_msg_id: msgId,
     from_address: fromAddress,
     bank: 'BOI',
-    method: 'IMPS',
+    method,
     direction,
     amount,
     account_last4: last4,
     txn_date: txnDate,
     payee_name: payeeName,
     payee_vpa: null,
-    upi_ref_no: null,
-    imps_ref_no: impsRef,
+    upi_ref_no: method === 'UPI' ? rawRef : null,
+    imps_ref_no: method === 'IMPS' ? rawRef : null,
+    neft_ref_no: method === 'NEFT' ? rawRef : null,
+    rtgs_ref_no: method === 'RTGS' ? rawRef : null,
+    reference_number: rawRef,
     balance_after: balanceAfter,
-    description_raw: impsRef ? `BOI/IMPS/${impsRef}` : `BOI IMPS ${direction}`,
+    description_raw: rawRef ? `BOI/${method}/${rawRef}` : `BOI ${method} ${direction}`,
   };
 }
+
+export const parseBoiImps = parseBoiAlert;

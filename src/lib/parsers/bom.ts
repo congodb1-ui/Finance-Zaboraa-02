@@ -1,8 +1,9 @@
 import Papa from 'papaparse';
 import type { ColumnMapping, ParseResult, ParsedTransaction } from '../../types/uploads';
-import { extractPDFRawData, type PDFExtractionResult } from './pdf';
-import { extractImpsRef, parseIndianDate, parseMonetaryValue } from './utils';
+import { extractPDFRawData, extractStatementPeriod, type PDFExtractionResult } from './pdf';
+import { extractCrossSourceRefs, extractImpsRef, normalizeReferenceNumber, parseIndianDate, parseMonetaryValue } from './utils';
 import { isStatementNoiseLine } from './strip-statement-noise';
+import { parseBankNarration } from './bank-transaction';
 
 const BOM_COLUMNS = [
   'Txn Date',
@@ -228,6 +229,243 @@ function parseBOMGridRows(gridRows: string[][]): {
 }
 
 /**
+ * Coordinate-aware BOM PDF parser:
+ * BOM tables vertically center multi-line Particulars around each row's Date anchor Y,
+ * so items slightly above and below anchor[k].y belong to anchor[k], never anchor[k-1].
+ */
+function parseBOMPdfPages(pdfData: PDFExtractionResult): {
+  hasValidHeader: boolean;
+  rows: Array<Record<string, string>>;
+  transactions: ParsedTransaction[];
+} {
+  const rows: Array<Record<string, string>> = [];
+  const transactions: ParsedTransaction[] = [];
+  let foundAnyHeader = false;
+  let summaryReached = false;
+
+  // Persist detected column X bounds across pages (continuation pages may omit header)
+  let colBounds = {
+    dateMinX: 130,
+    dateMaxX: 210,
+    partMinX: 210,
+    partMaxX: 395,
+    refMinX: 395,
+    refMaxX: 500,
+    debitMinX: 500,
+    debitMaxX: 590,
+    creditMinX: 590,
+    creditMaxX: 690,
+    balMinX: 690,
+    balMaxX: 830,
+    chanMinX: 830,
+  };
+
+  for (const page of pdfData.pages) {
+    if (summaryReached) break;
+    const items = [...(page.textItems || [])].sort((a, b) => b.y - a.y || a.x - b.x);
+    if (items.length === 0) continue;
+
+    // Detect table header row on this page if present
+    let tableTopY = Infinity;
+    let footerStartY = -Infinity;
+
+    for (const it of items) {
+      const txt = it.text.trim();
+      if (/^(?:B\.\s*Summary\s+for\s+Account|\*\s*END\s+OF\s+STATEMENT|Page\s+\d+\s+of\s+\d+)$/i.test(txt) ||
+          /^B\.\s*Summary\s+for\s+Account/i.test(txt) ||
+          /^\*\s*END\s+OF\s+STATEMENT/i.test(txt)) {
+        if (/B\.\s*Summary|END\s+OF\s+STATEMENT/i.test(txt)) {
+          summaryReached = true;
+        }
+        footerStartY = Math.max(footerStartY, it.y + 4);
+      }
+    }
+
+    // Locate header items by looking for "Particulars" & "Debit" on same visual line
+    const visualYs: Array<{ y: number; items: typeof items }> = [];
+    for (const it of items) {
+      if (!it.text.trim()) continue;
+      const g = visualYs.find((v) => Math.abs(v.y - it.y) <= 3.5);
+      if (g) g.items.push(it);
+      else visualYs.push({ y: it.y, items: [it] });
+    }
+
+    for (const row of visualYs) {
+      const joined = row.items.map((i) => i.text.trim()).join(' ').toLowerCase();
+      if (joined.includes('particulars') && joined.includes('debit') && joined.includes('balance')) {
+        foundAnyHeader = true;
+        tableTopY = row.y - 12;
+
+        const dateH = row.items.find((i) => /^date$/i.test(i.text.trim()));
+        const partH = row.items.find((i) => /particulars/i.test(i.text.trim()));
+        const debitH = row.items.find((i) => /^debit$/i.test(i.text.trim()));
+        const creditH = row.items.find((i) => /^credit$/i.test(i.text.trim()));
+        const balH = row.items.find((i) => /^balance$/i.test(i.text.trim()));
+        const chanH = row.items.find((i) => /^channel$/i.test(i.text.trim()));
+
+        // "Cheque" / "/Reference No" may be slightly below this Y
+        const refHeaderItem = items.find(
+          (i) => Math.abs(i.y - row.y) <= 14 && /cheque|reference/i.test(i.text.trim())
+        );
+
+        const dateX = dateH ? dateH.x : 165;
+        const partX = partH ? partH.x : 283;
+        const refX = refHeaderItem ? refHeaderItem.x : 405;
+        const debitX = debitH ? debitH.x : 520;
+        const creditX = creditH ? creditH.x : 607;
+        const balX = balH ? balH.x : 715;
+        const chanX = chanH ? chanH.x : 848;
+
+        colBounds = {
+          dateMinX: dateX - 30,
+          dateMaxX: partX - 75,
+          partMinX: partX - 75,
+          partMaxX: refX - 10,
+          refMinX: refX - 15,
+          refMaxX: debitX - 25,
+          debitMinX: debitX - 25,
+          debitMaxX: (debitX + creditX) / 2 + 5,
+          creditMinX: (debitX + creditX) / 2 + 5,
+          creditMaxX: (creditX + balX) / 2 + 5,
+          balMinX: (creditX + balX) / 2 + 5,
+          balMaxX: chanX - 15,
+          chanMinX: chanX - 15,
+        };
+        break;
+      }
+    }
+
+    // Also stop below B. Summary / Page X of Y / All the amounts
+    for (const row of visualYs) {
+      const joined = row.items.map((i) => i.text.trim()).join(' ');
+      if (
+        /^\s*(?:B\.\s*Summary\s+for\s+Account|\*\s*END\s+OF\s+STATEMENT|Page\s+\d+\s+of\s+\d+|All\s+the\s+amounts)/i.test(joined)
+      ) {
+        footerStartY = Math.max(footerStartY, row.y + 4);
+        if (/B\.\s*Summary|END\s+OF\s+STATEMENT/i.test(joined)) {
+          summaryReached = true;
+        }
+      }
+    }
+
+    // Collect valid items within table body (below header, above footer)
+    const bodyItems = items.filter(
+      (it) => it.text.trim() && it.y < tableTopY && it.y > footerStartY
+    );
+
+    // Find transaction anchors: Date items in the Date X-band matching DD/MM/YYYY
+    const anchors = bodyItems
+      .filter((it) => {
+        const t = it.text.trim();
+        return (
+          it.x >= colBounds.dateMinX &&
+          it.x < colBounds.dateMaxX &&
+          /^\d{2}\/\d{2}\/\d{4}$/.test(t)
+        );
+      })
+      .sort((a, b) => b.y - a.y);
+
+    if (anchors.length === 0) continue;
+
+    for (let idx = 0; idx < anchors.length; idx++) {
+      const anchor = anchors[idx];
+      const upperY = idx === 0 ? tableTopY : (anchors[idx - 1].y + anchor.y) / 2;
+      const lowerY =
+        idx === anchors.length - 1 ? footerStartY : (anchor.y + anchors[idx + 1].y) / 2;
+
+      const cellItems = bodyItems
+        .filter((it) => it.y <= upperY && it.y > lowerY)
+        .sort((a, b) => b.y - a.y || a.x - b.x);
+
+      const partItems = cellItems.filter(
+        (it) => it.x >= colBounds.partMinX && it.x < colBounds.partMaxX
+      );
+      const refItems = cellItems.filter(
+        (it) => it.x >= colBounds.refMinX && it.x < colBounds.refMaxX
+      );
+      const debitItems = cellItems.filter(
+        (it) => it.x >= colBounds.debitMinX && it.x < colBounds.debitMaxX
+      );
+      const creditItems = cellItems.filter(
+        (it) => it.x >= colBounds.creditMinX && it.x < colBounds.creditMaxX
+      );
+      const balItems = cellItems.filter(
+        (it) => it.x >= colBounds.balMinX && it.x < colBounds.balMaxX
+      );
+      const chanItems = cellItems.filter((it) => it.x >= colBounds.chanMinX);
+
+      // Reconstruct multi-line Particulars preserving natural line breaks
+      const partLines: Array<{ y: number; text: string }> = [];
+      for (const p of partItems) {
+        const line = partLines.find((pl) => Math.abs(pl.y - p.y) <= 3.0);
+        if (line) line.text = `${line.text} ${p.text.trim()}`.trim();
+        else partLines.push({ y: p.y, text: p.text.trim() });
+      }
+      partLines.sort((a, b) => b.y - a.y);
+
+      const rawNarration = partLines.map((l) => l.text).join(' ').replace(/\s+/g, ' ').trim();
+      const refRaw = refItems.map((i) => i.text.trim()).join('').trim();
+      const channel = chanItems.map((i) => i.text.trim()).join(' ').trim();
+      const dVal = parseMonetaryValue(debitItems.map((i) => i.text.trim()).join(''));
+      const cVal = parseMonetaryValue(creditItems.map((i) => i.text.trim()).join(''));
+      const bVal = parseMonetaryValue(balItems.map((i) => i.text.trim()).join(''));
+
+      const debit = dVal !== null && Math.abs(dVal) > 0 ? Math.abs(dVal) : null;
+      const credit = cVal !== null && Math.abs(cVal) > 0 ? Math.abs(cVal) : null;
+      const balance = bVal !== null ? bVal : null;
+      const isoDate = parseIndianDate(anchor.text.trim());
+
+      if (!isoDate || (debit === null && credit === null)) continue;
+
+      const parsedNarration = parseBankNarration(rawNarration, refRaw);
+      const combinedRaw = [rawNarration, channel].filter(Boolean).join(' | ');
+      const refs = extractCrossSourceRefs({
+        parserVersion: 'bom-pdf-v1',
+        description: parsedNarration.description,
+        rawNarration: combinedRaw,
+        referenceNumber: refRaw || parsedNarration.reference || null,
+      });
+
+      const normRef =
+        normalizeReferenceNumber(refRaw) ||
+        normalizeReferenceNumber(parsedNarration.reference) ||
+        refs.imps_ref_no ||
+        refs.upi_ref_no ||
+        null;
+
+      const cleanDesc = parsedNarration.description || rawNarration || 'Bank of Maharashtra Txn';
+
+      transactions.push({
+        txn_date: isoDate,
+        description: cleanDesc,
+        raw_description: combinedRaw,
+        debit,
+        credit,
+        balance,
+        balance_after: balance,
+        reference_number: normRef,
+        upi_ref_no: refs.upi_ref_no,
+        imps_ref_no: refs.imps_ref_no,
+        source: 'statement_import',
+      });
+
+      rows.push({
+        'Txn Date': isoDate,
+        'Value Date': '',
+        Description: cleanDesc,
+        'Raw Narration': combinedRaw,
+        'Ref No': normRef || '',
+        Debit: debit !== null ? debit.toFixed(2) : '',
+        Credit: credit !== null ? credit.toFixed(2) : '',
+        Balance: balance !== null ? balance.toFixed(2) : '',
+      });
+    }
+  }
+
+  return { hasValidHeader: foundAnyHeader || rows.length > 0, rows, transactions };
+}
+
+/**
  * Bank of Maharashtra (BOM) statement parser for PDF or CSV.
  * Returns parseError without throwing if format is not recognised.
  */
@@ -267,7 +505,10 @@ export async function parseBOM(
   }
 
   const pdfData = preExtracted || (await extractPDFRawData(input));
-  const res = parseBOMGridRows(pdfData.allGridRows);
+  const hasCoordItems = pdfData.pages.some((p) => p.textItems && p.textItems.length > 0);
+  const res = hasCoordItems
+    ? parseBOMPdfPages(pdfData)
+    : parseBOMGridRows(pdfData.allGridRows);
 
   if (!res.hasValidHeader || res.rows.length === 0) {
     return {
@@ -276,14 +517,22 @@ export async function parseBOM(
       transactions: [],
       parser_version: 'bom-pdf-v1',
       detected_bank: 'Bank of Maharashtra',
+      detected_account_last4: pdfData.accountLast4 || null,
       confidence: 'none',
       suggested_mapping: BOM_MAPPING,
       opening_balance: pdfData.openingBalance,
       closing_balance: pdfData.closingBalance,
+      statement_period_start: pdfData.statementPeriodStart || undefined,
+      statement_period_end: pdfData.statementPeriodEnd || undefined,
       raw_text: pdfData.fullDocumentText,
       parseError: 'BOM format not recognised — try Generic CSV',
     };
   }
+
+  const period =
+    pdfData.statementPeriodStart && pdfData.statementPeriodEnd
+      ? { start: pdfData.statementPeriodStart, end: pdfData.statementPeriodEnd }
+      : extractStatementPeriod(pdfData.fullDocumentText);
 
   return {
     headers: [...BOM_COLUMNS],
@@ -291,10 +540,13 @@ export async function parseBOM(
     transactions: res.transactions,
     parser_version: 'bom-pdf-v1',
     detected_bank: 'Bank of Maharashtra',
+    detected_account_last4: pdfData.accountLast4 || null,
     confidence: 'high',
     suggested_mapping: BOM_MAPPING,
     opening_balance: pdfData.openingBalance,
     closing_balance: pdfData.closingBalance,
+    statement_period_start: period.start || res.rows[0]?.['Txn Date'],
+    statement_period_end: period.end || res.rows[res.rows.length - 1]?.['Txn Date'],
     raw_text: pdfData.fullDocumentText,
   };
 }

@@ -1075,8 +1075,9 @@ export async function runServer() {
         }
 
         // Stage parsed rows into staged_transactions
-        const stagedRows = parseResult.rows.map((row) => {
-          const rawDate = columnMapping?.date_col ? row[columnMapping.date_col] : null;
+        const stagedRows = parseResult.rows.map((row, idx) => {
+          const parsedTx = parseResult.transactions?.[idx];
+          const rawDate = columnMapping?.date_col ? row[columnMapping.date_col] : parsedTx?.txn_date || null;
           let debit: number | null = null;
           let credit: number | null = null;
 
@@ -1092,17 +1093,31 @@ export async function runServer() {
           }
 
           const desc =
+            parsedTx?.description?.trim() ||
             (columnMapping?.description_col ? row[columnMapping.description_col] : null) ||
             'Pending Mapping';
-          const refNo = columnMapping?.reference_col
-            ? row[columnMapping.reference_col]?.trim() || null
-            : null;
-          const rawJson = JSON.stringify(row);
+          const rawRef =
+            parsedTx?.reference_number ||
+            (columnMapping?.reference_col ? row[columnMapping.reference_col] : null) ||
+            null;
+          const refNo =
+            (rawRef || '').replace(/\s+/g, '').replace(/^0+$/, '')
+              ? /^\d+$/.test((rawRef || '').trim())
+                ? (rawRef || '').trim().replace(/^0+/, '') || null
+                : (rawRef || '').trim().toUpperCase()
+              : null;
+          const rawNarration = (parsedTx?.raw_description || row['Raw Narration'] || '').trim();
+          const enrichedRow =
+            rawNarration && !row['Raw Narration']
+              ? { ...row, 'Raw Narration': rawNarration }
+              : row;
+          const rawJson = JSON.stringify(enrichedRow);
           const { upi_ref_no, imps_ref_no } = extractCrossSourceRefs({
             parserVersion: parseResult.parser_version,
             description: desc,
             rawDescription: rawJson,
             referenceNumber: refNo,
+            rawNarration,
           });
 
           return {
@@ -1119,8 +1134,8 @@ export async function runServer() {
               ? parseAmount(row[columnMapping.balance_col])
               : null,
             reference_number: refNo,
-            upi_ref_no,
-            imps_ref_no,
+            upi_ref_no: parsedTx?.upi_ref_no || upi_ref_no,
+            imps_ref_no: parsedTx?.imps_ref_no || imps_ref_no,
             source: 'statement_import' as const,
             is_duplicate: false,
           };
@@ -1158,6 +1173,7 @@ export async function runServer() {
           needs_mapping: needsMapping,
           headers: parseResult.headers,
           detected_bank: parseResult.detected_bank,
+          detected_account_last4: parseResult.detected_account_last4 ?? null,
           sample_rows: parseResult.rows.slice(0, 5),
           file_type: fileType,
           reconciliation_warning: parseResult.reconciliation_warning,

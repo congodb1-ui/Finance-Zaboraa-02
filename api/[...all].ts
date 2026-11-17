@@ -1052,71 +1052,23 @@ async function handleUpload(req: any, res: VercelResponse, path: string) {
   if (path.endsWith('/finalize')) {
     if (req.method !== 'POST') return res.status(405).json({ error: 'Method Not Allowed' });
     const targetUploadId = req.body?.uploadId || req.body?.upload_id;
+    const replacePreviousId = req.body?.replace_previous_id;
     if (!targetUploadId) return res.status(400).json({ error: 'Missing uploadId' });
     const supabase = req.supabase;
     const user = req.user;
 
     try {
-      const { data: staged, error: stagedErr } = await supabase
-        .from('staged_transactions')
-        .select('*')
-        .eq('upload_id', targetUploadId)
-        .eq('user_id', user.id);
-
-      if (stagedErr) {
-        await supabase
-          .from('statement_uploads')
-          .update({ status: 'failed', error_message: stagedErr.message, updated_at: new Date().toISOString() })
-          .eq('id', targetUploadId)
-          .eq('user_id', user.id);
-        return res.status(500).json({ error: stagedErr.message });
-      }
-
-      if (staged && staged.length > 0) {
-        const txsToInsert = staged.map((s: any) => {
-          const debitVal = s.debit !== null && s.debit !== undefined ? Number(s.debit) : null;
-          const creditVal = s.credit !== null && s.credit !== undefined ? Number(s.credit) : null;
-          const txnType = debitVal ? 'expense' : creditVal ? 'income' : 'expense';
-
-          return {
-            user_id: s.user_id,
-            account_id: s.account_id,
-            upload_id: targetUploadId,
-            txn_date: s.txn_date,
-            description: s.description,
-            raw_description: s.raw_description || s.description,
-            debit: debitVal,
-            credit: creditVal,
-            balance: s.balance !== null && s.balance !== undefined ? Number(s.balance) : null,
-            category_id: s.category_id || s.suggested_category_id || null,
-            workspace_id: s.workspace_id || null,
-            txn_type: txnType,
-            reference_number: s.reference_number || null,
-            notes: s.notes || null,
-            source_staged_id: s.id,
-          };
-        });
-
-        const { error: insertErr } = await supabase.from('transactions').insert(txsToInsert);
-        if (insertErr) {
-          await supabase
-            .from('statement_uploads')
-            .update({ status: 'failed', error_message: insertErr.message, updated_at: new Date().toISOString() })
-            .eq('id', targetUploadId)
-            .eq('user_id', user.id);
-          return res.status(500).json({ error: insertErr.message });
-        }
-
-        await supabase.from('staged_transactions').delete().eq('upload_id', targetUploadId).eq('user_id', user.id);
-      }
-
-      await supabase
-        .from('statement_uploads')
-        .update({ status: 'completed', updated_at: new Date().toISOString() })
-        .eq('id', targetUploadId)
-        .eq('user_id', user.id);
-
-      return res.status(200).json({ success: true, count: staged?.length || 0 });
+      const { commitUploadTransactions } = await import('../src/lib/actions/transactions');
+      const result = await commitUploadTransactions(
+        targetUploadId,
+        replacePreviousId,
+        supabase
+      );
+      return res.status(200).json({
+        success: true,
+        count: result.imported,
+        ...result,
+      });
     } catch (err: any) {
       const errMsg = err?.message || 'Finalize failed';
       await supabase

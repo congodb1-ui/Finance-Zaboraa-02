@@ -9,7 +9,7 @@ import type {
 } from '../../types/uploads';
 import { parseStatementCSV, parseStatementPDF } from '../parsers';
 import { parseXLSX } from '../parsers/xlsx';
-import { extractCrossSourceRefs } from '../parsers/utils';
+import { extractCrossSourceRefs, normalizeReferenceNumber } from '../parsers/utils';
 
 /**
  * Runs reconciliation check:
@@ -284,20 +284,30 @@ export async function processStatementUpload(
 
   // STEP 8 — Stage raw parsed rows into staged_transactions (raw JSON stored in raw_description)
   const columnMapping = parseResult.suggested_mapping || null;
-  const stagedPayload = parseResult.rows.map((row) => {
-    const rawDate = columnMapping?.date_col ? row[columnMapping.date_col] : null;
+  const stagedPayload = parseResult.rows.map((row, idx) => {
+    const parsedTx = parseResult.transactions?.[idx];
+    const rawDate = columnMapping?.date_col ? row[columnMapping.date_col] : parsedTx?.txn_date || null;
     const desc =
+      parsedTx?.description?.trim() ||
       (columnMapping?.description_col ? row[columnMapping.description_col] : null)?.trim() ||
       'Pending Mapping';
-    const refNo = columnMapping?.reference_col
-      ? row[columnMapping.reference_col]?.trim() || null
-      : null;
-    const rawJson = JSON.stringify(row);
+    const rawRef =
+      parsedTx?.reference_number ||
+      (columnMapping?.reference_col ? row[columnMapping.reference_col] : null) ||
+      null;
+    const refNo = normalizeReferenceNumber(rawRef) || rawRef?.trim() || null;
+    const rawNarration = (parsedTx?.raw_description || row['Raw Narration'] || '').trim();
+    const enrichedRow =
+      rawNarration && !row['Raw Narration']
+        ? { ...row, 'Raw Narration': rawNarration }
+        : row;
+    const rawJson = JSON.stringify(enrichedRow);
     const { upi_ref_no, imps_ref_no } = extractCrossSourceRefs({
       parserVersion: parseResult.parser_version,
       description: desc,
       rawDescription: rawJson,
       referenceNumber: refNo,
+      rawNarration,
     });
 
     return {
@@ -309,8 +319,8 @@ export async function processStatementUpload(
       description: desc,
       raw_description: rawJson,
       reference_number: refNo,
-      upi_ref_no,
-      imps_ref_no,
+      upi_ref_no: parsedTx?.upi_ref_no || upi_ref_no,
+      imps_ref_no: parsedTx?.imps_ref_no || imps_ref_no,
       source: 'statement_import' as const,
       is_duplicate: false,
     };
@@ -337,6 +347,7 @@ export async function processStatementUpload(
     needs_mapping: needsMapping,
     headers: parseResult.headers,
     detected_bank: parseResult.detected_bank,
+    detected_account_last4: parseResult.detected_account_last4 ?? null,
     sample_rows: parseResult.rows.slice(0, 5),
     file_type: fileType,
     reconciliation_warning: parseResult.reconciliation_warning,
@@ -485,19 +496,27 @@ export async function confirmMappingAndStaging(
       if (!maxDate || txnDate > maxDate) maxDate = txnDate;
     }
 
-    const baseRawDesc = rawDescStr.trim() || description;
+    const rawNarrationStr =
+      typeof rawRow['Raw Narration'] === 'string' ? rawRow['Raw Narration'].trim() : '';
+    const baseRawDesc = rawNarrationStr || rawDescStr.trim() || description;
     const paytmNotes = typeof rawRow['Notes & Tags'] === 'string' ? rawRow['Notes & Tags'].trim() : '';
     const preservedRawDesc =
       paytmNotes && !baseRawDesc.includes(paytmNotes)
         ? `${baseRawDesc} | ${paytmNotes}`
         : baseRawDesc;
 
-    const cleanRef = reference?.trim() || null;
+    const cleanRef =
+      normalizeReferenceNumber(reference) ||
+      normalizeReferenceNumber(existing.reference_number) ||
+      reference?.trim() ||
+      existing.reference_number ||
+      null;
     const { upi_ref_no, imps_ref_no } = extractCrossSourceRefs({
       parserVersion: upload.parser_version,
       description,
       rawDescription: `${preservedRawDesc} ${JSON.stringify(rawRow)}`,
       referenceNumber: cleanRef,
+      rawNarration: rawNarrationStr || undefined,
     });
 
     mappedRows.push({

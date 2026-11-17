@@ -11,7 +11,15 @@ export type GmailEmailKind =
   | 'HDFC_EFT_DEBIT'
   | 'HDFC_BALANCE_ALERT'
   | 'BOM_IMPS'
+  | 'BOM_NEFT'
+  | 'BOM_RTGS'
+  | 'BOM_UPI'
   | 'BOI_IMPS'
+  | 'BOI_NEFT'
+  | 'BOI_RTGS'
+  | 'BOI_UPI'
+  | 'GENERIC_BANK_ALERT'
+  | 'OTP_OR_PROMO'
   | 'UNKNOWN';
 
 export type GmailTransferMethod = 'UPI' | 'IMPS' | 'RTGS' | 'NEFT' | 'EFT' | 'BALANCE_ALERT';
@@ -50,7 +58,7 @@ export interface GmailMessage {
 }
 
 export interface ParsedEmailTransaction {
-  kind: Exclude<GmailEmailKind, 'HDFC_BALANCE_ALERT' | 'UNKNOWN'>;
+  kind: Exclude<GmailEmailKind, 'HDFC_BALANCE_ALERT' | 'UNKNOWN' | 'OTP_OR_PROMO'>;
   record_type: 'transaction';
   gmail_msg_id: string;
   from_address: string;
@@ -81,6 +89,15 @@ export interface ParsedEmailBalanceAlert {
   balance_after: number;
 }
 
+export interface ParsedEmailIgnored {
+  kind: 'OTP_OR_PROMO' | 'UNKNOWN';
+  record_type: 'ignored';
+  gmail_msg_id: string;
+  from_address: string;
+  subject: string;
+  reason: string;
+}
+
 export interface ParsedEmailError {
   kind: 'UNKNOWN' | GmailEmailKind;
   record_type: 'error';
@@ -94,4 +111,5 @@ export interface ParsedEmailError {
 export type GmailParseOutcome =
   | ParsedEmailTransaction
   | ParsedEmailBalanceAlert
+  | ParsedEmailIgnored
   | ParsedEmailError;

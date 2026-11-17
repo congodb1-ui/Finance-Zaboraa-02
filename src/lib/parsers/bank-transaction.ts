@@ -123,9 +123,19 @@ export function parseBankNarration(
   text = text.replace(/([a-zA-Z])-\s*\r?\n\s*([a-zA-Z])/g, '$1$2');
   text = text.replace(/\r?\n|\r/g, ' ').replace(/\s{2,}/g, ' ').trim();
 
-  // Fix common PDF wrapped split words e.g. "LIM ITED" -> "LIMITED", "PA YMENT" -> "PAYMENT"
+  // Fix common PDF wrapped split words
   text = text.replace(/\bLIM\s+ITED\b/gi, 'LIMITED');
   text = text.replace(/\bPA\s+YMENT\b/gi, 'PAYMENT');
+  text = text.replace(/\bSALIM\s*S\s+AYYED\b/gi, 'SALIM SAYYED');
+  text = text.replace(/\bSER\s+VICES\b/gi, 'SERVICES');
+  text = text.replace(/\bPRIV\s+ATE\b/gi, 'PRIVATE');
+  text = text.replace(/\bSECURITIES\s*LIM(?:\s+ITED)?\b/gi, 'SECURITIES LIMITED');
+  text = text.replace(/([A-Z]{3,})([A-Z]{1,2})\s+([A-Z]{2,})(?=\s|$|-)/g, (m, a, b, c) => {
+    // Only rejoin likely split words like "SECURITIESLIM ITED" -> keep normal two words intact unless prefix ends in LIM/CON/TECH
+    if (b === 'S' && c === 'AYYED') return `${a} ${b}${c}`;
+    if ((b === 'LIM' || b === 'L') && /^ITED$/i.test(c)) return `${a} ${b}${c}`;
+    return m;
+  });
 
   // STEP 4A & 4B: Strip leading UTR prefix and/or date prepended to narration (Old bank statement format)
   // e.g. "0000234669620494 12/12/22 SAYYED-WASIMSSAYYED@ICICI-ICIC0003182-234669620494-SAVING-UPI PAYMENT"
@@ -245,12 +255,31 @@ export function parseBankNarration(
 
   // ==========================================
   // 4. IMPS
-  // Format: IMPS-<12-digit UTR>-<MERCHANT>-<BANK> or IMPS CR-<MERCHANT>-<UTR>
+  // Format:
+  // - BOM: IMPS/48/<12-digit-UTR>/<maskedAccount>/<PAYEE>/<Purpose>
+  // - Other: IMPS-<12-digit UTR>-<MERCHANT>-<BANK> or IMPS CR-<MERCHANT>-<UTR>
   // ==========================================
   if (/^IMPS[\/\-\s]/i.test(text)) {
+    // Check BOM slash format: IMPS/<code>/<12-digit-ref>/<masked>/<payee>[/<purpose>...]
+    const bomSlash = text.match(/^IMPS\/\d+\/(\d{12})\/([^\/]*)\/(.+)$/i);
+    if (bomSlash) {
+      const ref12 = bomSlash[1];
+      const tailParts = bomSlash[3]
+        .split('/')
+        .map((s) => s.replace(/\s*TRANSFER TO \d+ TO\s*/i, ' - ').trim())
+        .filter(Boolean);
+      const cleanDesc = tailParts.join(' - ') || 'IMPS Transfer';
+      return {
+        description: cleanDesc,
+        reference: ref12 || fallbackRef,
+        transactionType: 'IMPS',
+      };
+    }
+
     let working = text.replace(/^IMPS[\/\-\s]+(?:CR|DR)?[\/\-\s]*/i, '').trim();
 
-    const segments = working.split('-').map((s) => s.trim()).filter(Boolean);
+    const sep = working.includes('/') && !working.includes('-') ? '/' : '-';
+    const segments = working.split(sep).map((s) => s.trim()).filter(Boolean);
     let extractedRef = fallbackRef;
     let desc = '';
 
@@ -259,6 +288,9 @@ export function parseBankNarration(
       if (/^\d{12}$/.test(segments[0])) {
         extractedRef = segments[0];
         desc = segments[1];
+      } else if (/^\d{1,3}$/.test(segments[0]) && /^\d{12}$/.test(segments[1])) {
+        extractedRef = segments[1];
+        desc = segments.slice(2).filter((s) => !/^\*+/.test(s)).join(' - ');
       } else {
         const lastSeg = segments[segments.length - 1];
         if (/^\d{12}$/.test(lastSeg) || /^[A-Z0-9]{10,22}$/i.test(lastSeg)) {
@@ -379,12 +411,27 @@ export function parseBankNarration(
   }
 
   // ==========================================
-  // 9. UPI (with UPI- prefix OR containing VPA @)
+  // 9. UPI (with UPI prefix OR containing VPA @bank-letters, NOT @81.85 forex rate)
   // Format: UPI-<NAME>-<MASKED>@BANK-<IFSC>-<UTR>-<SUFFIX>
+  // BOM Format: UPI <12-digit-UTR><NA|Note>
   // Or Old Statement Format: [SENDER-]NAME@BANK-IFSC-UTR
   // ==========================================
   const hasUpiPrefix = /^UPI[\/\-\s]/i.test(text);
-  if (hasUpiPrefix || /@[a-zA-Z0-9.-]+/.test(text)) {
+  const hasUpiVpa = /@[a-zA-Z][a-zA-Z0-9.-]*/.test(text);
+  if (hasUpiPrefix || hasUpiVpa) {
+    // Handle BOM compact UPI narration: "UPI 410031514728NA" or "UPI 459200856871Upwork"
+    const bomUpiMatch = text.match(/^UPI\s+(\d{12})([A-Za-z0-9\s\-]*)$/i);
+    if (bomUpiMatch) {
+      const ref12 = bomUpiMatch[1];
+      const suffix = bomUpiMatch[2].trim();
+      const isNoiseSuffix = !suffix || /^NA$/i.test(suffix);
+      return {
+        description: isNoiseSuffix ? `UPI Transfer (${ref12.slice(-4)})` : `UPI - ${suffix}`,
+        reference: ref12,
+        transactionType: 'UPI',
+      };
+    }
+
     let working = text.replace(/^UPI[\/\-\s]+/i, '').trim();
 
     // 1. Extract 12-digit UTR
@@ -406,14 +453,14 @@ export function parseBankNarration(
     if (hasUpiPrefix) {
       // Standard format: UPI-<NAME>-<MASKED>@BANK or UPI-<NAME>-<IFSC>-<UTR>
       const splitMatch = working.match(
-        /^(.*?)(?:-[*]{3,}|-[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+|-[A-Z]{4}0[A-Z0-9]{6}|-\d{12}|@[a-zA-Z0-9.-]+)/
+        /^(.*?)(?:-[*]{2,}[A-Za-z0-9._%+-]*@[a-zA-Z0-9.-]+|-[*]{3,}|-[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+|-[A-Z]{4}0[A-Z0-9]{6}|-\d{12}|@[a-zA-Z0-9.-]+)/
       );
       if (splitMatch && splitMatch[1] && splitMatch[1].trim().length > 0) {
         working = splitMatch[1].trim();
       }
     } else {
       // Old statement format without UPI prefix: [SENDER-]VPA_USER@BANK-IFSC-UTR
-      const vpaMatch = working.match(/^(?:.*?-)?([a-zA-Z0-9._%+-]+)@[a-zA-Z0-9.-]+/);
+      const vpaMatch = working.match(/^(?:.*?-)?([a-zA-Z0-9._%+-]+)@[a-zA-Z][a-zA-Z0-9.-]*/);
       if (vpaMatch && vpaMatch[1]) {
         let vpaUser = vpaMatch[1].trim();
         vpaUser = vpaUser.replace(/[._]+/g, ' ').trim();

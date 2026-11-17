@@ -15,8 +15,13 @@ import { getWorkspaces } from './workspaces';
 import { getUploadDetails } from './upload';
 import { getAiSettings } from './aiSettings';
 import { resolvePaytmTagCategory } from '../parsers/paytm-upi';
-import { extractCrossSourceRefs } from '../parsers/utils';
+import { extractCrossSourceRefs, normalizeReferenceNumber } from '../parsers/utils';
 import { detectAndLinkSelfTransfers } from '../self-transfer';
+import {
+  findBestCrossSourceMatch,
+  type DedupCandidateTx,
+  type IncomingDedupRow,
+} from '../dedup-sync';
 
 const TRANSACTION_SELECT =
   '*, accounts(id, name, bank_name, account_number_last4), categories(id, name, color_index, icon), workspaces(id, name, color_index), statement_uploads(id, file_name)';
@@ -160,7 +165,7 @@ export async function commitUploadTransactions(
       .eq('user_id', user.id);
   }
 
-  // Compute date range of staged batch
+  // Compute date range of staged batch (±2d buffer for cross-source bank lag)
   let minDate = stagedRows[0].txn_date;
   let maxDate = stagedRows[0].txn_date;
   for (const row of stagedRows) {
@@ -168,49 +173,79 @@ export async function commitUploadTransactions(
     if (row.txn_date > maxDate) maxDate = row.txn_date;
   }
 
-  // Pre-compute cross-source refs (upi_ref_no, imps_ref_no) for incoming staged rows
-  const stagedRefMap = new Map<string, { upi_ref_no: string | null; imps_ref_no: string | null }>();
+  const windowStart = new Date(minDate);
+  windowStart.setDate(windowStart.getDate() - 2);
+  const windowEnd = new Date(maxDate);
+  windowEnd.setDate(windowEnd.getDate() + 2);
+  const minWindowDate = windowStart.toISOString().split('T')[0];
+  const maxWindowDate = windowEnd.toISOString().split('T')[0];
+
+  // Pre-compute cross-source refs (upi_ref_no, imps_ref_no, neft_rtgs_ref_no) for incoming staged rows
+  const stagedRefMap = new Map<
+    string,
+    { upi_ref_no: string | null; imps_ref_no: string | null; reference_number: string | null }
+  >();
   const incomingUpiRefs = new Set<string>();
   const incomingImpsRefs = new Set<string>();
+  const incomingGenericRefs = new Set<string>();
 
   for (const staged of stagedRows) {
+    const normExistingRef = normalizeReferenceNumber(staged.reference_number);
     const extracted = extractCrossSourceRefs({
       parserVersion: upload.parser_version,
       description: staged.description,
       rawDescription: staged.raw_description,
-      referenceNumber: staged.reference_number,
+      referenceNumber: normExistingRef,
+      rawNarration: staged.raw_description,
     });
     const upiRef = staged.upi_ref_no || extracted.upi_ref_no || null;
     const impsRef = staged.imps_ref_no || extracted.imps_ref_no || null;
-    stagedRefMap.set(staged.id, { upi_ref_no: upiRef, imps_ref_no: impsRef });
+    const refNo = normExistingRef || extracted.neft_rtgs_ref_no || upiRef || impsRef || null;
+    stagedRefMap.set(staged.id, {
+      upi_ref_no: upiRef,
+      imps_ref_no: impsRef,
+      reference_number: refNo,
+    });
     if (upiRef) incomingUpiRefs.add(upiRef);
     if (impsRef) incomingImpsRefs.add(impsRef);
+    if (refNo && refNo.length >= 8) incomingGenericRefs.add(refNo);
   }
 
-  // STEP 3A — Batch 4b LAYER 4 (UPI Ref) & LAYER 5 (IMPS Ref) cross-source dedup BEFORE Layer 3
-  const [upiMatchesRes, impsMatchesRes, existingTxnsRes] = await Promise.all([
+  const candidateFields =
+    'id, account_id, upload_id, txn_date, description, raw_description, debit, credit, balance, balance_after, reference_number, upi_ref_no, imps_ref_no, source';
+
+  // STEP 3A — Query existing transactions by UPI Ref, IMPS Ref, Generic UTR/Ref, and ±2d date window
+  const [upiMatchesRes, impsMatchesRes, refMatchesRes, existingTxnsRes] = await Promise.all([
     incomingUpiRefs.size > 0
       ? supabase
           .from('transactions')
-          .select('id, account_id, upi_ref_no, debit, credit')
+          .select(candidateFields)
           .eq('user_id', user.id)
           .in('upi_ref_no', Array.from(incomingUpiRefs))
       : Promise.resolve({ data: [], error: null }),
     incomingImpsRefs.size > 0
       ? supabase
           .from('transactions')
-          .select('id, account_id, imps_ref_no, debit, credit')
+          .select(candidateFields)
           .eq('user_id', user.id)
           .in('imps_ref_no', Array.from(incomingImpsRefs))
       : Promise.resolve({ data: [], error: null }),
+    incomingGenericRefs.size > 0
+      ? supabase
+          .from('transactions')
+          .select(candidateFields)
+          .eq('user_id', user.id)
+          .eq('account_id', upload.account_id)
+          .in('reference_number', Array.from(incomingGenericRefs))
+      : Promise.resolve({ data: [], error: null }),
     supabase
       .from('transactions')
-      .select('id, account_id, txn_date, description, debit, credit, reference_number')
+      .select(candidateFields)
       .eq('user_id', user.id)
       .eq('account_id', upload.account_id)
       .neq('upload_id', uploadId)
-      .gte('txn_date', minDate)
-      .lte('txn_date', maxDate),
+      .gte('txn_date', minWindowDate)
+      .lte('txn_date', maxWindowDate),
   ]);
 
   if (existingTxnsRes.error) {
@@ -219,48 +254,39 @@ export async function commitUploadTransactions(
     );
   }
 
-  const existingByUpi = new Map<
-    string,
-    Array<{ id: string; account_id: string; debit: number | null; credit: number | null }>
-  >();
-  for (const row of upiMatchesRes.data || []) {
-    if (!row.upi_ref_no) continue;
-    const list = existingByUpi.get(row.upi_ref_no) || [];
-    list.push({
-      id: row.id,
-      account_id: row.account_id,
-      debit: row.debit !== null ? Number(row.debit) : null,
-      credit: row.credit !== null ? Number(row.credit) : null,
+  const allCandidatesMap = new Map<string, DedupCandidateTx>();
+  for (const row of [
+    ...(upiMatchesRes.data || []),
+    ...(impsMatchesRes.data || []),
+    ...(refMatchesRes.data || []),
+    ...(existingTxnsRes.data || []),
+  ]) {
+    if (row.upload_id === uploadId) continue;
+    allCandidatesMap.set(row.id, {
+      ...row,
+      debit: row.debit !== null && row.debit !== undefined ? Number(row.debit) : null,
+      credit: row.credit !== null && row.credit !== undefined ? Number(row.credit) : null,
+      balance: row.balance !== null && row.balance !== undefined ? Number(row.balance) : null,
+      balance_after:
+        row.balance_after !== null && row.balance_after !== undefined
+          ? Number(row.balance_after)
+          : null,
     });
-    existingByUpi.set(row.upi_ref_no, list);
   }
+  const allCandidates = Array.from(allCandidatesMap.values());
 
-  const existingByImps = new Map<
-    string,
-    Array<{ id: string; account_id: string; debit: number | null; credit: number | null }>
-  >();
-  for (const row of impsMatchesRes.data || []) {
-    if (!row.imps_ref_no) continue;
-    const list = existingByImps.get(row.imps_ref_no) || [];
-    list.push({
-      id: row.id,
-      account_id: row.account_id,
-      debit: row.debit !== null ? Number(row.debit) : null,
-      credit: row.credit !== null ? Number(row.credit) : null,
-    });
-    existingByImps.set(row.imps_ref_no, list);
-  }
-
-  // STEP 3B — DB-backed Multiset pool (PRD §4.3 Layer 3)
+  // STEP 3B — DB-backed Multiset pool (PRD §4.3 Layer 3 exact statement-vs-statement dedup)
   const existingPool = new Map<string, string[]>();
-  for (const t of existingTxnsRes.data || []) {
+  for (const t of allCandidates) {
+    if (t.account_id !== upload.account_id) continue;
+    if (t.txn_date < minDate || t.txn_date > maxDate) continue;
     const key = getDedupKey(
       t.txn_date,
       t.description,
-      t.debit !== null ? Number(t.debit) : null,
-      t.credit !== null ? Number(t.credit) : null,
+      t.debit,
+      t.credit,
       t.account_id,
-      t.reference_number
+      t.reference_number || null
     );
     const list = existingPool.get(key) || [];
     list.push(t.id);
@@ -270,60 +296,81 @@ export async function commitUploadTransactions(
   let duplicateCount = 0;
   const nonDuplicateStaged: typeof stagedRows = [];
   const duplicateUpdates: Array<{ id: string; duplicate_of_id: string }> = [];
+  const enrichmentUpdates: Array<{ id: string; patch: Record<string, any> }> = [];
+  const consumedCandidateIds = new Set<string>();
 
   for (const staged of stagedRows) {
-    const refs = stagedRefMap.get(staged.id) || { upi_ref_no: null, imps_ref_no: null };
-    const stagedIsDebit = staged.debit !== null && staged.debit !== undefined && Number(staged.debit) > 0;
-    const stagedIsCredit = staged.credit !== null && staged.credit !== undefined && Number(staged.credit) > 0;
+    const refs = stagedRefMap.get(staged.id) || {
+      upi_ref_no: null,
+      imps_ref_no: null,
+      reference_number: normalizeReferenceNumber(staged.reference_number),
+    };
 
-    // LAYER 4: UPI Ref cross-source dedup (same account OR same debit/credit direction across sources)
-    if (refs.upi_ref_no) {
-      const upiCandidates = existingByUpi.get(refs.upi_ref_no) || [];
-      const matchedUpi = upiCandidates.find((e) => {
-        const eIsDebit = e.debit !== null && e.debit > 0;
-        const eIsCredit = e.credit !== null && e.credit > 0;
-        return e.account_id === upload.account_id || (eIsDebit === stagedIsDebit && eIsCredit === stagedIsCredit);
-      });
-      if (matchedUpi) {
-        duplicateCount++;
-        duplicateUpdates.push({ id: staged.id, duplicate_of_id: matchedUpi.id });
-        continue;
+    const incomingRow: IncomingDedupRow = {
+      account_id: upload.account_id,
+      upload_id: upload.id,
+      txn_date: staged.txn_date,
+      description: staged.description,
+      raw_description: staged.raw_description,
+      debit: staged.debit,
+      credit: staged.credit,
+      balance: staged.balance,
+      reference_number: refs.reference_number,
+      upi_ref_no: refs.upi_ref_no,
+      imps_ref_no: refs.imps_ref_no,
+      source: 'statement_import',
+    };
+
+    // Tier 1 (Ref match: UPI/IMPS/NEFT/RTGS) & Tier 2 (Cross-source fuzzy ±2d for ref-less Gmail alerts)
+    const crossMatch = findBestCrossSourceMatch(
+      incomingRow,
+      allCandidates,
+      consumedCandidateIds
+    );
+    if (crossMatch) {
+      consumedCandidateIds.add(crossMatch.matched.id);
+      duplicateCount++;
+      duplicateUpdates.push({ id: staged.id, duplicate_of_id: crossMatch.matched.id });
+      if (crossMatch.enrichmentPatch) {
+        enrichmentUpdates.push({ id: crossMatch.matched.id, patch: crossMatch.enrichmentPatch });
       }
+      continue;
     }
 
-    // LAYER 5: IMPS Ref cross-source dedup (same account OR same debit/credit direction; opposite leg across accounts is self-transfer)
-    if (refs.imps_ref_no) {
-      const impsCandidates = existingByImps.get(refs.imps_ref_no) || [];
-      const matchedImps = impsCandidates.find((e) => {
-        const eIsDebit = e.debit !== null && e.debit > 0;
-        const eIsCredit = e.credit !== null && e.credit > 0;
-        return e.account_id === upload.account_id || (eIsDebit === stagedIsDebit && eIsCredit === stagedIsCredit);
-      });
-      if (matchedImps) {
-        duplicateCount++;
-        duplicateUpdates.push({ id: staged.id, duplicate_of_id: matchedImps.id });
-        continue;
-      }
-    }
-
-    // LAYER 3: Multiset dedup
+    // LAYER 3: Exact Multiset dedup (statement-vs-statement same date/amount/desc/utr)
     const key = getDedupKey(
       staged.txn_date,
       staged.description,
       staged.debit,
       staged.credit,
       upload.account_id,
-      staged.reference_number
+      refs.reference_number || staged.reference_number
     );
     const existingList = existingPool.get(key);
+    const nextUnconsumedIdx = existingList
+      ? existingList.findIndex((id) => !consumedCandidateIds.has(id))
+      : -1;
 
-    if (existingList && existingList.length > 0) {
-      const matchedTxId = existingList.shift()!;
+    if (existingList && nextUnconsumedIdx !== -1) {
+      const matchedTxId = existingList.splice(nextUnconsumedIdx, 1)[0];
+      consumedCandidateIds.add(matchedTxId);
       duplicateCount++;
       duplicateUpdates.push({ id: staged.id, duplicate_of_id: matchedTxId });
     } else {
       nonDuplicateStaged.push(staged);
     }
+  }
+
+  // Enrich matched gmail_auto transactions with statement balance/upload_id/raw_description/refs
+  for (const enr of enrichmentUpdates) {
+    await supabase
+      .from('transactions')
+      .update({
+        ...enr.patch,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', enr.id)
+      .eq('user_id', user.id);
   }
 
   // Mark duplicate staged rows in DB
@@ -394,7 +441,11 @@ export async function commitUploadTransactions(
       }
     }
 
-    const refs = stagedRefMap.get(row.id) || { upi_ref_no: null, imps_ref_no: null };
+    const refs = stagedRefMap.get(row.id) || {
+      upi_ref_no: null,
+      imps_ref_no: null,
+      reference_number: row.reference_number,
+    };
 
     return {
       user_id: user.id,
@@ -407,7 +458,7 @@ export async function commitUploadTransactions(
       credit: row.credit,
       balance: row.balance,
       balance_after: row.balance ?? null,
-      reference_number: row.reference_number,
+      reference_number: refs.reference_number || row.reference_number,
       upi_ref_no: refs.upi_ref_no,
       imps_ref_no: refs.imps_ref_no,
       source: 'statement_import' as const,

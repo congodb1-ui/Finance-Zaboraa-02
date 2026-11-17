@@ -32,6 +32,8 @@ export interface PDFExtractionResult {
   closingBalance: number | null;
   statementPeriodStart?: string | null;
   statementPeriodEnd?: string | null;
+  accountNumber?: string | null;
+  accountLast4?: string | null;
 }
 
 export class PdfPasswordError extends Error {
@@ -121,8 +123,7 @@ export async function extractPDFRawData(
     const pageFullText = textPieces.join(' ');
     fullDocumentText += ` ${pageFullText}`;
 
-    // Cluster text items into rows by y-coordinate proximity (tolerance: ±3px)
-    // Sort descending by y (top of page has higher y in PDF coordinates)
+    // Cluster text items into rows by y-coordinate proximity (tolerance: ±3.5px)
     items.sort((a, b) => b.y - a.y);
 
     interface RowCluster {
@@ -133,8 +134,7 @@ export async function extractPDFRawData(
     const rowClusters: RowCluster[] = [];
 
     for (const item of items) {
-      // Find existing cluster within ±3px
-      let matchedCluster = rowClusters.find((cluster) => Math.abs(cluster.baseY - item.y) <= 3.5);
+      const matchedCluster = rowClusters.find((cluster) => Math.abs(cluster.baseY - item.y) <= 3.5);
 
       if (matchedCluster) {
         matchedCluster.items.push(item);
@@ -146,23 +146,19 @@ export async function extractPDFRawData(
       }
     }
 
-    // Sort clusters top-to-bottom (highest baseY first)
     rowClusters.sort((a, b) => b.baseY - a.baseY);
 
     const pageGridRows: string[][] = [];
 
     for (const cluster of rowClusters) {
-      // Sort items left-to-right by x-coordinate
       cluster.items.sort((a, b) => a.x - b.x);
 
-      // Merge items that are horizontally adjacent within the same column cell (e.g. words separated by a space)
       const mergedCells: string[] = [];
       let currentCell = '';
       let prevX = -999;
       let prevWidth = 0;
 
       for (const item of cluster.items) {
-        // If the gap between previous item right edge and current item left edge is small (< 12px), merge
         const gap = item.x - (prevX + prevWidth);
         if (prevX !== -999 && gap < 12 && gap >= -2) {
           currentCell = `${currentCell} ${item.text}`.trim();
@@ -193,9 +189,9 @@ export async function extractPDFRawData(
     });
   }
 
-  // Attempt to extract opening and closing balance from full document text for reconciliation
-  const balances = extractStatementBalances(fullDocumentText);
+  const balances = extractStatementBalances(fullDocumentText, allGridRows);
   const period = extractStatementPeriod(fullDocumentText);
+  const acct = extractStatementAccountInfo(fullDocumentText);
 
   return {
     pages,
@@ -205,12 +201,31 @@ export async function extractPDFRawData(
     closingBalance: balances.closing,
     statementPeriodStart: period.start,
     statementPeriodEnd: period.end,
+    accountNumber: acct.accountNumber,
+    accountLast4: acct.accountLast4,
   };
 }
 
 /**
+ * Extracts statement account number & last4 across Indian banks.
+ */
+export function extractStatementAccountInfo(text: string): {
+  accountNumber: string | null;
+  accountLast4: string | null;
+} {
+  if (!text) return { accountNumber: null, accountLast4: null };
+  const m =
+    text.match(/(?:Account|A\/c)\s*(?:No|Number)\.?\s*[:\-]?\s*([Xx*\d]{6,20})/i) ||
+    text.match(/Statement\s+for\s+Account\s+No\.?\s*[:\-]?\s*([Xx*\d]{6,20})/i);
+  if (!m?.[1]) return { accountNumber: null, accountLast4: null };
+  const raw = m[1].trim();
+  const digits = raw.match(/(\d{4})$/)?.[1] || null;
+  return { accountNumber: raw, accountLast4: digits };
+}
+
+/**
  * Searches statement text for statement period / date range patterns
- * Matches "Statement From : 01/01/2026 To : 19/07/2026", "Statement From 01/01/2026 To 19/07/2026", etc.
+ * Matches HDFC, BOM ("Statement for Account No ... from DD/MM/YYYY to DD/MM/YYYY"), SBI, ICICI, etc.
  */
 export function extractStatementPeriod(text: string): { start: string | null; end: string | null } {
   if (!text) return { start: null, end: null };
@@ -221,13 +236,19 @@ export function extractStatementPeriod(text: string): { start: string | null; en
     return { start: p1[1].trim(), end: p1[2].trim() };
   }
 
-  // Pattern 2: Statement Period : DD/MM/YYYY to DD/MM/YYYY or DD-Mon-YYYY to DD-Mon-YYYY
+  // Pattern 2: Statement for Account No X from DD/MM/YYYY to DD/MM/YYYY (BOM)
+  const pBom = text.match(/statement\s+for\s+account\s+(?:no\.?\s*)?\S+\s+from\s*[:\-]?\s*(\d{1,2}[/\-.]\d{1,2}[/\-.]\d{2,4})\s+(?:to|-)\s*[:\-]?\s*(\d{1,2}[/\-.]\d{1,2}[/\-.]\d{2,4})/i);
+  if (pBom && pBom[1] && pBom[2]) {
+    return { start: pBom[1].trim(), end: pBom[2].trim() };
+  }
+
+  // Pattern 3: Statement Period : DD/MM/YYYY to DD/MM/YYYY or DD-Mon-YYYY to DD-Mon-YYYY
   const p2 = text.match(/(?:statement\s+period|period|txn\s+period|from\s+date)\s*[:\-]?\s*(\d{1,2}[/\-.][\w]+[/\-.]\d{2,4}|\d{1,2}[/\-.]\d{1,2}[/\-.]\d{2,4})\s*(?:to|-)\s*[:\-]?\s*(\d{1,2}[/\-.][\w]+[/\-.]\d{2,4}|\d{1,2}[/\-.]\d{1,2}[/\-.]\d{2,4})/i);
   if (p2 && p2[1] && p2[2]) {
     return { start: p2[1].trim(), end: p2[2].trim() };
   }
 
-  // Pattern 3: From DD/MM/YYYY To DD/MM/YYYY
+  // Pattern 4: From DD/MM/YYYY To DD/MM/YYYY
   const p3 = text.match(/from\s*[:\-]?\s*(\d{1,2}[/\-.]\d{1,2}[/\-.]\d{2,4})\s+to\s*[:\-]?\s*(\d{1,2}[/\-.]\d{1,2}[/\-.]\d{2,4})/i);
   if (p3 && p3[1] && p3[2]) {
     return { start: p3[1].trim(), end: p3[2].trim() };
@@ -237,17 +258,41 @@ export function extractStatementPeriod(text: string): { start: string | null; en
 }
 
 /**
- * Searches statement text for opening and closing balance patterns
+ * Searches statement text & tabular summary grid rows for opening and closing balance patterns
  */
-export function extractStatementBalances(text: string): { opening: number | null; closing: number | null } {
+export function extractStatementBalances(
+  text: string,
+  allGridRows?: string[][]
+): { opening: number | null; closing: number | null } {
   let opening: number | null = null;
   let closing: number | null = null;
 
-  // Patterns for Opening Balance
+  // Check HDFC-style 2-row summary header:
+  // Row i:   ['Opening Balance', 'Dr Count', 'Cr Count', 'Debits', 'Credits', 'Closing Bal']
+  // Row i+1: ['0.00', '22', '16', '2,978,162.93', '4,728,683.17', '1,750,520.24']
+  if (allGridRows && allGridRows.length > 1) {
+    for (let i = 0; i < allGridRows.length - 1; i++) {
+      const headerRow = allGridRows[i];
+      const nextRow = allGridRows[i + 1];
+      const openColIdx = headerRow.findIndex((c) => /^opening\s+bal(?:ance)?$/i.test(c.trim()));
+      const closeColIdx = headerRow.findIndex((c) => /^(?:closing|ending)\s+bal(?:ance)?$/i.test(c.trim()));
+      if (openColIdx >= 0 && closeColIdx >= 0 && nextRow.length >= headerRow.length) {
+        const oNum = parseFloat(String(nextRow[openColIdx] || '').replace(/,/g, ''));
+        const cNum = parseFloat(String(nextRow[closeColIdx] || '').replace(/,/g, ''));
+        if (!isNaN(oNum)) opening = oNum;
+        if (!isNaN(cNum)) closing = cNum;
+        if (opening !== null && closing !== null) {
+          return { opening, closing };
+        }
+      }
+    }
+  }
+
+  // Inline patterns for Opening Balance
   const openingPatterns = [
-    /opening\s+bal(?:ance)?\s*[:\-]?\s*(?:inr|rs\.?)?\s*([\d,]+\.?\d*)/i,
-    /b\/f\s+bal(?:ance)?\s*[:\-]?\s*(?:inr|rs\.?)?\s*([\d,]+\.?\d*)/i,
-    /brought\s+forward\s*[:\-]?\s*(?:inr|rs\.?)?\s*([\d,]+\.?\d*)/i,
+    /opening\s+bal(?:ance)?\s*[:\-]?\s*(?:inr|rs\.?)?\s*([\d,]+\.\d{2}|[\d,]+)/i,
+    /b\/f\s+bal(?:ance)?\s*[:\-]?\s*(?:inr|rs\.?)?\s*([\d,]+\.\d{2})/i,
+    /brought\s+forward\s*[:\-]?\s*(?:inr|rs\.?)?\s*([\d,]+\.\d{2})/i,
   ];
 
   for (const pat of openingPatterns) {
@@ -261,12 +306,12 @@ export function extractStatementBalances(text: string): { opening: number | null
     }
   }
 
-  // Patterns for Closing Balance
+  // Inline patterns for Closing Balance
   const closingPatterns = [
-    /closing\s+bal(?:ance)?\s*[:\-]?\s*(?:inr|rs\.?)?\s*([\d,]+\.?\d*)/i,
-    /c\/f\s+bal(?:ance)?\s*[:\-]?\s*(?:inr|rs\.?)?\s*([\d,]+\.?\d*)/i,
-    /ending\s+bal(?:ance)?\s*[:\-]?\s*(?:inr|rs\.?)?\s*([\d,]+\.?\d*)/i,
-    /carried\s+forward\s*[:\-]?\s*(?:inr|rs\.?)?\s*([\d,]+\.?\d*)/i,
+    /closing\s+bal(?:ance)?\s*[:\-]?\s*(?:inr|rs\.?)?\s*([\d,]+\.\d{2}|[\d,]+)/i,
+    /c\/f\s+bal(?:ance)?\s*[:\-]?\s*(?:inr|rs\.?)?\s*([\d,]+\.\d{2})/i,
+    /ending\s+bal(?:ance)?\s*[:\-]?\s*(?:inr|rs\.?)?\s*([\d,]+\.\d{2})/i,
+    /carried\s+forward\s*[:\-]?\s*(?:inr|rs\.?)?\s*([\d,]+\.\d{2})/i,
   ];
 
   for (const pat of closingPatterns) {

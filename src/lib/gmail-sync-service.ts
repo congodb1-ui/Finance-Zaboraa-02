@@ -2,11 +2,18 @@ import { callGeminiFlash, isAIError } from './ai/gemini-client';
 import { maskForAI } from './ai/pii-mask';
 import { getValidGmailAccessToken } from './gmail-vault';
 import {
+  GMAIL_ALERT_QUERY_BASE,
   parseGmailTransactionEmail,
   truncateSnippet200,
   type GmailMessage,
   type ParsedEmailTransaction,
 } from './parsers/gmail';
+import {
+  findBestCrossSourceMatch,
+  normalizeRefForDedup,
+  type DedupCandidateTx,
+  type IncomingDedupRow,
+} from './dedup-sync';
 import { findFirstMatchingRule } from './rules-engine';
 import { detectAndLinkSelfTransfers } from './self-transfer';
 import type { Category } from '../types/categories';
@@ -18,9 +25,6 @@ export interface GmailSyncResult {
   errors_count: number;
   last_synced_at: string;
 }
-
-const GMAIL_ALERT_QUERY_BASE =
-  'from:(alerts@hdfcbank.bank.in OR alerts@hdfcbank.net OR mahaalert@mahabank.co.in OR mahaalerts@bankofmaharashtra.bank.in OR HO.starsandesh@bankofindia.co.in) (subject:(UPI OR RTGS OR NEFT OR IMPS OR EFT OR credited OR debited OR "account credit" OR "account debit" OR "RTGS Credit" OR "NEFT Credit" OR "IMPS Credit"))';
 
 async function categoriseSingleGmailTransaction(params: {
   payeeName: string;
@@ -221,6 +225,10 @@ export async function runGmailSyncForUser(
       const fullMsg = await fetchFullGmailMessage(accessToken, ref.id);
       const outcome = parseGmailTransactionEmail(fullMsg);
 
+      if (outcome.record_type === 'ignored') {
+        continue; // OTPs, e-statement notices, declined alerts silently ignored
+      }
+
       if (outcome.record_type === 'error') {
         errorsCount++;
         await serviceSupabase.from('email_parse_errors').insert({
@@ -266,35 +274,107 @@ export async function runGmailSyncForUser(
         continue;
       }
 
-      // Transaction dedup check (UPI / IMPS / RTGS / NEFT ref or cross-source reference)
+      // Transaction dedup check (Tier 1 ref + Tier 2 fuzzy date/amount/counterparty across sources)
       const parsedTx: ParsedEmailTransaction = outcome;
       const refNumber =
-        parsedTx.upi_ref_no ||
-        parsedTx.imps_ref_no ||
-        parsedTx.rtgs_ref_no ||
-        parsedTx.neft_ref_no ||
-        parsedTx.reference_number ||
-        null;
+        normalizeRefForDedup(
+          parsedTx.upi_ref_no ||
+            parsedTx.imps_ref_no ||
+            parsedTx.rtgs_ref_no ||
+            parsedTx.neft_ref_no ||
+            parsedTx.reference_number
+        ) || null;
 
-      if (refNumber) {
-        const { data: existingTx } = await serviceSupabase
+      const debit = parsedTx.direction === 'debit' ? parsedTx.amount : null;
+      const credit = parsedTx.direction === 'credit' ? parsedTx.amount : null;
+
+      const minDate = new Date(parsedTx.txn_date);
+      minDate.setDate(minDate.getDate() - 2);
+      const maxDate = new Date(parsedTx.txn_date);
+      maxDate.setDate(maxDate.getDate() + 2);
+
+      const candidateSelect =
+        'id, account_id, upload_id, txn_date, description, raw_description, debit, credit, balance, balance_after, reference_number, upi_ref_no, imps_ref_no, source';
+
+      const [refMatchesRes, windowMatchesRes] = await Promise.all([
+        refNumber
+          ? serviceSupabase
+              .from('transactions')
+              .select(candidateSelect)
+              .eq('user_id', userId)
+              .or(
+                `reference_number.eq.${refNumber},upi_ref_no.eq.${refNumber},imps_ref_no.eq.${refNumber}`
+              )
+              .limit(10)
+          : Promise.resolve({ data: [] }),
+        serviceSupabase
           .from('transactions')
-          .select('id')
+          .select(candidateSelect)
           .eq('user_id', userId)
-          .or(
-            `reference_number.eq.${refNumber},upi_ref_no.eq.${refNumber},imps_ref_no.eq.${refNumber}`
-          )
-          .limit(1)
-          .maybeSingle();
+          .eq('account_id', matchedAccount.id)
+          .gte('txn_date', minDate.toISOString().split('T')[0])
+          .lte('txn_date', maxDate.toISOString().split('T')[0])
+          .limit(100),
+      ]);
 
-        if (existingTx) {
-          continue; // Silent dedup skip
+      const candidateMap = new Map<string, DedupCandidateTx>();
+      for (const row of [...(refMatchesRes.data || []), ...(windowMatchesRes.data || [])]) {
+        candidateMap.set(row.id, {
+          ...row,
+          debit: row.debit !== null && row.debit !== undefined ? Number(row.debit) : null,
+          credit: row.credit !== null && row.credit !== undefined ? Number(row.credit) : null,
+          balance: row.balance !== null && row.balance !== undefined ? Number(row.balance) : null,
+          balance_after:
+            row.balance_after !== null && row.balance_after !== undefined
+              ? Number(row.balance_after)
+              : null,
+        });
+      }
+
+      const incomingRow: IncomingDedupRow = {
+        account_id: matchedAccount.id,
+        txn_date: parsedTx.txn_date,
+        description: parsedTx.payee_name,
+        raw_description: parsedTx.description_raw,
+        debit,
+        credit,
+        balance: parsedTx.balance_after,
+        reference_number: refNumber,
+        upi_ref_no: parsedTx.upi_ref_no,
+        imps_ref_no: parsedTx.imps_ref_no,
+        source: 'gmail_auto',
+      };
+
+      const dedupMatch = findBestCrossSourceMatch(
+        incomingRow,
+        Array.from(candidateMap.values())
+      );
+
+      if (dedupMatch) {
+        if (dedupMatch.enrichmentPatch) {
+          await serviceSupabase
+            .from('transactions')
+            .update({
+              ...dedupMatch.enrichmentPatch,
+              updated_at: new Date().toISOString(),
+            })
+            .eq('id', dedupMatch.matched.id)
+            .eq('user_id', userId);
         }
+        if (parsedTx.balance_after !== null && parsedTx.balance_after !== undefined) {
+          await serviceSupabase
+            .from('accounts')
+            .update({
+              current_balance: parsedTx.balance_after,
+              updated_at: new Date().toISOString(),
+            })
+            .eq('id', matchedAccount.id)
+            .eq('user_id', userId);
+        }
+        continue; // Silent cross-source / replay dedup skip
       }
 
       // Step 6: Rules BEFORE AI categorisation
-      const debit = parsedTx.direction === 'debit' ? parsedTx.amount : null;
-      const credit = parsedTx.direction === 'credit' ? parsedTx.amount : null;
       let txnType: 'expense' | 'income' | 'transfer' | 'refund' =
         parsedTx.direction === 'debit' ? 'expense' : 'income';
       let categoryId: string | null = null;

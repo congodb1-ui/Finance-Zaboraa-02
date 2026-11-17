@@ -2,6 +2,7 @@ import type { ParseResult } from '../../types/uploads';
 import { extractPDFRawData, type PDFExtractionResult } from './pdf';
 import { detectColumnMapping } from './column-mapper';
 import { isStatementNoiseLine } from './strip-statement-noise';
+import { intelligentParse } from './intelligent-parser';
 
 function findHeaderRowIndex(lines: string[][]): number {
   if (lines.length === 0) return 0;
@@ -58,6 +59,19 @@ export async function parsePDFGeneric(
   preExtracted?: PDFExtractionResult
 ): Promise<ParseResult> {
   const pdfData = preExtracted || (await extractPDFRawData(buffer));
+
+  // For multi-bank PDFs (SBI, ICICI, Axis, Kotak, etc.) with coordinate text items,
+  // try the dynamic-column intelligent anchor parser first so multi-line narrations & balances parse accurately.
+  if (pdfData.pages.some((p) => p.textItems && p.textItems.length > 0)) {
+    const intelRes = await intelligentParse(pdfData);
+    if (intelRes.rows.length > 0) {
+      return {
+        ...intelRes,
+        detected_account_last4: pdfData.accountLast4 || null,
+      };
+    }
+  }
+
   const matrix = pdfData.allGridRows;
 
   if (matrix.length === 0) {
@@ -67,6 +81,7 @@ export async function parsePDFGeneric(
       parser_version: 'pdf-generic-v1',
       opening_balance: pdfData.openingBalance,
       closing_balance: pdfData.closingBalance,
+      detected_account_last4: pdfData.accountLast4 || null,
     };
   }
 
@@ -138,10 +153,13 @@ export async function parsePDFGeneric(
     rows,
     parser_version: 'pdf-generic-v1',
     detected_bank: detected_bank || undefined,
+    detected_account_last4: pdfData.accountLast4 || null,
     confidence,
     suggested_mapping: mapping,
     opening_balance: pdfData.openingBalance,
     closing_balance: pdfData.closingBalance,
+    statement_period_start: pdfData.statementPeriodStart || undefined,
+    statement_period_end: pdfData.statementPeriodEnd || undefined,
     raw_text: pdfData.fullDocumentText,
   };
 }
