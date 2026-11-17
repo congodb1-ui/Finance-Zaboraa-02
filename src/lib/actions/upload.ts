@@ -146,15 +146,19 @@ export async function processStatementUpload(
     throw new Error('Unauthorized');
   }
 
-  // If password was not explicitly passed in function invocation, fallback to stored account pdf_password
+  // If password was not explicitly passed in function invocation, fallback to stored account pdf_password if column exists
   if (!password && accountId) {
-    const { data: acc } = await supabase
-      .from('accounts')
-      .select('pdf_password')
-      .eq('id', accountId)
-      .maybeSingle();
-    if (acc?.pdf_password) {
-      password = acc.pdf_password;
+    try {
+      const { data: acc } = await supabase
+        .from('accounts')
+        .select('*')
+        .eq('id', accountId)
+        .maybeSingle();
+      if (acc && 'pdf_password' in acc && acc.pdf_password) {
+        password = acc.pdf_password;
+      }
+    } catch (e) {
+      // Ignore if column does not exist in DB yet
     }
   }
 

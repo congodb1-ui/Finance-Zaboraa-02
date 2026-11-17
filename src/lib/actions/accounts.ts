@@ -133,7 +133,6 @@ export async function createAccount(
       purpose: data.purpose?.trim() || 'personal',
       ifsc: data.ifsc?.trim() ? data.ifsc.trim().toUpperCase() : null,
       upi_id: data.upi_id?.trim() || null,
-      pdf_password: data.pdf_password?.trim() || null,
       account_holder_name: data.account_holder_name?.trim() || null,
       operated_by_owner: data.operated_by_owner ?? true,
       opening_balance: data.opening_balance ?? 0,
@@ -190,7 +189,6 @@ export async function updateAccount(
     updatePayload.ifsc = data.ifsc?.trim() ? data.ifsc.trim().toUpperCase() : null;
   }
   if (data.upi_id !== undefined) updatePayload.upi_id = data.upi_id?.trim() || null;
-  if (data.pdf_password !== undefined) updatePayload.pdf_password = data.pdf_password?.trim() || null;
   if (data.account_holder_name !== undefined) {
     updatePayload.account_holder_name = data.account_holder_name?.trim() || null;
   }
