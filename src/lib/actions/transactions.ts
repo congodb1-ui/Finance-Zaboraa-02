@@ -1120,11 +1120,12 @@ export async function createManualTransaction(
 
 /**
  * Updates editable transaction fields
- * Non-editable: amounts, date, description (Amounts are sacred — never editable after import)
+ * Non-editable: amounts, date (Amounts are sacred — never editable after import; description is editable e.g. for UNREADABLE PAYEE fixes)
  */
 export async function updateTransaction(
   id: string,
   updates: {
+    description?: string;
     category_id?: string | null;
     workspace_id?: string | null;
     tags?: string[] | null;
@@ -1161,6 +1162,14 @@ export async function updateTransaction(
   const updatePayload: Record<string, any> = {
     updated_at: new Date().toISOString(),
   };
+
+  if (updates.description !== undefined) {
+    const cleanDescription = String(updates.description).trim();
+    if (!cleanDescription) {
+      throw new Error('Transaction description cannot be empty.');
+    }
+    updatePayload.description = cleanDescription;
+  }
 
   if (updates.category_id !== undefined) {
     updatePayload.category_id = updates.category_id;

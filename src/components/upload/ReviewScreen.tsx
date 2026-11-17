@@ -64,6 +64,9 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
   const [showReconWarning, setShowReconWarning] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [editingRowId, setEditingRowId] = useState<string | null>(null);
+  const [savingRowId, setSavingRowId] = useState<string | null>(null);
+  const [rowEditError, setRowEditError] = useState<string | null>(null);
+  const [showOnlyUnreadable, setShowOnlyUnreadable] = useState(false);
   const [editForm, setEditForm] = useState<{
     txn_date: string;
     description: string;
@@ -171,8 +174,26 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
         : lastChronologicalBalance;
   const hasClosingMismatch = Boolean(upload.closing_balance_mismatch);
 
-  const totalPages = Math.ceil(displayTransactions.length / pageSize) || 1;
-  const paginatedTransactions = displayTransactions.slice(
+  const unreadableCount = React.useMemo(
+    () =>
+      displayTransactions.filter(
+        (t) => t.description === 'UNREADABLE PAYEE - CHECK PDF'
+      ).length,
+    [displayTransactions]
+  );
+
+  const visibleTransactions = React.useMemo(
+    () =>
+      showOnlyUnreadable
+        ? displayTransactions.filter(
+            (t) => t.description === 'UNREADABLE PAYEE - CHECK PDF' || editingRowId === t.id
+          )
+        : displayTransactions,
+    [displayTransactions, showOnlyUnreadable, editingRowId]
+  );
+
+  const totalPages = Math.ceil(visibleTransactions.length / pageSize) || 1;
+  const paginatedTransactions = visibleTransactions.slice(
     (currentPage - 1) * pageSize,
     currentPage * pageSize
   );
@@ -701,43 +722,75 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
 
       {/* Transactions Review Table */}
       <Card>
-        <CardHeader className="p-4 pb-3 border-b border-slate-200 dark:border-slate-800 flex flex-row items-center justify-between gap-4">
+        <CardHeader className="p-4 pb-3 border-b border-slate-200 dark:border-slate-800 flex flex-row flex-wrap items-center justify-between gap-4">
           <div>
             <CardTitle className="text-sm font-semibold">
               Staged Transactions Ledger
             </CardTitle>
             <span className="text-xs text-slate-500">
-              Showing page {currentPage} of {totalPages} ({transactions.length} total entries)
+              Showing page {currentPage} of {totalPages} ({visibleTransactions.length} entries{showOnlyUnreadable ? ' needing payee check' : ''})
             </span>
           </div>
 
-          {/* Pagination Controls */}
-          {totalPages > 1 && (
-            <div className="flex items-center gap-2">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
-                disabled={currentPage === 1}
-                leftIcon={<ChevronLeft className="w-3.5 h-3.5" />}
+          <div className="flex items-center gap-2 ml-auto">
+            {unreadableCount > 0 && (
+              <button
+                type="button"
+                onClick={() => {
+                  setShowOnlyUnreadable((v) => !v);
+                  setCurrentPage(1);
+                }}
+                className={`px-2.5 py-1 text-xs font-medium rounded-lg border transition-colors cursor-pointer ${
+                  showOnlyUnreadable
+                    ? 'bg-amber-600 text-white border-amber-600'
+                    : 'bg-amber-50 dark:bg-amber-950/50 text-amber-800 dark:text-amber-200 border-amber-300 dark:border-amber-700 hover:bg-amber-100'
+                }`}
               >
-                Prev
-              </Button>
-              <span className="text-xs font-mono font-medium text-slate-600 dark:text-slate-400 px-1">
-                {currentPage} / {totalPages}
-              </span>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
-                disabled={currentPage === totalPages}
-                rightIcon={<ChevronRight className="w-3.5 h-3.5" />}
-              >
-                Next
-              </Button>
-            </div>
-          )}
+                {showOnlyUnreadable ? `Showing ${unreadableCount} Check PDF` : `Check PDF (${unreadableCount})`}
+              </button>
+            )}
+
+            {/* Pagination Controls */}
+            {totalPages > 1 && (
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                  disabled={currentPage === 1}
+                  leftIcon={<ChevronLeft className="w-3.5 h-3.5" />}
+                >
+                  Prev
+                </Button>
+                <span className="text-xs font-mono font-medium text-slate-600 dark:text-slate-400 px-1">
+                  {currentPage} / {totalPages}
+                </span>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+                  disabled={currentPage === totalPages}
+                  rightIcon={<ChevronRight className="w-3.5 h-3.5" />}
+                >
+                  Next
+                </Button>
+              </div>
+            )}
+          </div>
         </CardHeader>
+
+        {rowEditError && (
+          <div className="mx-4 mt-3 p-2.5 rounded-lg bg-red-50 dark:bg-red-950/50 border border-red-200 dark:border-red-800 text-xs text-red-800 dark:text-red-200 flex items-center justify-between gap-2">
+            <span>{rowEditError}</span>
+            <button
+              type="button"
+              onClick={() => setRowEditError(null)}
+              className="text-red-500 hover:text-red-700 p-0.5 cursor-pointer"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
 
         <CardContent className="p-0 overflow-x-auto">
           <table className="w-full text-left text-xs border-collapse">
@@ -757,9 +810,11 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
               {paginatedTransactions.map((tx, idx) => {
                 const rowNum = (currentPage - 1) * pageSize + idx + 1;
                 const isEditing = editingRowId === tx.id;
+                const isRowSaving = savingRowId === tx.id;
 
                 const startEditing = () => {
                   if (isReadOnly || !onUpdateStagedRow) return;
+                  setRowEditError(null);
                   setEditingRowId(tx.id);
                   setEditForm({
                     txn_date: tx.txn_date || '',
@@ -770,19 +825,44 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
                   });
                 };
 
-                const saveEditing = async () => {
-                  if (!onUpdateStagedRow) return;
+                const saveEditing = async (e?: React.MouseEvent) => {
+                  e?.stopPropagation();
+                  if (!onUpdateStagedRow || isRowSaving) return;
+                  const cleanDesc = editForm.description.trim();
+                  if (!cleanDesc) {
+                    setRowEditError('Description cannot be empty.');
+                    return;
+                  }
                   const dVal = editForm.debit.trim() !== '' ? parseFloat(editForm.debit) : null;
                   const cVal = editForm.credit.trim() !== '' ? parseFloat(editForm.credit) : null;
 
-                  await onUpdateStagedRow(tx.id, {
-                    txn_date: editForm.txn_date,
-                    description: editForm.description,
-                    debit: isNaN(dVal as number) ? null : dVal,
-                    credit: isNaN(cVal as number) ? null : cVal,
-                    reference_number: editForm.reference_number || null,
-                  });
-                  setEditingRowId(null);
+                  setSavingRowId(tx.id);
+                  setRowEditError(null);
+                  try {
+                    await onUpdateStagedRow(tx.id, {
+                      txn_date: editForm.txn_date,
+                      description: cleanDesc,
+                      debit: isNaN(dVal as number) ? null : dVal,
+                      credit: isNaN(cVal as number) ? null : cVal,
+                      reference_number: editForm.reference_number.trim() || null,
+                    });
+                    setEditingRowId(null);
+                  } catch (err: any) {
+                    setRowEditError(err?.message || 'Failed to save transaction changes.');
+                  } finally {
+                    setSavingRowId(null);
+                  }
+                };
+
+                const handleInputKeyDown = (e: React.KeyboardEvent) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    void saveEditing();
+                  } else if (e.key === 'Escape') {
+                    e.preventDefault();
+                    setEditingRowId(null);
+                    setRowEditError(null);
+                  }
                 };
 
                 if (isEditing) {
@@ -794,6 +874,7 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
                           type="date"
                           value={editForm.txn_date}
                           onChange={(e) => setEditForm({ ...editForm, txn_date: e.target.value })}
+                          onKeyDown={handleInputKeyDown}
                           className="px-2 py-1 text-xs rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900"
                         />
                       </td>
@@ -802,6 +883,8 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
                           type="text"
                           value={editForm.description}
                           onChange={(e) => setEditForm({ ...editForm, description: e.target.value })}
+                          onKeyDown={handleInputKeyDown}
+                          autoFocus
                           className="w-full px-2 py-1 text-xs rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900"
                         />
                       </td>
@@ -810,6 +893,7 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
                           type="text"
                           value={editForm.reference_number}
                           onChange={(e) => setEditForm({ ...editForm, reference_number: e.target.value })}
+                          onKeyDown={handleInputKeyDown}
                           className="w-full px-2 py-1 text-xs rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 font-mono"
                         />
                       </td>
@@ -823,6 +907,7 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
                           placeholder="Debit"
                           value={editForm.debit}
                           onChange={(e) => setEditForm({ ...editForm, debit: e.target.value })}
+                          onKeyDown={handleInputKeyDown}
                           className="w-24 px-2 py-1 text-xs text-right rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-red-600 dark:text-red-400"
                         />
                       </td>
@@ -833,6 +918,7 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
                           placeholder="Credit"
                           value={editForm.credit}
                           onChange={(e) => setEditForm({ ...editForm, credit: e.target.value })}
+                          onKeyDown={handleInputKeyDown}
                           className="w-24 px-2 py-1 text-xs text-right rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-green-600 dark:text-green-400"
                         />
                       </td>
@@ -841,14 +927,20 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
                           <button
                             type="button"
                             onClick={saveEditing}
-                            className="px-2 py-1 text-xs rounded-md bg-indigo-600 text-white hover:bg-indigo-700 font-medium"
+                            disabled={isRowSaving}
+                            className="px-2 py-1 text-xs rounded-md bg-indigo-600 text-white hover:bg-indigo-700 font-medium disabled:opacity-50 cursor-pointer"
                           >
-                            Save
+                            {isRowSaving ? 'Saving...' : 'Save'}
                           </button>
                           <button
                             type="button"
-                            onClick={() => setEditingRowId(null)}
-                            className="px-2 py-1 text-xs rounded-md bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setEditingRowId(null);
+                              setRowEditError(null);
+                            }}
+                            disabled={isRowSaving}
+                            className="px-2 py-1 text-xs rounded-md bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300 disabled:opacity-50 cursor-pointer"
                           >
                             Cancel
                           </button>

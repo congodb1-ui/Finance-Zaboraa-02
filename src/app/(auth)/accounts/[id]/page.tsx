@@ -5,19 +5,23 @@ import { BalanceChart } from '../../../../components/accounts/BalanceChart';
 import { AccountLedger } from '../../../../components/accounts/AccountLedger';
 import { StatementHistory } from '../../../../components/accounts/StatementHistory';
 import { AccountForm } from '../../../../components/accounts/AccountForm';
+import { TransactionRow } from '../../../../components/transactions/TransactionRow';
 import { Card } from '../../../../components/ui/Card';
 import { Button } from '../../../../components/ui/Button';
 import { formatINR, CATEGORY_PALETTE } from '../../../../types/design-system';
-import { getAccountById, updateAccount } from '../../../../lib/actions/accounts';
+import { getAccountById, updateAccount, getAccounts } from '../../../../lib/actions/accounts';
 import { getAccountLedgerWithRunningBalance } from '../../../../lib/actions/transactions';
 import { getCategories } from '../../../../lib/actions/categories';
+import { getWorkspaces } from '../../../../lib/actions/workspaces';
 import { getUploads } from '../../../../lib/actions/upload';
+import { apiPatch } from '../../../../lib/api-client';
 import type { AccountFormData, AccountWithBalance } from '../../../../types/accounts';
 import {
   getAccountLocalPrefs,
   hasSavedAccountPdfPassword,
 } from '../../../../lib/account-local-prefs';
 import type { Category } from '../../../../types/categories';
+import type { Workspace } from '../../../../types/workspaces';
 import type { StatementUpload } from '../../../../types/uploads';
 import type { Transaction } from '../../../../types/transactions';
 import {
@@ -53,7 +57,9 @@ export default function AccountDetailPage({
   }, [propAccountId, accountId]);
 
   const [account, setAccount] = useState<AccountWithBalance | null>(null);
+  const [allAccounts, setAllAccounts] = useState<AccountWithBalance[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
+  const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [uploads, setUploads] = useState<StatementUpload[]>([]);
   const [transactions, setTransactions] = useState<
     (Transaction & { calculated_running_balance: number })[]
@@ -65,6 +71,7 @@ export default function AccountDetailPage({
   const [isEditOpen, setIsEditOpen] = useState(false);
   const [isSavingEdit, setIsSavingEdit] = useState(false);
   const [saveNotice, setSaveNotice] = useState<string | null>(null);
+  const [activeTransactionForDrawer, setActiveTransactionForDrawer] = useState<Transaction | null>(null);
 
   // Filters for the account ledger
   const [filterDates, setFilterDates] = useState({
@@ -75,9 +82,11 @@ export default function AccountDetailPage({
   const loadAccountData = useCallback(async () => {
     setIsLoading(true);
     try {
-      const [acc, cats, allUploads, ledgerData] = await Promise.all([
+      const [acc, accs, cats, wss, allUploads, ledgerData] = await Promise.all([
         getAccountById(accountId),
+        getAccounts(),
         getCategories(),
+        getWorkspaces(),
         getUploads(),
         getAccountLedgerWithRunningBalance(accountId, {
           startDate: filterDates.startDate,
@@ -86,7 +95,9 @@ export default function AccountDetailPage({
       ]);
 
       setAccount(acc);
+      setAllAccounts(accs);
       setCategories(cats);
+      setWorkspaces(wss);
       setUploads(allUploads.filter((u) => u.account_id === accountId));
       setTransactions(ledgerData.transactions);
       setDailyBalancePoints(ledgerData.dailyBalancePoints);
@@ -115,6 +126,14 @@ export default function AccountDetailPage({
       setDailyBalancePoints(ledgerData.dailyBalancePoints);
     } catch (err) {
       console.error('Filter query error:', err);
+    }
+  };
+
+  const handleSaveTransaction = async (id: string, updates: any) => {
+    const updatedTx = await apiPatch<Transaction>(`/api/transactions/${id}`, updates);
+    await loadAccountData();
+    if (updatedTx) {
+      setActiveTransactionForDrawer(updatedTx);
     }
   };
 
@@ -326,6 +345,7 @@ export default function AccountDetailPage({
         startDate={filterDates.startDate}
         endDate={filterDates.endDate}
         onFilterChange={handleFilterChange}
+        onRowClick={(tx) => setActiveTransactionForDrawer(tx)}
       />
 
       {/* 3. Statement Upload History */}
@@ -340,6 +360,17 @@ export default function AccountDetailPage({
           isLoading={isSavingEdit}
         />
       )}
+
+      {/* Transaction Detail / Payee Edit Drawer */}
+      <TransactionRow
+        transaction={activeTransactionForDrawer}
+        isOpen={Boolean(activeTransactionForDrawer)}
+        onClose={() => setActiveTransactionForDrawer(null)}
+        onSave={handleSaveTransaction}
+        categories={categories}
+        workspaces={workspaces}
+        accounts={allAccounts}
+      />
     </div>
   );
 }

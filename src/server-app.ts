@@ -1273,10 +1273,16 @@ export async function runServer() {
           });
         }
 
+        if (body.description !== undefined && String(body.description).trim() === '') {
+          return res.status(400).json({
+            error: 'Transaction description cannot be empty.',
+          });
+        }
+
         const { data: beforeTx } = await req.supabase
           .from('transactions')
           .select(
-            'category_id, workspace_id, tags, notes, txn_type, is_transfer, transfer_pair_id'
+            'description, category_id, workspace_id, tags, notes, txn_type, is_transfer, transfer_pair_id'
           )
           .eq('id', id)
           .eq('user_id', req.user!.id)
@@ -1285,6 +1291,7 @@ export async function runServer() {
         const updated = await updateTransaction(
           id,
           {
+            description: body.description,
             category_id: body.category_id,
             workspace_id: body.workspace_id,
             tags: body.tags,
@@ -1306,6 +1313,7 @@ export async function runServer() {
           entity_id: id,
           before_json: beforeTx || null,
           after_json: {
+            description: updated.description,
             category_id: updated.category_id,
             workspace_id: updated.workspace_id,
             tags: updated.tags,

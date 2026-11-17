@@ -62,6 +62,11 @@ export const TransactionRow: React.FC<TransactionRowProps> = ({
   // Sync state if transaction changes
   useEffect(() => {
     if (!transaction) return;
+    setDateInput(transaction.txn_date || '');
+    setDescriptionInput(transaction.description || '');
+    setAmountInput(
+      transaction.debit ? String(transaction.debit) : transaction.credit ? String(transaction.credit) : '0'
+    );
     setCategoryId(transaction.category_id || '');
     setWorkspaceId(transaction.workspace_id || '');
     setTxnType(transaction.txn_type || 'expense');
@@ -76,7 +81,8 @@ export const TransactionRow: React.FC<TransactionRowProps> = ({
 
   const isDirty = Boolean(
     transaction &&
-      (categoryId !== (transaction.category_id || '') ||
+      (descriptionInput.trim() !== (transaction.description || '').trim() ||
+        categoryId !== (transaction.category_id || '') ||
         workspaceId !== (transaction.workspace_id || '') ||
         txnType !== (transaction.txn_type || 'expense') ||
         notes !== (transaction.notes || '') ||
@@ -97,6 +103,8 @@ export const TransactionRow: React.FC<TransactionRowProps> = ({
 
   if (!isOpen || !transaction) return null;
 
+  const isUnreadablePayee = transaction.description === 'UNREADABLE PAYEE - CHECK PDF';
+
   const handleRequestClose = () => {
     if (isSaving) return;
     if (isDirty) {
@@ -107,6 +115,12 @@ export const TransactionRow: React.FC<TransactionRowProps> = ({
   };
 
   const handleSave = async () => {
+    const trimmedDescription = descriptionInput.trim();
+    if (!trimmedDescription) {
+      setErrorMsg('Description cannot be empty.');
+      return;
+    }
+
     setIsSaving(true);
     setErrorMsg(null);
     setSuccessMsg(null);
@@ -117,16 +131,8 @@ export const TransactionRow: React.FC<TransactionRowProps> = ({
         .map((t) => t.trim())
         .filter(Boolean);
 
-      const amtVal = parseFloat(amountInput);
-      const isOutflow = txnType === 'expense' || transaction.debit !== null;
-
       const updates = {
-        txn_date: dateInput,
-        date: dateInput,
-        description: descriptionInput.trim(),
-        amount: isNaN(amtVal) ? 0 : amtVal,
-        debit: isOutflow ? (isNaN(amtVal) ? 0 : amtVal) : null,
-        credit: !isOutflow ? (isNaN(amtVal) ? 0 : amtVal) : null,
+        description: trimmedDescription,
         category_id: isTransfer ? null : categoryId || null,
         workspace_id: workspaceId || null,
         txn_type: isTransfer ? 'transfer' : txnType,
@@ -199,52 +205,69 @@ export const TransactionRow: React.FC<TransactionRowProps> = ({
             </div>
           )}
 
-          {/* 1. Core Financial Ledger Fields (Editable) */}
+          {isUnreadablePayee && (
+            <div className="p-3 rounded-lg bg-amber-50 dark:bg-amber-950/50 border border-amber-300 dark:border-amber-800 text-amber-900 dark:text-amber-200 flex items-start gap-2">
+              <AlertCircle className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+              <div>
+                <span className="font-semibold block">Unreadable / Masked Payee</span>
+                <span className="text-[11px] leading-relaxed block mt-0.5">
+                  Check your PDF/bank statement using the Reference / UTR below, replace the Description field, and click Save Changes.
+                </span>
+              </div>
+            </div>
+          )}
+
+          {/* 1. Core Financial Ledger Fields */}
           <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-900/80 border border-slate-200 dark:border-slate-800 space-y-3">
             <div className="flex items-center justify-between text-[11px] font-semibold uppercase tracking-wider text-slate-400">
               <span className="flex items-center gap-1.5">
                 <Edit3 className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
                 Ledger Entry Fields
               </span>
-              <span className="text-[10px] text-slate-500 font-mono">Editable</span>
+              <span className="text-[10px] text-slate-500 font-mono">Payee Editable</span>
             </div>
 
             <div className="space-y-3 pt-1">
               <div>
                 <label className="text-slate-700 dark:text-slate-300 font-medium block text-xs mb-1">
-                  Description
+                  Description / Payee
                 </label>
                 <input
                   type="text"
                   value={descriptionInput}
                   onChange={(e) => setDescriptionInput(e.target.value)}
+                  placeholder="Enter payee or merchant description..."
                   className="w-full text-xs py-2 px-3 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-white"
                 />
               </div>
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="text-slate-700 dark:text-slate-300 font-medium block text-xs mb-1">
-                    Date
+                  <label className="text-slate-700 dark:text-slate-300 font-medium flex items-center gap-1 text-xs mb-1">
+                    <span>Date</span>
+                    <Lock className="w-3 h-3 text-slate-400" />
                   </label>
                   <input
                     type="date"
                     value={dateInput}
-                    onChange={(e) => setDateInput(e.target.value)}
-                    className="w-full text-xs py-1.5 px-2.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-white"
+                    readOnly
+                    disabled
+                    className="w-full text-xs py-1.5 px-2.5 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-100 dark:bg-slate-900/60 text-slate-600 dark:text-slate-400 cursor-not-allowed"
                   />
                 </div>
 
                 <div>
-                  <label className="text-slate-700 dark:text-slate-300 font-medium block text-xs mb-1">
-                    Amount (₹)
+                  <label className="text-slate-700 dark:text-slate-300 font-medium flex items-center gap-1 text-xs mb-1">
+                    <span>Amount (₹)</span>
+                    <Lock className="w-3 h-3 text-slate-400" />
                   </label>
                   <input
                     type="number"
                     step="0.01"
                     value={amountInput}
-                    onChange={(e) => setAmountInput(e.target.value)}
-                    className="w-full text-xs py-1.5 px-2.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-white font-tabular font-semibold"
+                    readOnly
+                    disabled
+                    className="w-full text-xs py-1.5 px-2.5 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-100 dark:bg-slate-900/60 text-slate-600 dark:text-slate-400 font-tabular font-semibold cursor-not-allowed"
                   />
                 </div>
               </div>

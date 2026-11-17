@@ -10,6 +10,10 @@ import {
   type DedupCandidateTx,
   type IncomingDedupRow,
 } from '../../src/lib/dedup-sync';
+import { updateTransaction } from '../../src/lib/actions/transactions';
+import { updateStagedTransaction } from '../../src/lib/actions/upload';
+import { createSandboxSupabaseClient } from '../../src/lib/sandbox-supabase';
+import { SANDBOX_DEFAULT_USER } from '../../src/lib/sandbox-auth';
 
 describe('Structured 7-Column Excel Statement Upload (image.png reference format)', () => {
   it('parses the 7-column HDFC Excel format cleanly with dates, leading-zero refs, narrations, and balance math', () => {
@@ -563,3 +567,103 @@ describe('Gmail Fetching: NEFT, IMPS, ATM Cash Withdrawal, and RTGS across Banks
     expect(match?.matchTier).toBe('tier1_ref');
   });
 });
+
+describe('Editing and saving UNREADABLE PAYEE - CHECK PDF descriptions', () => {
+  it('updateTransaction saves edited description replacing UNREADABLE PAYEE - CHECK PDF and rejects blank description', async () => {
+    const client = createSandboxSupabaseClient(SANDBOX_DEFAULT_USER as any);
+    const { data: accounts } = await client
+      .from('accounts')
+      .select('id')
+      .eq('user_id', SANDBOX_DEFAULT_USER.id)
+      .limit(1);
+    const accountId = accounts?.[0]?.id;
+    expect(accountId).toBeTruthy();
+
+    const { data: inserted, error: insErr } = await client
+      .from('transactions')
+      .insert({
+        user_id: SANDBOX_DEFAULT_USER.id,
+        account_id: accountId,
+        txn_date: '2022-02-15',
+        description: 'UNREADABLE PAYEE - CHECK PDF',
+        raw_description: 'XXXXXX8212-204611223344',
+        debit: 500,
+        credit: null,
+        reference_number: '204611223344',
+        txn_type: 'expense',
+        source: 'statement_import',
+      })
+      .select()
+      .single();
+
+    expect(insErr).toBeNull();
+    expect(inserted?.id).toBeTruthy();
+
+    const updated = await updateTransaction(
+      inserted.id,
+      {
+        description: '  Ramesh Kirana Store  ',
+        notes: 'Verified against HDFC PDF',
+      },
+      client
+    );
+
+    expect(updated.description).toBe('Ramesh Kirana Store');
+    expect(updated.notes).toBe('Verified against HDFC PDF');
+    expect(updated.debit).toBe(500);
+
+    const { data: persisted } = await client
+      .from('transactions')
+      .select('*')
+      .eq('id', inserted.id)
+      .single();
+    expect(persisted?.description).toBe('Ramesh Kirana Store');
+
+    await expect(
+      updateTransaction(inserted.id, { description: '   ' }, client)
+    ).rejects.toThrow('Transaction description cannot be empty.');
+  });
+
+  it('updateStagedTransaction saves edited description and falls back cleanly if updated_at column is missing', async () => {
+    const updatesSeen: Record<string, any>[] = [];
+    const mockClient = {
+      auth: {
+        async getUser() {
+          return { data: { user: { id: 'u-1' } } };
+        },
+      },
+      from() {
+        let payload: Record<string, any> = {};
+        const builder: any = {
+          update(patch: Record<string, any>) {
+            payload = patch;
+            updatesSeen.push(patch);
+            return builder;
+          },
+          eq() {
+            return builder;
+          },
+          then(resolve: any) {
+            if ('updated_at' in payload) {
+              return Promise.resolve(
+                resolve({ error: { message: 'column "updated_at" of relation "staged_transactions" does not exist' } })
+              );
+            }
+            return Promise.resolve(resolve({ error: null }));
+          },
+        };
+        return builder;
+      },
+    };
+
+    const res = await updateStagedTransaction(
+      'staged-1',
+      { description: '  Relief Chemist Pune  ' },
+      mockClient
+    );
+    expect(res.success).toBe(true);
+    expect(updatesSeen).toHaveLength(2);
+    expect(updatesSeen[1]).toEqual({ description: 'Relief Chemist Pune' });
+  });
+});
+

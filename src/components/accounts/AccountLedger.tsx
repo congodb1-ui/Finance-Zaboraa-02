@@ -205,23 +205,40 @@ export const AccountLedger: React.FC<AccountLedgerProps> = ({
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100 dark:divide-slate-800/80">
-            {paginated.map((tx) => (
+            {paginated.map((tx) => {
+              const isUnreadablePayee = tx.description === 'UNREADABLE PAYEE - CHECK PDF';
+              return (
               <tr
                 key={tx.id}
                 onClick={() => onRowClick && onRowClick(tx)}
-                className="hover:bg-slate-50/80 dark:hover:bg-slate-800/50 transition-colors cursor-pointer group"
+                className={`transition-colors cursor-pointer group ${
+                  isUnreadablePayee
+                    ? 'bg-amber-50/80 dark:bg-amber-950/30 border-l-4 border-l-amber-500 hover:bg-amber-100/70 dark:hover:bg-amber-950/40'
+                    : 'hover:bg-slate-50/80 dark:hover:bg-slate-800/50'
+                }`}
               >
                 <td className="py-2.5 px-3 font-tabular text-slate-600 dark:text-slate-300 whitespace-nowrap">
                   {tx.txn_date}
                 </td>
                 <td className="py-2.5 px-3">
-                  <div className="flex items-center gap-1.5 truncate">
+                  <div className="flex items-center gap-1.5 flex-wrap">
                     {tx.is_transfer && (
                       <ArrowRightLeft className="w-3 h-3 text-slate-400 shrink-0" />
                     )}
-                    <span className="font-medium text-slate-900 dark:text-white truncate group-hover:text-indigo-600 dark:group-hover:text-indigo-400">
+                    <span
+                      className={`font-medium truncate ${
+                        isUnreadablePayee
+                          ? 'text-amber-800 dark:text-amber-300 font-semibold'
+                          : 'text-slate-900 dark:text-white group-hover:text-indigo-600 dark:group-hover:text-indigo-400'
+                      }`}
+                    >
                       {tx.description}
                     </span>
+                    {isUnreadablePayee && (
+                      <span className="text-[10px] font-mono font-semibold px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-900/70 text-amber-800 dark:text-amber-200 border border-amber-300 dark:border-amber-700">
+                        CHECK PDF
+                      </span>
+                    )}
                   </div>
                 </td>
                 <td className="py-2.5 px-3 whitespace-nowrap">
@@ -280,7 +297,8 @@ export const AccountLedger: React.FC<AccountLedgerProps> = ({
                   {tx.reference_number || '—'}
                 </td>
               </tr>
-            ))}
+              );
+            })}
           </tbody>
         </table>
       </div>

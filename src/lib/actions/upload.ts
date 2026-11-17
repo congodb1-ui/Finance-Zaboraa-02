@@ -1298,16 +1298,36 @@ export async function updateStagedTransaction(
     throw new Error('Unauthorized');
   }
 
+  const sanitized: Record<string, any> = { ...updates };
+  if (sanitized.description !== undefined) {
+    const clean = String(sanitized.description).trim();
+    if (!clean) {
+      throw new Error('Description cannot be empty.');
+    }
+    sanitized.description = clean;
+  }
+
   const { error } = await supabase
     .from('staged_transactions')
     .update({
-      ...updates,
+      ...sanitized,
       updated_at: new Date().toISOString(),
     })
     .eq('id', stagedId)
     .eq('user_id', user.id);
 
   if (error) {
+    if (/updated_at/i.test(error.message || '')) {
+      const { error: retryErr } = await supabase
+        .from('staged_transactions')
+        .update(sanitized)
+        .eq('id', stagedId)
+        .eq('user_id', user.id);
+      if (retryErr) {
+        throw new Error(retryErr.message);
+      }
+      return { success: true };
+    }
     throw new Error(error.message);
   }
 
