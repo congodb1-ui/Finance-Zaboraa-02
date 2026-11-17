@@ -453,11 +453,21 @@ export function cleanNumber(str: string): number | null {
  * Preserves dynamic column x-positions and raw line structures.
  */
 export async function parsePDFIntelligent(
-  buffer: ArrayBuffer | Uint8Array,
-  options?: { bankHint?: string; preExtracted?: PDFExtractionResult }
+  buffer: ArrayBuffer | Uint8Array | PDFExtractionResult,
+  options?: { bankHint?: string; preExtracted?: PDFExtractionResult } | string
 ): Promise<ParseResult> {
-  const pdfData = options?.preExtracted || (await extractPDFRawData(buffer));
-  const bankHint = options?.bankHint;
+  let pdfData: PDFExtractionResult;
+  let bankHint: string | undefined;
+
+  if (buffer && typeof buffer === 'object' && 'pages' in buffer) {
+    pdfData = buffer as PDFExtractionResult;
+    bankHint = typeof options === 'string' ? options : options?.bankHint;
+  } else {
+    const rawBuffer = buffer as ArrayBuffer | Uint8Array;
+    const opts = typeof options === 'object' ? options : undefined;
+    pdfData = opts?.preExtracted || (await extractPDFRawData(rawBuffer));
+    bankHint = typeof options === 'string' ? options : opts?.bankHint;
+  }
 
   const rawLines: string[] = [];
   let summaryReached = false;
@@ -844,3 +854,5 @@ export async function parsePDFIntelligent(
     raw_text: pdfData.fullDocumentText,
   };
 }
+
+export const intelligentParse = parsePDFIntelligent;

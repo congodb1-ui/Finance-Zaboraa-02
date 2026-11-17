@@ -1,6 +1,6 @@
 import type { ParseResult } from '../../types/uploads';
 import { extractPDFRawData, PdfPasswordError, type PDFExtractionResult } from './pdf';
-import { parsePDFHDFC, isHDFCStatement } from './pdf-hdfc';
+import { parsePDFHDFC, parseHDFCStatement, isHDFCStatement } from './pdf-hdfc';
 import { parsePDFGeneric } from './pdf-generic';
 import { parseCSV } from './csv';
 import { parsePaytmUPI, isPaytmStatement, matchAccountForPaytm, resolvePaytmTagCategory } from './paytm-upi';
@@ -24,6 +24,7 @@ export {
   parseBOI,
   isBOIStatement,
   parsePDFHDFC,
+  parseHDFCStatement,
   isHDFCStatement,
   parsePDFGeneric,
   parseCSV,
