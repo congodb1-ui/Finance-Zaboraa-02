@@ -117,33 +117,46 @@ export async function createAccount(
     }
   }
 
-  const { data: inserted, error } = await supabase
-    .from('accounts')
-    .insert({
-      user_id: user.id,
-      name: data.name.trim(),
-      bank_name: data.bank_name.trim(),
-      account_type: data.account_type,
-      account_number_last4: data.account_number_last4?.trim() || null,
-      currency: data.currency || 'INR',
-      is_active: data.is_active ?? true,
-      color_index: data.color_index ?? 0,
-      icon: data.icon?.trim() || null,
-      notes: data.notes?.trim() || null,
-      purpose: data.purpose?.trim() || 'personal',
-      ifsc: data.ifsc?.trim() ? data.ifsc.trim().toUpperCase() : null,
-      upi_id: data.upi_id?.trim() || null,
-      pdf_password: data.pdf_password?.trim() || null,
-      account_holder_name: data.account_holder_name?.trim() || null,
-      operated_by_owner: data.operated_by_owner ?? true,
-      opening_balance: data.opening_balance ?? 0,
-      opening_date: data.opening_date || null,
-      credit_limit: data.credit_limit ?? null,
-      billing_cycle_day: data.billing_cycle_day ?? null,
-      payment_due_day: data.payment_due_day ?? null,
-    })
-    .select()
-    .single();
+  const insertPayload: Record<string, any> = {
+    user_id: user.id,
+    name: data.name.trim(),
+    bank_name: data.bank_name.trim(),
+    account_type: data.account_type,
+    account_number_last4: data.account_number_last4?.trim() || null,
+    currency: data.currency || 'INR',
+    is_active: data.is_active ?? true,
+    color_index: data.color_index ?? 0,
+    icon: data.icon?.trim() || null,
+    notes: data.notes?.trim() || null,
+    purpose: data.purpose?.trim() || 'personal',
+    ifsc: data.ifsc?.trim() ? data.ifsc.trim().toUpperCase() : null,
+    upi_id: data.upi_id?.trim() || null,
+    account_holder_name: data.account_holder_name?.trim() || null,
+    operated_by_owner: data.operated_by_owner ?? true,
+    opening_balance: data.opening_balance ?? 0,
+    opening_date: data.opening_date || null,
+    credit_limit: data.credit_limit ?? null,
+    billing_cycle_day: data.billing_cycle_day ?? null,
+    payment_due_day: data.payment_due_day ?? null,
+  };
+
+  if (data.pdf_password !== undefined && data.pdf_password !== null) {
+    insertPayload.pdf_password = data.pdf_password.trim() || null;
+  }
+
+  let inserted: any = null;
+  let error: any = null;
+
+  const res1 = await supabase.from('accounts').insert(insertPayload).select().single();
+  if (res1.error && res1.error.code === 'PGRST204' && 'pdf_password' in insertPayload) {
+    delete insertPayload.pdf_password;
+    const res2 = await supabase.from('accounts').insert(insertPayload).select().single();
+    inserted = res2.data;
+    error = res2.error;
+  } else {
+    inserted = res1.data;
+    error = res1.error;
+  }
 
   if (error || !inserted) {
     throw new Error(error?.message || 'Failed to create account.');
@@ -207,13 +220,26 @@ export async function updateAccount(
   if (data.billing_cycle_day !== undefined) updatePayload.billing_cycle_day = data.billing_cycle_day;
   if (data.payment_due_day !== undefined) updatePayload.payment_due_day = data.payment_due_day;
 
-  const { data: updated, error } = await supabase
+  let { data: updated, error } = await supabase
     .from('accounts')
     .update(updatePayload)
     .eq('id', id)
     .eq('user_id', user.id)
     .select()
     .single();
+
+  if (error && error.code === 'PGRST204' && 'pdf_password' in updatePayload) {
+    delete updatePayload.pdf_password;
+    const retry = await supabase
+      .from('accounts')
+      .update(updatePayload)
+      .eq('id', id)
+      .eq('user_id', user.id)
+      .select()
+      .single();
+    updated = retry.data;
+    error = retry.error;
+  }
 
   if (error || !updated) {
     throw new Error(error?.message || 'Account not found.');
