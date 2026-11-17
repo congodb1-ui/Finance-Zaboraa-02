@@ -407,12 +407,19 @@ export async function commitUploadTransactions(
       .eq('user_id', user.id);
   }
 
-  // STEP 4 — Apply transaction rules in priority order (+ Paytm tag fallback)
-  const [activeRules, categories, workspaces] = await Promise.all([
+  // STEP 4 — Apply transaction rules in priority order (+ staged suggestion + Paytm tag fallback)
+  const [activeRules, categories, workspaces, accounts] = await Promise.all([
     getRules(supabase),
     getCategories(supabase),
     getWorkspaces(supabase),
+    getAccounts(supabase),
   ]);
+
+  const uploadAccount = accounts.find((a) => a.id === upload.account_id);
+  const ruleAccountContext = {
+    id: upload.account_id,
+    purpose: uploadAccount?.purpose || 'personal',
+  };
 
   const personalWorkspace = workspaces.find(
     (w) => w.name.trim().toLowerCase() === 'personal'
@@ -428,22 +435,50 @@ export async function commitUploadTransactions(
     let assignedCategoryId: string | null = null;
     let assignedWorkspaceId: string | null = null;
     let assignedTags: string[] | null = null;
+    let isTransferFlag = false;
+    let categorySource: Transaction['category_source'] = null;
 
-    const matchedRule = findFirstMatchingRule(activeRules, {
-      description: row.description,
-      reference_number: row.reference_number,
-      debit: row.debit,
-      credit: row.credit,
-      txn_type: determinedType,
-    });
+    const matchedRule = findFirstMatchingRule(
+      activeRules,
+      {
+        description: row.description,
+        raw_description: row.raw_description,
+        reference_number: row.reference_number,
+        debit: row.debit,
+        credit: row.credit,
+        txn_type: determinedType,
+        account_id: upload.account_id,
+      },
+      ruleAccountContext
+    );
 
     if (matchedRule) {
-      if (matchedRule.set_category) assignedCategoryId = matchedRule.set_category;
+      if (matchedRule.set_category) {
+        assignedCategoryId = matchedRule.set_category;
+        categorySource = 'rule';
+      }
       if (matchedRule.set_workspace) assignedWorkspaceId = matchedRule.set_workspace;
       if (matchedRule.set_txn_type) determinedType = matchedRule.set_txn_type;
+      if (matchedRule.is_transfer || matchedRule.set_txn_type === 'transfer') {
+        isTransferFlag = true;
+        determinedType = 'transfer';
+      }
       if (matchedRule.set_tags && matchedRule.set_tags.length > 0) {
         assignedTags = [...matchedRule.set_tags];
       }
+    } else if (row.suggested_category_id) {
+      assignedCategoryId = row.suggested_category_id;
+      categorySource =
+        row.suggestion_source === 'manual'
+          ? 'manual'
+          : row.suggestion_source === 'rule'
+          ? 'rule'
+          : 'ai_suggested';
+      if (row.is_transfer_suggestion) {
+        isTransferFlag = true;
+        determinedType = 'transfer';
+      }
+      skipAiStagedIds.add(row.id);
     }
 
     if (isPaytmUpload && !assignedCategoryId) {
@@ -457,6 +492,7 @@ export async function commitUploadTransactions(
         );
         if (matchedCat) {
           assignedCategoryId = matchedCat.id;
+          categorySource = 'rule';
         }
         if (!assignedWorkspaceId && personalWorkspace) {
           assignedWorkspaceId = personalWorkspace.id;
@@ -491,9 +527,10 @@ export async function commitUploadTransactions(
       imps_ref_no: refs.imps_ref_no,
       source: 'statement_import' as const,
       category_id: assignedCategoryId,
+      category_source: categorySource,
       workspace_id: assignedWorkspaceId,
       txn_type: determinedType,
-      is_transfer: false,
+      is_transfer: isTransferFlag,
       is_self_transfer: false,
       transfer_pair_id: null,
       status: 'confirmed' as const,
@@ -1026,6 +1063,7 @@ export async function createManualTransaction(
       balance: null,
       reference_number: data.reference_number?.trim() || null,
       category_id: data.category_id || null,
+      category_source: data.category_id ? 'manual' : null,
       workspace_id: data.workspace_id || null,
       txn_type: txnType,
       is_transfer: false,
@@ -1096,7 +1134,10 @@ export async function updateTransaction(
     updated_at: new Date().toISOString(),
   };
 
-  if (updates.category_id !== undefined) updatePayload.category_id = updates.category_id;
+  if (updates.category_id !== undefined) {
+    updatePayload.category_id = updates.category_id;
+    updatePayload.category_source = 'manual';
+  }
   if (updates.workspace_id !== undefined) updatePayload.workspace_id = updates.workspace_id;
   if (updates.tags !== undefined) updatePayload.tags = updates.tags;
   if (updates.notes !== undefined) updatePayload.notes = updates.notes;
@@ -1711,13 +1752,21 @@ export async function getDashboardMetrics(
 
   if (remaining.length > 0) {
     const otherSum = remaining.reduce((sum, c) => sum + c.amount, 0);
-    finalCategoryList.push({
-      id: 'other',
-      name: 'Other',
-      amount: Math.round(otherSum * 100) / 100,
-      percentage: Math.round((otherSum / totalCatSpend) * 100),
-      color: '#64748B',
-    });
+    const existingOther = finalCategoryList.find(
+      (c) => c.name.trim().toLowerCase() === 'other'
+    );
+    if (existingOther) {
+      existingOther.amount = Math.round((existingOther.amount + otherSum) * 100) / 100;
+      existingOther.percentage = Math.round((existingOther.amount / totalCatSpend) * 100);
+    } else {
+      finalCategoryList.push({
+        id: 'other',
+        name: 'Other',
+        amount: Math.round(otherSum * 100) / 100,
+        percentage: Math.round((otherSum / totalCatSpend) * 100),
+        color: '#64748B',
+      });
+    }
   }
 
   const taxableProfit = Math.max(0, businessIncome - businessExpense);
@@ -2010,7 +2059,7 @@ export async function applyAICategorizations(
   const [{ data: txRows }, { data: auditRows }] = await Promise.all([
     supabase
       .from('transactions')
-      .select('id, category_id, is_manual')
+      .select('id, category_id, is_manual, category_source')
       .eq('user_id', user.id)
       .in('id', targetIds),
     supabase
@@ -2046,7 +2095,7 @@ export async function applyAICategorizations(
   for (const res of results) {
     const tx = txMap.get(res.transaction_id);
     if (!tx) continue;
-    if (tx.is_manual || userEditedIds.has(tx.id)) continue;
+    if (tx.is_manual || tx.category_source === 'manual' || userEditedIds.has(tx.id)) continue;
 
     if ((res.confidence === 'high' || res.confidence === 'medium') && res.category_id) {
       const oldCat = tx.category_id;
@@ -2054,6 +2103,7 @@ export async function applyAICategorizations(
         .from('transactions')
         .update({
           category_id: res.category_id,
+          category_source: 'ai_suggested',
           updated_at: new Date().toISOString(),
         })
         .eq('id', tx.id)

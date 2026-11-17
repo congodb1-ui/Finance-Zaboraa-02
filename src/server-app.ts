@@ -2,7 +2,7 @@ import 'dotenv/config';
 import crypto from 'node:crypto';
 import express, { NextFunction, Request, Response } from 'express';
 import helmet from 'helmet';
-import rateLimit from 'express-rate-limit';
+import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import multer from 'multer';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -53,6 +53,15 @@ import {
   runGmailSyncForUser,
 } from './lib/gmail-sync-service';
 import { generateAnalyticsReport, listAnalyticsReports } from './lib/analytics/generate';
+import {
+  applyAutoCategorizeBatch,
+  getAutoCategorizeStatus,
+  previewUploadCategorization,
+  revertAutoCategorizeBatch,
+  runAutoCategorizeAnalysis,
+  saveAutoCategorizeDraft,
+  updateStagedCategoryChoice,
+} from './lib/auto-categorize/service';
 import {
   getSandboxAuthUser,
   isSandboxPasswordEnabled,
@@ -1536,7 +1545,7 @@ export async function runServer() {
     windowMs: 5 * 60 * 1000, // 5 minutes
     max: 1,
     keyGenerator: (req: Request) =>
-      (req as AuthenticatedRequest).user?.id || req.ip || 'anonymous',
+      (req as AuthenticatedRequest).user?.id || ipKeyGenerator(req.ip || '127.0.0.1'),
     standardHeaders: true,
     legacyHeaders: false,
     message: {
@@ -1991,6 +2000,131 @@ export async function runServer() {
         return res.status(status).json({ error: message });
       } finally {
         analyticsInFlight.delete(userId);
+      }
+    }
+  );
+
+  // 15. Auto-Categorization Pipeline
+  app.get(
+    '/api/auto-categorize/status',
+    requireAuth,
+    async (req: AuthenticatedRequest, res: Response) => {
+      try {
+        const status = await getAutoCategorizeStatus(req.supabase, req.user!.id);
+        return res.json(status);
+      } catch (err: any) {
+        console.error('Auto-categorize status error:', err?.message);
+        return res.status(500).json({ error: err?.message || 'Failed to load auto-categorization status.' });
+      }
+    }
+  );
+
+  app.post(
+    '/api/auto-categorize/analyze',
+    requireAuth,
+    async (req: AuthenticatedRequest, res: Response) => {
+      try {
+        const result = await runAutoCategorizeAnalysis(req.supabase, req.user!.id);
+        return res.json(result);
+      } catch (err: any) {
+        console.error('Auto-categorize analyze error:', err?.message);
+        return res.status(500).json({ error: err?.message || 'Failed to analyze transaction history.' });
+      }
+    }
+  );
+
+  app.post(
+    '/api/auto-categorize/draft',
+    requireAuth,
+    async (req: AuthenticatedRequest, res: Response) => {
+      try {
+        const { batchId, items } = req.body || {};
+        if (!batchId || !Array.isArray(items)) {
+          return res.status(400).json({ error: 'batchId and items array are required.' });
+        }
+        const result = await saveAutoCategorizeDraft(req.supabase, req.user!.id, batchId, items);
+        return res.json(result);
+      } catch (err: any) {
+        console.error('Auto-categorize save draft error:', err?.message);
+        return res.status(400).json({ error: err?.message || 'Failed to save draft.' });
+      }
+    }
+  );
+
+  app.post(
+    '/api/auto-categorize/apply',
+    requireAuth,
+    async (req: AuthenticatedRequest, res: Response) => {
+      try {
+        const { batchId, items } = req.body || {};
+        if (!batchId || !Array.isArray(items)) {
+          return res.status(400).json({ error: 'batchId and items array are required.' });
+        }
+        const result = await applyAutoCategorizeBatch(req.supabase, req.user!.id, batchId, items);
+        return res.json(result);
+      } catch (err: any) {
+        console.error('Auto-categorize apply error:', err?.message);
+        return res.status(400).json({ error: err?.message || 'Failed to apply categories.' });
+      }
+    }
+  );
+
+  app.post(
+    '/api/auto-categorize/revert',
+    requireAuth,
+    async (req: AuthenticatedRequest, res: Response) => {
+      try {
+        const { batchId } = req.body || {};
+        if (!batchId) {
+          return res.status(400).json({ error: 'batchId is required.' });
+        }
+        const result = await revertAutoCategorizeBatch(req.supabase, req.user!.id, batchId);
+        return res.json(result);
+      } catch (err: any) {
+        console.error('Auto-categorize revert error:', err?.message);
+        return res.status(400).json({ error: err?.message || 'Failed to revert batch.' });
+      }
+    }
+  );
+
+  app.post(
+    '/api/upload/:id/categorize-preview',
+    requireAuth,
+    async (req: AuthenticatedRequest, res: Response) => {
+      try {
+        const result = await previewUploadCategorization(
+          req.supabase,
+          req.user!.id,
+          req.params.id
+        );
+        return res.json(result);
+      } catch (err: any) {
+        console.error('Upload categorize-preview error:', err?.message);
+        return res.status(400).json({ error: err?.message || 'Failed to preview upload categories.' });
+      }
+    }
+  );
+
+  app.patch(
+    '/api/staged-transactions/:id/category',
+    requireAuth,
+    async (req: AuthenticatedRequest, res: Response) => {
+      try {
+        const { category_id, is_transfer, apply_to_future } = req.body || {};
+        const result = await updateStagedCategoryChoice(
+          req.supabase,
+          req.user!.id,
+          req.params.id,
+          {
+            category_id: category_id ?? null,
+            is_transfer: Boolean(is_transfer),
+            apply_to_future: Boolean(apply_to_future),
+          }
+        );
+        return res.json(result);
+      } catch (err: any) {
+        console.error('Staged transaction category update error:', err?.message);
+        return res.status(400).json({ error: err?.message || 'Failed to update staged category.' });
       }
     }
   );

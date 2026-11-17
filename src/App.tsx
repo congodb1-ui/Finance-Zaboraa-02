@@ -8,6 +8,7 @@ import AccountDetailPage from './app/(auth)/accounts/[id]/page';
 import StatementUploadPage from './app/(auth)/upload/page';
 import TransactionsPage from './app/(auth)/transactions/page';
 import RulesPage from './app/(auth)/rules/page';
+import AutoCategorizePage from './app/(auth)/auto-categorize/page';
 import ITRReportPage from './app/(auth)/reports/itr/page';
 import SettingsPage from './app/(auth)/settings/page';
 import AskYourDataPage from './app/(auth)/ai/page';
@@ -32,7 +33,7 @@ import { ShieldCheck } from 'lucide-react';
 export default function App() {
   const { isAuthenticated, isLoading } = useAuth();
   const [currentRoute, setCurrentRoute] = useState<
-    '/' | '/dashboard' | '/analytics' | '/accounts' | '/account-detail' | '/upload' | '/transactions' | '/invoices' | '/invoice-view' | '/invoice-edit' | '/clients' | '/recurring' | '/budgets' | '/rules' | '/reports' | '/ai' | '/settings' | '/settings/ai' | '/playground'
+    '/' | '/dashboard' | '/analytics' | '/accounts' | '/account-detail' | '/upload' | '/transactions' | '/invoices' | '/invoice-view' | '/invoice-edit' | '/clients' | '/recurring' | '/budgets' | '/rules' | '/auto-categorize' | '/reports' | '/ai' | '/settings' | '/settings/ai' | '/playground'
   >('/');
   const [selectedAccountId, setSelectedAccountId] = useState<string>('acc_hdfc_01');
   const [selectedInvoiceId, setSelectedInvoiceId] = useState<string>('');
@@ -94,6 +95,7 @@ export default function App() {
       else if (hash === 'recurring') setCurrentRoute('/recurring');
       else if (hash === 'budgets') setCurrentRoute('/budgets');
       else if (hash === 'rules') setCurrentRoute('/rules');
+      else if (hash === 'auto-categorize') setCurrentRoute('/auto-categorize');
       else if (hash === 'reports' || hash === 'reports-itr' || hash === 'reports/itr') setCurrentRoute('/reports');
       else if (hash === 'ai' || hash === 'ask-ai') setCurrentRoute('/ai');
       else if (hash === 'settings/ai' || hash === 'settings-ai') setCurrentRoute('/settings/ai');
@@ -192,6 +194,7 @@ export default function App() {
       targetRoute === '/recurring' ||
       targetRoute === '/budgets' ||
       targetRoute === '/rules' ||
+      targetRoute === '/auto-categorize' ||
       targetRoute === '/reports' ||
       targetRoute === '/ai' ||
       targetRoute === '/settings' ||
@@ -382,6 +385,12 @@ export default function App() {
         {currentRoute === '/rules' && (
           <AuthNavShell activePathOverride="/rules" onNavigateOverride={(p) => navigateTo(p as any)}>
             <RulesPage />
+          </AuthNavShell>
+        )}
+
+        {currentRoute === '/auto-categorize' && (
+          <AuthNavShell activePathOverride="/auto-categorize" onNavigateOverride={(p) => navigateTo(p as any)}>
+            <AutoCategorizePage />
           </AuthNavShell>
         )}
 

@@ -22,6 +22,7 @@ import {
   FileText,
   Users,
   BarChart3,
+  Wand2,
 } from 'lucide-react';
 
 interface AuthNavShellProps {
@@ -56,6 +57,7 @@ export const AuthNavShell: React.FC<AuthNavShellProps> = ({
     { name: 'Recurring', path: '/recurring', icon: Repeat },
     { name: 'Budgets', path: '/budgets', icon: Target },
     { name: 'Rules', path: '/rules', icon: Sliders },
+    { name: 'Auto-Categorize', path: '/auto-categorize', icon: Wand2 },
     { name: 'Reports', path: '/reports/itr', icon: FileSpreadsheet },
     { name: 'Ask AI', path: '/ai', icon: Sparkles },
     { name: 'Settings', path: '/settings', icon: Settings },

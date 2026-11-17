@@ -181,7 +181,7 @@ export async function runGmailSyncForUser(
       .maybeSingle(),
     serviceSupabase
       .from('accounts')
-      .select('id, account_number_last4, account_type, opening_balance')
+      .select('id, account_number_last4, account_type, purpose, opening_balance')
       .eq('user_id', userId),
     serviceSupabase
       .from('transaction_rules')
@@ -211,7 +211,10 @@ export async function runGmailSyncForUser(
     profileRow?.owner_full_name || profileRow?.full_name || undefined;
   const aiEnabled = aiSettingsRow ? Boolean(aiSettingsRow.ai_enabled) : true;
 
-  const accountByLast4 = new Map<string, { id: string; account_type: string; opening_balance: number }>();
+  const accountByLast4 = new Map<
+    string,
+    { id: string; account_type: string; purpose: string; opening_balance: number }
+  >();
   const openingBalanceByAccountId = new Map<string, number>();
   for (const acc of accounts || []) {
     const openBal = Number(acc.opening_balance ?? 0);
@@ -220,6 +223,7 @@ export async function runGmailSyncForUser(
       accountByLast4.set(String(acc.account_number_last4).trim(), {
         id: acc.id,
         account_type: acc.account_type || 'savings',
+        purpose: acc.purpose || 'personal',
         opening_balance: openBal,
       });
     }
@@ -389,26 +393,44 @@ export async function runGmailSyncForUser(
         continue; // Silent cross-source / replay dedup skip
       }
 
-      // Step 6: Rules BEFORE AI categorisation
+      // Step 6: Rules BEFORE AI categorisation (with account scope context)
       let txnType: 'expense' | 'income' | 'transfer' | 'refund' =
         parsedTx.direction === 'debit' ? 'expense' : 'income';
       let categoryId: string | null = null;
       let workspaceId: string | null = null;
       let tags: string[] | null = null;
       let status: 'confirmed' | 'review' = 'review';
+      let isTransfer = false;
+      let categorySource: 'rule' | 'ai_suggested' | null = null;
 
-      const matchedRule = findFirstMatchingRule((rules || []) as TransactionRule[], {
-        description: parsedTx.payee_name,
-        reference_number: refNumber || undefined,
-        debit,
-        credit,
-        txn_type: txnType,
-      });
+      const matchedRule = findFirstMatchingRule(
+        (rules || []) as TransactionRule[],
+        {
+          description: parsedTx.payee_name,
+          raw_description: parsedTx.description_raw,
+          reference_number: refNumber || undefined,
+          debit,
+          credit,
+          txn_type: txnType,
+          account_id: matchedAccount.id,
+        },
+        {
+          id: matchedAccount.id,
+          purpose: matchedAccount.purpose,
+        }
+      );
 
       if (matchedRule) {
-        if (matchedRule.set_category) categoryId = matchedRule.set_category;
+        if (matchedRule.set_category) {
+          categoryId = matchedRule.set_category;
+          categorySource = 'rule';
+        }
         if (matchedRule.set_workspace) workspaceId = matchedRule.set_workspace;
         if (matchedRule.set_txn_type) txnType = matchedRule.set_txn_type;
+        if (matchedRule.is_transfer || matchedRule.set_txn_type === 'transfer') {
+          isTransfer = true;
+          txnType = 'transfer';
+        }
         if (matchedRule.set_tags && matchedRule.set_tags.length > 0) {
           tags = [...matchedRule.set_tags];
         }
@@ -424,6 +446,7 @@ export async function runGmailSyncForUser(
         });
         if (aiCat.category_id) {
           categoryId = aiCat.category_id;
+          categorySource = 'ai_suggested';
           status = aiCat.confidence > 0.75 ? 'confirmed' : 'review';
         }
       }
@@ -453,9 +476,10 @@ export async function runGmailSyncForUser(
           source: 'gmail_auto',
           status,
           category_id: categoryId,
+          category_source: categorySource,
           workspace_id: workspaceId,
           txn_type: txnType,
-          is_transfer: false,
+          is_transfer: isTransfer,
           is_self_transfer: false,
           is_manual: false,
           tags,

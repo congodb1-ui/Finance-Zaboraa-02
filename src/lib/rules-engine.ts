@@ -1,4 +1,10 @@
 import type { TransactionRule } from '../types/transactions';
+import { normalizeMerchantKey } from './auto-categorize/merchant-grouping';
+
+export interface RuleAccountContext {
+  id?: string | null;
+  purpose?: string | null;
+}
 
 /**
  * Evaluates whether a transaction or staged transaction matches a rule.
@@ -7,24 +13,53 @@ export function evaluateRuleMatch(
   rule: TransactionRule,
   tx: {
     description?: string | null;
+    raw_description?: string | null;
     reference_number?: string | null;
     debit?: number | null;
     credit?: number | null;
     txn_type?: string | null;
-  }
+    account_id?: string | null;
+  },
+  accountContext?: RuleAccountContext
 ): boolean {
   if (!rule.is_active) return false;
+
+  // Enforce optional rule scope ('all' | 'personal' | 'business' | 'account')
+  const scope = rule.scope || 'all';
+  if (scope === 'account') {
+    const txAccId = accountContext?.id || tx.account_id || null;
+    if (!rule.account_id || !txAccId || rule.account_id !== txAccId) {
+      return false;
+    }
+  } else if (scope === 'personal') {
+    if (accountContext?.purpose === 'business') {
+      return false;
+    }
+  } else if (scope === 'business') {
+    if (accountContext?.purpose && accountContext.purpose !== 'business') {
+      return false;
+    }
+  }
 
   const matchVal = (rule.match_value || '').trim();
 
   switch (rule.match_field) {
     case 'description': {
+      // Exact canonical merchant_key match when rule was created via Auto-Categorization
+      if (rule.merchant_key) {
+        const txMerchantKey = normalizeMerchantKey(tx.description, tx.raw_description);
+        if (txMerchantKey === rule.merchant_key) {
+          return true;
+        }
+      }
+
       const text = (tx.description || '').toLowerCase();
+      const rawText = (tx.raw_description || '').toLowerCase();
       const target = matchVal.toLowerCase();
       if (!target) return false;
 
       if (rule.match_type === 'contains') {
-        return text.includes(target);
+        return text.includes(target) || rawText.includes(target);
       }
       if (rule.match_type === 'starts_with') {
         return text.startsWith(target);
@@ -35,7 +70,7 @@ export function evaluateRuleMatch(
       if (rule.match_type === 'regex') {
         try {
           const reg = new RegExp(matchVal, 'i');
-          return reg.test(tx.description || '');
+          return reg.test(tx.description || '') || reg.test(tx.raw_description || '');
         } catch {
           return false;
         }
@@ -109,11 +144,14 @@ export function findFirstMatchingRule(
   rules: TransactionRule[],
   tx: {
     description?: string | null;
+    raw_description?: string | null;
     reference_number?: string | null;
     debit?: number | null;
     credit?: number | null;
     txn_type?: string | null;
-  }
+    account_id?: string | null;
+  },
+  accountContext?: RuleAccountContext
 ): TransactionRule | null {
   // Sort rules ascending by priority
   const sorted = [...rules]
@@ -121,7 +159,7 @@ export function findFirstMatchingRule(
     .sort((a, b) => a.priority - b.priority);
 
   for (const rule of sorted) {
-    if (evaluateRuleMatch(rule, tx)) {
+    if (evaluateRuleMatch(rule, tx, accountContext)) {
       return rule;
     }
   }

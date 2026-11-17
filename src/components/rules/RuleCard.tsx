@@ -76,10 +76,29 @@ export const RuleCard: React.FC<RuleCardProps> = ({
 
           {/* Condition & Name */}
           <div className="min-w-0 space-y-1">
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
               <span className="font-heading font-semibold text-slate-900 dark:text-white text-sm truncate">
                 {rule.name}
               </span>
+              {rule.source === 'ai_batch' && (
+                <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-indigo-50 dark:bg-indigo-950/70 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800">
+                  AI Batch
+                </span>
+              )}
+              {rule.scope && rule.scope !== 'all' && (
+                <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-sky-50 dark:bg-sky-950/70 text-sky-700 dark:text-sky-300 border border-sky-200 dark:border-sky-800 capitalize">
+                  {rule.scope === 'personal'
+                    ? 'Personal Only'
+                    : rule.scope === 'business'
+                    ? 'Business Only'
+                    : 'Account Specific'}
+                </span>
+              )}
+              {rule.is_transfer && (
+                <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-amber-50 dark:bg-amber-950/70 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-800">
+                  Transfer
+                </span>
+              )}
               {!rule.is_active && (
                 <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-slate-100 dark:bg-slate-800 text-slate-500">
                   Inactive

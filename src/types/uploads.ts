@@ -71,7 +71,13 @@ export interface StagedTransaction {
   source?: 'manual_upload' | 'gmail_auto' | 'statement_import';
   is_duplicate: boolean;
   duplicate_of_id: string | null;
+  suggested_category_id?: string | null;
+  suggestion_source?: 'rule' | 'ai' | 'manual' | null;
+  suggestion_confidence?: number | null;
+  is_transfer_suggestion?: boolean;
+  category_name?: string | null;
   created_at: string;
+  updated_at?: string;
 }
 
 export interface ColumnMapping {

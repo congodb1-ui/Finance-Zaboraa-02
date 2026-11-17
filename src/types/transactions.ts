@@ -26,6 +26,8 @@ export interface Transaction {
   notes: string | null;
   tags: string[] | null;
   is_manual: boolean;
+  category_source?: 'manual' | 'rule' | 'ai_batch' | 'ai_suggested' | null;
+  ai_batch_id?: string | null;
   source_staged_id: string | null;
   is_recurring?: boolean;
   recurring_id?: string | null;
@@ -81,6 +83,7 @@ export interface AuditLogEntry {
 
 export type MatchField = 'description' | 'reference_number' | 'amount' | 'txn_type';
 export type MatchType = 'contains' | 'starts_with' | 'exact' | 'regex' | 'gte' | 'lte';
+export type RuleScope = 'all' | 'personal' | 'business' | 'account';
 
 export interface TransactionRule {
   id: string;
@@ -95,6 +98,12 @@ export interface TransactionRule {
   set_txn_type: 'expense' | 'income' | 'transfer' | 'refund' | null;
   set_tags: string[] | null;
   is_active: boolean;
+  scope?: RuleScope;
+  account_id?: string | null;
+  is_transfer?: boolean;
+  merchant_key?: string | null;
+  ai_batch_id?: string | null;
+  source?: 'manual' | 'ai_batch' | string | null;
   created_at: string;
   updated_at: string;
 
@@ -120,6 +129,12 @@ export interface RuleFormData {
   set_txn_type?: 'expense' | 'income' | 'transfer' | 'refund' | null;
   set_tags?: string[] | null;
   is_active?: boolean;
+  scope?: RuleScope;
+  account_id?: string | null;
+  is_transfer?: boolean;
+  merchant_key?: string | null;
+  ai_batch_id?: string | null;
+  source?: string | null;
 }
 
 export interface TransactionFiltersState {

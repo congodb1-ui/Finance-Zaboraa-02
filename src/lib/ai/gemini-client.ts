@@ -10,8 +10,8 @@ export function isAIError(res: any): res is AIError {
   return res && typeof res === 'object' && res.error === true && typeof res.message === 'string';
 }
 
-const DEFAULT_FLASH_MODEL = 'gemini-3.5-flash-lite';
-const DEFAULT_PRO_MODEL = 'gemini-3.8-flash';
+const DEFAULT_FLASH_MODEL = 'gemini-4-hydrogen';
+const DEFAULT_PRO_MODEL = 'gemini-4-hydrogen';
 
 function readEnvModel(envKey: 'GEMINI_MODEL_FLASH' | 'GEMINI_MODEL_PRO', fallback: string): string {
   const val = typeof process !== 'undefined' && process.env ? process.env[envKey] : undefined;

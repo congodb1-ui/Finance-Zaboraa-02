@@ -18,9 +18,11 @@ import {
   getUploadDetails,
   checkDateOverlap,
   checkAccountMismatch,
+  updateStagedTransaction,
 } from '../../../lib/actions/upload';
-import { apiPost } from '../../../lib/api-client';
+import { apiPatch, apiPost } from '../../../lib/api-client';
 import { getAccounts } from '../../../lib/actions/accounts';
+import { getCategories } from '../../../lib/actions/categories';
 import { useUserPreferences } from '../../../lib/contexts/UserPreferencesContext';
 import {
   getAccountPdfPassword,
@@ -28,6 +30,7 @@ import {
   setAccountPdfPassword,
 } from '../../../lib/account-local-prefs';
 import type { AccountWithBalance } from '../../../types/accounts';
+import type { Category } from '../../../types/categories';
 import type {
   StatementUpload,
   StagedTransaction,
@@ -72,6 +75,7 @@ export default function StatementUploadPage() {
   const [uploadApiResponse, setUploadApiResponse] = useState<UploadApiResponse | null>(null);
   const [activeUpload, setActiveUpload] = useState<StatementUpload | null>(null);
   const [stagedTransactions, setStagedTransactions] = useState<StagedTransaction[]>([]);
+  const [previewCategories, setPreviewCategories] = useState<Category[]>([]);
   const [overlapResult, setOverlapResult] = useState<OverlapCheckResult | null>(null);
   const [pendingAccountMismatch, setPendingAccountMismatch] = useState<{
     response: UploadApiResponse;
@@ -176,6 +180,28 @@ export default function StatementUploadPage() {
     setPasswordError(null);
   };
 
+  const loadCategorizePreview = async (uploadId: string) => {
+    try {
+      const res = await apiPost<{ transactions: StagedTransaction[]; categories: Category[] }>(
+        `/api/upload/${uploadId}/categorize-preview`,
+        {}
+      );
+      if (Array.isArray(res.transactions)) {
+        setStagedTransactions(res.transactions);
+      }
+      if (Array.isArray(res.categories)) {
+        setPreviewCategories(res.categories);
+      }
+    } catch {
+      try {
+        const cats = await getCategories();
+        setPreviewCategories(cats);
+      } catch {
+        // ignore fallback error
+      }
+    }
+  };
+
   const finalizeParsingResponse = async (
     response: UploadApiResponse,
     usedLocalSavedPassword: boolean
@@ -197,6 +223,8 @@ export default function StatementUploadPage() {
         response.upload_id
       );
       setOverlapResult(overlap);
+
+      await loadCategorizePreview(response.upload_id);
 
       setCurrentStep('review');
       setStatusMessage({
@@ -388,6 +416,8 @@ export default function StatementUploadPage() {
       );
       setOverlapResult(overlap);
 
+      await loadCategorizePreview(uploadApiResponse.upload_id);
+
       setCurrentStep('review');
       setStatusMessage({
         type: 'success',
@@ -460,11 +490,54 @@ export default function StatementUploadPage() {
       const details = await getUploadDetails(uploadId);
       setActiveUpload(details.upload);
       setStagedTransactions(details.transactions);
-      setIsReadOnlyInspection(true);
+      const isImportedReadOnly = details.upload?.status === 'imported';
+      setIsReadOnlyInspection(isImportedReadOnly);
+      if (!isImportedReadOnly) {
+        await loadCategorizePreview(uploadId);
+      } else if (previewCategories.length === 0) {
+        getCategories().then(setPreviewCategories).catch(() => {});
+      }
       setCurrentStep('review');
       setActiveTab('upload');
     } catch (err) {
       console.error('Failed to inspect upload:', err);
+    }
+  };
+
+  const handleUpdateStagedRow = async (stagedId: string, updates: any) => {
+    await updateStagedTransaction(stagedId, updates);
+    if (activeUpload) {
+      const details = await getUploadDetails(activeUpload.id);
+      setStagedTransactions(details.transactions);
+    }
+  };
+
+  const handleUpdateStagedCategory = async (
+    stagedId: string,
+    categoryId: string | null,
+    options: { is_transfer?: boolean; apply_to_future?: boolean }
+  ) => {
+    try {
+      await apiPatch(`/api/staged-transactions/${stagedId}/category`, {
+        category_id: categoryId,
+        is_transfer: Boolean(options.is_transfer),
+        apply_to_future: Boolean(options.apply_to_future),
+      });
+      if (activeUpload) {
+        const details = await getUploadDetails(activeUpload.id);
+        setStagedTransactions(details.transactions);
+      }
+      if (options.apply_to_future) {
+        setStatusMessage({
+          type: 'success',
+          text: 'Rule created for this merchant — future uploads and Gmail alerts will categorize it automatically.',
+        });
+      }
+    } catch (err: any) {
+      setStatusMessage({
+        type: 'error',
+        text: err?.message || 'Failed to update staged transaction category.',
+      });
     }
   };
 
@@ -797,9 +870,13 @@ export default function StatementUploadPage() {
             <ReviewScreen
               upload={activeUpload}
               transactions={stagedTransactions}
+              categories={previewCategories}
               overlapInfo={overlapResult}
               onConfirmImport={handleConfirmImport}
               onCancelUpload={handleCancelUpload}
+              onDeleteUpload={handleDeleteUpload}
+              onUpdateStagedRow={handleUpdateStagedRow}
+              onUpdateStagedCategory={handleUpdateStagedCategory}
               isReadOnly={isReadOnlyInspection}
             />
           )}

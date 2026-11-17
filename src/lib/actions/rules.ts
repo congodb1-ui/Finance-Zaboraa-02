@@ -64,6 +64,12 @@ export async function createRule(
       set_txn_type: data.set_txn_type || null,
       set_tags: data.set_tags || null,
       is_active: data.is_active ?? true,
+      scope: data.scope || 'all',
+      account_id: data.account_id || null,
+      is_transfer: data.is_transfer ?? false,
+      merchant_key: data.merchant_key || null,
+      ai_batch_id: data.ai_batch_id || null,
+      source: data.source || 'manual',
     })
     .select('*, categories(id, name, color_index), workspaces(id, name)')
     .single();
@@ -107,6 +113,10 @@ export async function updateRule(
   if (data.set_txn_type !== undefined) updatePayload.set_txn_type = data.set_txn_type || null;
   if (data.set_tags !== undefined) updatePayload.set_tags = data.set_tags || null;
   if (data.is_active !== undefined) updatePayload.is_active = data.is_active;
+  if (data.scope !== undefined) updatePayload.scope = data.scope || 'all';
+  if (data.account_id !== undefined) updatePayload.account_id = data.account_id || null;
+  if (data.is_transfer !== undefined) updatePayload.is_transfer = Boolean(data.is_transfer);
+  if (data.merchant_key !== undefined) updatePayload.merchant_key = data.merchant_key || null;
 
   const { data: updated, error } = await supabase
     .from('transaction_rules')

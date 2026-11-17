@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import type { StatementUpload, StagedTransaction, OverlapCheckResult } from '../../types/uploads';
+import type { Category } from '../../types/categories';
 import { Card, CardHeader, CardTitle, CardContent } from '../ui/Card';
 import { Button } from '../ui/Button';
 import { formatINR } from '../../types/design-system';
@@ -22,11 +23,13 @@ import {
   Lock,
   Edit3,
   Undo2,
+  Sparkles,
 } from 'lucide-react';
 
 interface ReviewScreenProps {
   upload: StatementUpload;
   transactions: StagedTransaction[];
+  categories?: Category[];
   overlapInfo?: OverlapCheckResult | null;
   onConfirmImport: (replacePreviousId?: string) => Promise<void>;
   onCancelUpload: () => Promise<void>;
@@ -34,12 +37,18 @@ interface ReviewScreenProps {
   onUploadAgain?: () => void;
   isReadOnly?: boolean;
   onUpdateStagedRow?: (stagedId: string, updates: any) => Promise<void>;
+  onUpdateStagedCategory?: (
+    stagedId: string,
+    categoryId: string | null,
+    options: { is_transfer?: boolean; apply_to_future?: boolean }
+  ) => Promise<void>;
   onUploadUpdated?: (upload: StatementUpload) => void;
 }
 
 export const ReviewScreen: React.FC<ReviewScreenProps> = ({
   upload,
   transactions,
+  categories = [],
   overlapInfo,
   onConfirmImport,
   onCancelUpload,
@@ -47,6 +56,7 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
   onUploadAgain,
   isReadOnly = false,
   onUpdateStagedRow,
+  onUpdateStagedCategory,
   onUploadUpdated,
 }) => {
   const [currentPage, setCurrentPage] = useState(1);
@@ -67,6 +77,14 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
   const [showEditModal, setShowEditModal] = useState(false);
   const [showRevertModal, setShowRevertModal] = useState(false);
   const [acknowledgeClosingMismatch, setAcknowledgeClosingMismatch] = useState(false);
+  const [updatingCatRowId, setUpdatingCatRowId] = useState<string | null>(null);
+  const [futureRulePrompt, setFutureRulePrompt] = useState<{
+    stagedId: string;
+    description: string;
+    categoryId: string;
+    categoryName: string;
+    isTransfer: boolean;
+  } | null>(null);
 
   const pageSize = 50;
 
@@ -201,6 +219,49 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
       } finally {
         setIsSubmitting(false);
       }
+    }
+  };
+
+  const handleStagedCategorySelect = async (tx: StagedTransaction, newCatId: string) => {
+    if (!onUpdateStagedCategory) return;
+    const normalizedId = newCatId || null;
+    const chosenCat = categories.find((c) => c.id === normalizedId);
+    const isTransfer = chosenCat?.name === 'Family Transfer';
+
+    if (tx.suggestion_source === 'ai' && normalizedId) {
+      setFutureRulePrompt({
+        stagedId: tx.id,
+        description: tx.description,
+        categoryId: normalizedId,
+        categoryName: chosenCat?.name || 'Selected Category',
+        isTransfer,
+      });
+      return;
+    }
+
+    setUpdatingCatRowId(tx.id);
+    try {
+      await onUpdateStagedCategory(tx.id, normalizedId, {
+        is_transfer: isTransfer,
+        apply_to_future: false,
+      });
+    } finally {
+      setUpdatingCatRowId(null);
+    }
+  };
+
+  const handleConfirmFuturePrompt = async (applyToFuture: boolean) => {
+    if (!futureRulePrompt || !onUpdateStagedCategory) return;
+    const target = futureRulePrompt;
+    setFutureRulePrompt(null);
+    setUpdatingCatRowId(target.stagedId);
+    try {
+      await onUpdateStagedCategory(target.stagedId, target.categoryId, {
+        is_transfer: target.isTransfer,
+        apply_to_future: applyToFuture,
+      });
+    } finally {
+      setUpdatingCatRowId(null);
     }
   };
 
@@ -686,6 +747,7 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
                 <th className="py-2.5 px-4 whitespace-nowrap">Date</th>
                 <th className="py-2.5 px-4 min-w-[240px]">Description</th>
                 <th className="py-2.5 px-4 whitespace-nowrap">Reference / UTR</th>
+                <th className="py-2.5 px-3 whitespace-nowrap min-w-[180px]">Category</th>
                 <th className="py-2.5 px-4 text-right whitespace-nowrap">Debit (−)</th>
                 <th className="py-2.5 px-4 text-right whitespace-nowrap">Credit (+)</th>
                 <th className="py-2.5 px-4 text-right whitespace-nowrap">Balance</th>
@@ -750,6 +812,9 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
                           onChange={(e) => setEditForm({ ...editForm, reference_number: e.target.value })}
                           className="w-full px-2 py-1 text-xs rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 font-mono"
                         />
+                      </td>
+                      <td className="py-2 px-2 text-[11px] text-slate-400">
+                        —
                       </td>
                       <td className="py-2 px-2">
                         <input
@@ -842,6 +907,56 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
                     <td className="py-3 px-4 whitespace-nowrap font-mono text-[11px] text-slate-500">
                       {tx.reference_number || <span className="text-slate-300 dark:text-slate-700">—</span>}
                     </td>
+                    <td
+                      className="py-2.5 px-3"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <div className="space-y-1">
+                        {tx.suggestion_source === 'rule' && (
+                          <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded bg-emerald-100 dark:bg-emerald-950/80 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800">
+                            <CheckCircle2 className="w-2.5 h-2.5" />
+                            Auto (Rule)
+                          </span>
+                        )}
+                        {tx.suggestion_source === 'ai' && (
+                          <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-950/80 text-amber-800 dark:text-amber-300 border border-amber-200 dark:border-amber-800">
+                            <Sparkles className="w-2.5 h-2.5" />
+                            Suggested (AI)
+                            {tx.suggestion_confidence !== null && tx.suggestion_confidence !== undefined
+                              ? ` ${Math.round(tx.suggestion_confidence * 100)}%`
+                              : ''}
+                          </span>
+                        )}
+                        {tx.suggestion_source === 'manual' && (
+                          <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded bg-indigo-100 dark:bg-indigo-950/80 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800">
+                            Manual
+                          </span>
+                        )}
+
+                        {!isReadOnly && onUpdateStagedCategory && categories.length > 0 ? (
+                          <select
+                            aria-label={`Category for ${tx.description}`}
+                            disabled={updatingCatRowId === tx.id}
+                            value={tx.suggested_category_id || ''}
+                            onChange={(e) => handleStagedCategorySelect(tx, e.target.value)}
+                            className="block w-full px-2 py-1 text-[11px] rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-white"
+                          >
+                            <option value="">Uncategorized</option>
+                            {categories.map((cat) => (
+                              <option key={cat.id} value={cat.id}>
+                                {cat.name}
+                              </option>
+                            ))}
+                          </select>
+                        ) : (
+                          <div className="text-[11px] text-slate-600 dark:text-slate-300">
+                            {categories.find((c) => c.id === tx.suggested_category_id)?.name || (
+                              <span className="text-slate-400">Uncategorized</span>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    </td>
                     <td className="py-3 px-4 text-right whitespace-nowrap font-tabular">
                       {tx.debit ? (
                         <span className="font-semibold text-red-600 dark:text-red-400">
@@ -898,6 +1013,47 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
           }
         }}
       />
+
+      {/* Apply to Future Transactions Prompt when correcting an AI suggestion */}
+      {futureRulePrompt && (
+        <div className="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <Card className="w-full max-w-md p-6 space-y-4">
+            <div className="space-y-2">
+              <h3 className="font-heading font-bold text-base text-slate-900 dark:text-white">
+                Apply this category for this merchant to future transactions too?
+              </h3>
+              <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+                Merchant: <strong className="text-slate-900 dark:text-white">{futureRulePrompt.description}</strong>
+                <br />
+                New Category: <strong className="text-indigo-600 dark:text-indigo-400">{futureRulePrompt.categoryName}</strong>
+              </p>
+            </div>
+            <div className="flex items-center justify-end gap-2 pt-2">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setFutureRulePrompt(null)}
+              >
+                Cancel
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => handleConfirmFuturePrompt(false)}
+              >
+                Just this one
+              </Button>
+              <Button
+                variant="primary"
+                size="sm"
+                onClick={() => handleConfirmFuturePrompt(true)}
+              >
+                Yes
+              </Button>
+            </div>
+          </Card>
+        </div>
+      )}
     </div>
   );
 };

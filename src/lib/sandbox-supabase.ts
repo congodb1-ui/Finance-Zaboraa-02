@@ -7,6 +7,7 @@ import {
   getSandboxSession,
   clearSandboxSession,
 } from './sandbox-auth';
+import { ALLOWED_AUTO_CATEGORIES } from './auto-categorize/constants';
 
 const DB_STORAGE_KEY = 'zaboraa_sandbox_db_v1';
 
@@ -188,6 +189,16 @@ function buildSeedData(userId: string): TableMap {
         is_system: true,
         created_at: now,
       },
+      ...ALLOWED_AUTO_CATEGORIES.map((spec, idx) => ({
+        id: uuid('30000002', idx + 1),
+        user_id: userId,
+        name: spec.name,
+        icon: spec.icon,
+        color_index: spec.color_index,
+        is_income: spec.is_income,
+        is_system: true,
+        created_at: now,
+      })),
     ],
     accounts: [
       {
@@ -672,6 +683,7 @@ function buildSeedData(userId: string): TableMap {
     analytics_reports: [],
     audit_log: [],
     gmail_sync_log: [],
+    auto_categorization_batches: [],
   };
 }
 
@@ -799,6 +811,34 @@ function migrateSandboxDb(db: TableMap): { db: TableMap; changed: boolean } {
         };
       }
       return inv;
+    });
+  }
+
+  if (!Array.isArray(db.auto_categorization_batches)) {
+    db.auto_categorization_batches = [];
+    changed = true;
+  }
+
+  if (Array.isArray(db.categories)) {
+    const ownerUserId = db.profiles?.[0]?.user_id || SANDBOX_DEFAULT_USER.id;
+    const existingNames = new Set(
+      db.categories.map((c) => String(c.name || '').trim().toLowerCase())
+    );
+    const now = new Date().toISOString();
+    ALLOWED_AUTO_CATEGORIES.forEach((spec, idx) => {
+      if (!existingNames.has(spec.name.toLowerCase())) {
+        db.categories.push({
+          id: uuid('30000002', idx + 1),
+          user_id: ownerUserId,
+          name: spec.name,
+          icon: spec.icon,
+          color_index: spec.color_index,
+          is_income: spec.is_income,
+          is_system: true,
+          created_at: now,
+        });
+        changed = true;
+      }
     });
   }
 

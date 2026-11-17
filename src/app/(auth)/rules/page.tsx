@@ -25,6 +25,7 @@ import {
   HelpCircle,
   Sparkles,
   RefreshCw,
+  Wand2,
 } from 'lucide-react';
 
 export default function RulesPage() {
@@ -125,6 +126,16 @@ export default function RulesPage() {
         </div>
 
         <div className="flex items-center gap-2.5 shrink-0">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              window.location.hash = 'auto-categorize';
+            }}
+            leftIcon={<Wand2 className="w-3.5 h-3.5 text-indigo-500" />}
+          >
+            Auto-Categorize History
+          </Button>
           <Button
             variant="outline"
             size="sm"
