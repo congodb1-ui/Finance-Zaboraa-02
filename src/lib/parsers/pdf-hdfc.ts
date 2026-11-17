@@ -29,7 +29,25 @@ export const HDFC_HARDCODED_MAPPING: ColumnMapping = {
  */
 export function isHDFCStatement(firstPageText: string): boolean {
   const lower = (firstPageText || '').toLowerCase();
-  return lower.includes('hdfc bank') || lower.includes('hdfcbank');
+  if (!lower) return false;
+  if (lower.includes('hdfc bank') || lower.includes('hdfcbank')) {
+    return true;
+  }
+  if (/(?:rtgs\/neft\s+)?ifsc\s*(?:code)?\s*[:\-]?\s*hdfc0[a-z0-9]{6}/i.test(firstPageText)) {
+    return true;
+  }
+  // Signature HDFC 7-column header: Date | Narration | Chq./Ref.No. | Value Dt | Withdrawal Amt. | Deposit Amt. | Closing Balance
+  if (
+    lower.includes('narration') &&
+    lower.includes('chq./ref.no.') &&
+    lower.includes('value dt') &&
+    lower.includes('withdrawal amt') &&
+    lower.includes('deposit amt') &&
+    lower.includes('closing balance')
+  ) {
+    return true;
+  }
+  return false;
 }
 
 /**

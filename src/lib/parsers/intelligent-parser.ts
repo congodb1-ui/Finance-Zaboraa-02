@@ -126,6 +126,27 @@ export function smartJoin(existing: string, continuation: string): string {
   if (!existing) return continuation;
   if (!continuation) return existing;
 
+  // Join split IFSC codes across line breaks (e.g., "...@IBL-HD" + "FC0002523-...", "...-UT" + "IB0000000-...")
+  if (/-[A-Z]{1,4}$/i.test(existing) && /^[A-Z]{1,6}0[A-Z0-9]{4,}/i.test(continuation)) {
+    return existing + continuation;
+  }
+
+  // Join split VPA bank handles across line breaks (e.g., "...@I" + "CICI-...", "...@OK" + "ICICI-...", "...@HDF" + "CBANK-...")
+  if (/@[A-Za-z]{1,8}$/.test(existing) && /^[A-Za-z]{2,12}(?:-|\s|$)/.test(continuation)) {
+    return existing + continuation;
+  }
+
+  // Join split 12-digit UTRs across line breaks (e.g., "...-30055" + "4418653-...")
+  const trailingDigits = existing.match(/(?:^|[-/])(\d{2,10})$/);
+  const leadingDigits = continuation.match(/^(\d{2,10})(?:-|$|\s)/);
+  if (
+    trailingDigits &&
+    leadingDigits &&
+    trailingDigits[1].length + leadingDigits[1].length === 12
+  ) {
+    return existing + continuation;
+  }
+
   const existingEndsInLetter = /[A-Za-z]$/.test(existing);
   const continuationStartsLetter = /^[A-Za-z]/.test(continuation);
   const firstContWord = continuation.split(/\s+/)[0] || '';
@@ -166,6 +187,8 @@ export function mergeWordFragments(name: string): string {
     .replace(/\bS\s+AYYED\b/gi, 'SAYYED')
     .replace(/\bFR\s+OM\b/gi, 'FROM')
     .replace(/\bPA\s+YTM\b/gi, 'PAYTM')
+    .replace(/\bE\s+NJOY\b/gi, 'ENJOY')
+    .replace(/([A-Z]{3,})T\s+RANSACTION\b/gi, '$1 TRANSACTION')
     .replace(/\bAddress\s*city(?:\s+[^]*?)?\s+State\b/gi, ' ')
     .replace(/\s{2,}/g, ' ')
     .trim();
@@ -341,15 +364,33 @@ export function cleanNarrationPipeline(rawNarration: string, explicitRef?: strin
   const isStandardRail = bankParsed.transactionType !== 'OTHER';
 
   const { ref: extractedRef, narration: narrWithoutRef } = extractReference(joinedWords, explicitRef);
-  const cleanDescription = isStandardRail
-    ? stripNoiseSuffixes(toTitleCase(mergeWordFragments(bankParsed.description)))
-    : stripNoiseSuffixes(extractPayeeName(narrWithoutRef));
-
   const normalizedExplicit = explicitRef ? normalizeReferenceNumber(explicitRef) || explicitRef.trim() : '';
   const finalRef = utrRef || normalizeReferenceNumber(bankParsed.reference) || extractedRef || normalizedExplicit;
 
+  let nonRailSource = narrWithoutRef.replace(/^\d{10,20}-(?=[A-Za-z])/, '').trim();
+  if (finalRef) {
+    const partialMatch = nonRailSource.match(/^(\d{5,9})-(?=[A-Za-z])/);
+    if (partialMatch && finalRef.endsWith(partialMatch[1])) {
+      nonRailSource = nonRailSource.slice(partialMatch[0].length).trim();
+    }
+  }
+
+  const isMaskedAcctTransfer = /^[A-Z]{1,4}-[X*]+\d{4}-/i.test(joinedWords.replace(/^(?:\d{10,20}\s+)?(?:\d{1,2}[/\-.]\d{1,2}[/\-.]\d{2,4}\s+)?/, ''));
+  const cleanDescription = isStandardRail
+    ? stripNoiseSuffixes(toTitleCase(mergeWordFragments(bankParsed.description)))
+    : isMaskedAcctTransfer
+      ? bankParsed.description.replace(/^([^(]+)(\(A\/c \d{4}\))$/, (_, p, a) => `${toTitleCase(p.trim())} ${a}`)
+      : stripNoiseSuffixes(extractPayeeName(nonRailSource));
+
+  const fallbackBankDesc =
+    bankParsed.description && bankParsed.description !== 'Bank Transaction'
+      ? bankParsed.description
+      : finalRef
+        ? `Bank Transfer (${finalRef.slice(-4)})`
+        : 'Bank Transaction';
+
   return {
-    cleanDescription: cleanDescription || rawNarration.trim(),
+    cleanDescription: cleanDescription || fallbackBankDesc,
     reference: finalRef,
   };
 }
@@ -558,9 +599,9 @@ export async function parsePDFIntelligent(
   let persistedBounds: VisualLine['colBounds'] | undefined;
 
   const TOP_META_MARKER_RE =
-    /(?:Page\s*No\s*\.?\s*:|Statement\s+of\s+account|Statement\s+From\s*:|Account\s+Branch\s*:|Account\s+No\s*:|Account\s+Type\s*:|Nomination\s*:|Cust\s+ID\s*:|RTGS\/NEFT\s+IFSC|OD\s+Limit\s*:|Email\s*:|Joint\s+Holders)/i;
+    /(?:Page\s*No\s*\.?\s*:|Statement\s+of\s+account|Statement\s+From\s*:|Account\s+Branch\s*:|Account\s+No\s*:|Account\s+Type\s*:|Nomination\s*:|Cust\s+ID\s*:|RTGS\/NEFT\s+IFSC|OD\s+Limit\s*:|Email\s*:|Joint\s+Holders|Branch\s+Code\s*:|Address\s*:|City\s*:|State\s*:|Currency\s*:\s*INR)/i;
   const BOTTOM_FOOTER_MARKER_RE =
-    /(?:HDFC\s+BANK\s+LIMITED|\*Closing\s+balance\s+includes|Contents\s+of\s+this\s+statement|Registered\s+Office\s+Address|computer\s+generated\s+statement|does\s+not\s+require\s+(?:any\s+)?signature|State\s+account\s+branch\s+GST)/i;
+    /(?:HDFC\s+BANK\s+LIMITED|\*Closing\s+balance\s+includes|Contents\s+of\s+this\s+statement|^\s*this\s+statement\.?\s*$|Registered\s+Office\s+Address|computer\s+generated\s+statement|does\s+not\s+require\s+(?:any\s+)?signature|State\s+account\s+branch\s+GST)/i;
 
   for (const page of pdfData.pages) {
     if (summaryReached) break;

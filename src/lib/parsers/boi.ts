@@ -43,7 +43,9 @@ export function isBOIStatement(text: string): boolean {
     lower.includes('bank of maharashtra') ||
     lower.includes('icici bank') ||
     lower.includes('axis bank') ||
-    lower.includes('kotak mahindra')
+    lower.includes('kotak mahindra') ||
+    (lower.includes('chq./ref.no.') && lower.includes('withdrawal amt') && lower.includes('value dt')) ||
+    /(?:rtgs\/neft\s+)?ifsc\s*(?:code)?\s*[:\-]?\s*hdfc0[a-z0-9]{6}/i.test(text || '')
   ) {
     return false;
   }

@@ -875,4 +875,115 @@ describe('Delete All Gmail Imported Data', () => {
     expect(store.profiles[0].gmail_connected).toBe(true);
     expect(store.accounts[0].current_balance).toBe(19800);
   });
+
+  it('parses 2023 HDFC multi-page PDF without BOI misdetection or AddressCity/this statement footer bleed', async () => {
+    const mock2023Pdf: PDFExtractionResult = {
+      openingBalance: 53567.32,
+      closingBalance: 102678.32,
+      fullDocumentText: 'RTGS/NEFT IFSC : HDFC0000104 Statement From : 01/01/2023 To : 01/01/2024',
+      allGridRows: [],
+      pages: [
+        {
+          pageNumber: 1,
+          fullText: 'Page No .: 1 RTGS/NEFT IFSC : HDFC0000104 BANK OF INDIA',
+          gridRows: [
+            ['Page No .: 1', 'Statement of account'],
+            ['RTGS/NEFT IFSC : HDFC0000104', 'MICR : 411240003'],
+            ['Date', 'Narration', 'Chq./Ref.No.', 'Value Dt', 'Withdrawal Amt.', 'Deposit Amt.', 'Closing Balance'],
+            ['01/01/23 ICIC0003182-300127212468-MONTHLY SAVING', '0000300127212468 01/01/23', '50,000.00', '1,03,567.32'],
+            ['BANK OF INDIA TRANSFER'],
+            ['this statement.'],
+          ],
+          textItems: [
+            { text: 'Page No .: 1', x: 34, y: 780, width: 55, height: 10 },
+            { text: 'RTGS/NEFT IFSC : HDFC0000104', x: 320, y: 700, width: 130, height: 10 },
+            // Table header row
+            { text: 'Date', x: 40, y: 600, width: 16, height: 10 },
+            { text: 'Narration', x: 144, y: 600, width: 34, height: 10 },
+            { text: 'Chq./Ref.No.', x: 284, y: 600, width: 45, height: 10 },
+            { text: 'Value Dt', x: 362, y: 600, width: 30, height: 10 },
+            { text: 'Withdrawal Amt.', x: 405, y: 600, width: 60, height: 10 },
+            { text: 'Deposit Amt.', x: 491, y: 600, width: 45, height: 10 },
+            { text: 'Closing Balance', x: 564, y: 600, width: 55, height: 10 },
+            // Row 1: Credit +50,000.00
+            { text: '01/01/23', x: 34, y: 580, width: 28, height: 10 },
+            { text: 'ICIC0003182-300127212468-MONTHLY SAVING', x: 68, y: 580, width: 180, height: 10 },
+            { text: '0000300127212468', x: 288, y: 580, width: 68, height: 10 },
+            { text: '01/01/23', x: 362, y: 580, width: 28, height: 10 },
+            { text: '50,000.00', x: 505, y: 580, width: 32, height: 10 },
+            { text: '1,03,567.32', x: 585, y: 580, width: 38, height: 10 },
+            // Row 2: Debit -899.00 split across Page 1 & Page 2
+            { text: '02/01/23', x: 34, y: 560, width: 28, height: 10 },
+            { text: '300255127239-BROADBAND', x: 68, y: 560, width: 110, height: 10 },
+            { text: '0000300255127239', x: 288, y: 560, width: 68, height: 10 },
+            { text: '02/01/23', x: 362, y: 560, width: 28, height: 10 },
+            { text: '899.00', x: 430, y: 560, width: 24, height: 10 },
+            { text: '1,02,668.32', x: 585, y: 560, width: 38, height: 10 },
+            // Page 1 footer
+            { text: 'HDFC BANK LIMITED', x: 34, y: 60, width: 80, height: 10 },
+            { text: 'this statement.', x: 34, y: 40, width: 55, height: 10 },
+          ],
+        },
+        {
+          pageNumber: 2,
+          fullText: 'Page No .: 2 Address : GROUND FLOOR',
+          gridRows: [],
+          textItems: [
+            { text: 'Page No .: 2', x: 34, y: 780, width: 55, height: 10 },
+            { text: 'Address : GROUND FLOOR, 15A/1, HOTEL GULMOHAR', x: 34, y: 750, width: 200, height: 10 },
+            { text: 'City : PUNE', x: 34, y: 735, width: 55, height: 10 },
+            { text: 'State : MAHARASHTRA', x: 34, y: 720, width: 80, height: 10 },
+            // Row 3 on Page 2: Credit +10.00 (no column header row on Page 2!)
+            { text: '03/01/23', x: 34, y: 620, width: 28, height: 10 },
+            { text: 'C-XXXXXXXX0921-FAMILY', x: 68, y: 620, width: 100, height: 10 },
+            { text: '0000300390523785', x: 288, y: 620, width: 68, height: 10 },
+            { text: '03/01/23', x: 362, y: 620, width: 28, height: 10 },
+            { text: '10.00', x: 515, y: 620, width: 22, height: 10 },
+            { text: '1,02,678.32', x: 585, y: 620, width: 38, height: 10 },
+          ],
+        },
+      ],
+    };
+
+    const res = await parseStatementPDF(new Uint8Array(0), { preExtracted: mock2023Pdf });
+    const txns = res.transactions || [];
+
+    expect(res.detected_bank).toBe('HDFC Bank');
+    expect(txns).toHaveLength(3);
+
+    expect(txns[0].credit).toBe(50000);
+    expect(txns[0].debit).toBeNull();
+    expect(txns[0].description).toBe('Monthly Saving');
+    expect(txns[0].reference_number).toBe('300127212468');
+
+    expect(txns[1].debit).toBe(899);
+    expect(txns[1].credit).toBeNull();
+    expect(txns[1].description).toBe('BROADBAND');
+    expect(txns[1].reference_number).toBe('300255127239');
+
+    expect(txns[2].credit).toBe(10);
+    expect(txns[2].debit).toBeNull();
+    expect(txns[2].description).toBe('Family (A/c 0921)');
+    expect(txns[2].reference_number).toBe('300390523785');
+    expect(txns.some((t) => /GROUND FLOOR|this statement|State : MAHARASHTRA/i.test(t.description))).toBe(false);
+  });
+
+  it('cleans 2023 compact HDFC narration edge cases cleanly', () => {
+    const p1 = parseBankNarration('0000300255127239 02/01/23 300255127239-BROADBAND');
+    expect(p1.description).toBe('BROADBAND');
+    expect(p1.reference).toBe('300255127239');
+
+    const p2 = parseBankNarration('0000337449264055 08/01/23 -PUNB0290100-337449264055-NA');
+    expect(p2.description).toBe('UPI Transfer (4055)');
+    expect(p2.reference).toBe('337449264055');
+
+    const p3 = parseBankNarration('0000300911763203 09/01/23 AHB-XXXXXXXX8212-SAVING');
+    expect(p3.description).toBe('SAVING (A/c 8212)');
+    expect(p3.reference).toBe('300911763203');
+
+    const p4 = parseBankNarration('0000304337355253 12/02/23 SAHU-Q730408582@YBL-YESBOYBLUPI-304337355253-NA');
+    expect(p4.description).toBe('SAHU');
+    expect(p4.reference).toBe('304337355253');
+  });
 });
+

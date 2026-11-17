@@ -137,7 +137,12 @@ export function parseBankNarration(
   text = text.replace(/\bTECHNOLO\s+GIES\b/gi, 'TECHNOLOGIES');
   text = text.replace(/\bSENT\s+FR\s+OM\b/gi, 'SENT FROM');
   text = text.replace(/\bPA\s+YTM\b/gi, 'PAYTM');
-  text = text.replace(/\bAddresscity\s+State\b/gi, ' ');
+  text = text.replace(/\bE\s+NJOY\b/gi, 'ENJOY');
+  text = text.replace(/([A-Z]{3,})T\s+RANSACTION\b/gi, '$1 TRANSACTION');
+  text = text.replace(/@OKIC\s+ICI/gi, '@OKICICI');
+  text = text.replace(/@HDF\s+CBANK/gi, '@HDFCBANK');
+  text = text.replace(/@PA\s+YTM/gi, '@PAYTM');
+  text = text.replace(/\bAddress\s*city(?:\s+[^]*?)?\s+State\b/gi, ' ');
   text = text.replace(/\bSECURITIES\s*LIM(?:\s+ITED)?\b/gi, 'SECURITIES LIMITED');
   text = text.replace(/([A-Z]{3,})([A-Z]{1,2})\s+([A-Z]{2,})(?=\s|$|-)/g, (m, a, b, c) => {
     // Only rejoin likely split words like "SECURITIESLIM ITED" -> keep normal two words intact unless prefix ends in LIM/CON/TECH
@@ -148,9 +153,9 @@ export function parseBankNarration(
   text = text.replace(/\s{2,}/g, ' ').trim();
 
   // STEP 4A & 4B: Strip leading UTR prefix and/or date prepended to narration (Old bank statement format)
-  // e.g. "0000234669620494 12/12/22 SAYYED-WASIMSSAYYED@ICICI-ICIC0003182-234669620494-SAVING-UPI PAYMENT"
+  // e.g. "0000234669620494 12/12/22 SAYYED-WASIMSSAYYED@ICICI-..." or "300255127239-BROADBAND"
   let leadingUtrRef = '';
-  const leadingUtrMatch = text.match(/^(\d{10,20})\s+/);
+  const leadingUtrMatch = text.match(/^(\d{10,20})(?:\s+|-(?=[A-Za-z]))/);
   if (leadingUtrMatch) {
     leadingUtrRef = cleanRef(leadingUtrMatch[1]);
     text = text.slice(leadingUtrMatch[0].length).trim();
@@ -159,6 +164,19 @@ export function parseBankNarration(
   const leadingDateMatch = text.match(/^(\d{1,2}[/\-.]\d{1,2}[/\-.]\d{2,4})\s+/);
   if (leadingDateMatch) {
     text = text.slice(leadingDateMatch[0].length).trim();
+  }
+
+  // Strip duplicate/trailing UTR-dash prefix right before text remark (e.g. "300255127239-BROADBAND" or "4418653-REQUEST FROM AMAZO")
+  const postDateUtrDash = text.match(/^(\d{10,20})-(?=[A-Za-z])/);
+  if (postDateUtrDash) {
+    if (!leadingUtrRef) leadingUtrRef = cleanRef(postDateUtrDash[1]);
+    text = text.slice(postDateUtrDash[0].length).trim();
+  } else if (leadingUtrRef || fallbackRef) {
+    const refForTail = leadingUtrRef || fallbackRef;
+    const partialUtrDash = text.match(/^(\d{5,9})-(?=[A-Za-z])/);
+    if (partialUtrDash && refForTail.endsWith(partialUtrDash[1])) {
+      text = text.slice(partialUtrDash[0].length).trim();
+    }
   }
 
   // STEP 4D: Strip trailing -SAVING-UPI PAYMENT, -UPI PAYMENT, -UPI, and Paytm OID order-id suffixes
@@ -530,6 +548,10 @@ export function parseBankNarration(
         ) {
           parts.pop();
         }
+        // If final segment is an opaque PhonePe/QR ID (e.g. "SAHU-Q730408582@YBL") and a payee prefix exists, prefer the name
+        if (parts.length >= 2 && /^Q\d{6,}$/i.test(parts[parts.length - 1])) {
+          parts.pop();
+        }
 
         let candidate = parts[parts.length - 1] || '';
         // Preserve multi-word wallet actions like "WALLET-ADD-MONEY"
@@ -578,9 +600,9 @@ export function parseBankNarration(
 
   // ==========================================
   // 11. Old/Compact Bank IFSC-UTR-Remark (e.g. "ICIC0003182-300127212468-MONTHLY SAVING", "ZAXIS-UTIB0000000-339560365329-NA")
-  //     and Account Mask Transfers (e.g. "C-XXXXXXXX0921-FAMILY")
+  //     and Account Mask Transfers (e.g. "C-XXXXXXXX0921-FAMILY", "AHB-XXXXXXXX8212-SAVING")
   // ==========================================
-  const acctMaskMatch = text.match(/^C-([X*]+\d{4})-(?:NA-ID-[X*]+\d{4}-)?(.+)$/i);
+  const acctMaskMatch = text.match(/^[A-Z]{1,4}-([X*]+\d{4})-(?:NA-ID-[X*]+\d{4}-)?(.+)$/i);
   if (acctMaskMatch) {
     const acctMask = acctMaskMatch[1].toUpperCase();
     const purpose = acctMaskMatch[2].replace(/-(?:NA|N A)$/i, '').trim();
@@ -596,7 +618,7 @@ export function parseBankNarration(
   }
 
   const ifscUtrMatch = text.match(
-    /^(?:([A-Z0-9\s]{2,28})-)?([A-Z]{4}0[A-Z0-9]{6}|(?:YESBOYBLUPI|ESBOYBLUPI|YESB0YESUPI|YBL|OKAXIS|OKICICI|OKSBI|PAYTM))-(\d{10,16})(?:-(.*))?$/i
+    /^(?:([A-Z0-9\s]{2,28})?-)?([A-Z]{4}0[A-Z0-9]{6}|(?:YESBOYBLUPI|ESBOYBLUPI|YESB0YESUPI|YBL|OKAXIS|OKICICI|OKSBI|PAYTM))-(\d{10,16})(?:-(.*))?$/i
   ) || text.match(/^(YESBOYBLUPI|ESBOYBLUPI)-(\d{10,16})(?:-(.*))?$/i);
   if (ifscUtrMatch) {
     const hasFourGroups = ifscUtrMatch.length === 5;

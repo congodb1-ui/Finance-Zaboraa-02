@@ -30,19 +30,75 @@ export {
   parseCSV,
 };
 
+function isTableHeaderRow(joinedLower: string): boolean {
+  return (
+    (joinedLower.includes('date') || joinedLower.includes('txn')) &&
+    (joinedLower.includes('narration') ||
+      joinedLower.includes('particulars') ||
+      joinedLower.includes('description') ||
+      joinedLower.includes('transaction details')) &&
+    (joinedLower.includes('balance') ||
+      joinedLower.includes('withdrawal') ||
+      joinedLower.includes('debit') ||
+      joinedLower.includes('amount'))
+  );
+}
+
+function isFooterMetaLine(joinedLower: string): boolean {
+  return (
+    joinedLower.includes('hdfc bank') ||
+    joinedLower.includes('bank of maharashtra') ||
+    joinedLower.includes('bank of india') ||
+    joinedLower.includes('state bank of india') ||
+    joinedLower.includes('icici bank') ||
+    joinedLower.includes('axis bank') ||
+    joinedLower.includes('registered office') ||
+    joinedLower.includes('statement summary') ||
+    joinedLower.includes('closing balance includes') ||
+    joinedLower.includes('computer generated') ||
+    joinedLower.includes('considered correct if no') ||
+    joinedLower.includes('gstn') ||
+    joinedLower.includes('page no') ||
+    joinedLower.includes('end of statement')
+  );
+}
+
 function extractPage1HeaderMetaText(pdfData: PDFExtractionResult): string {
   const page1 = pdfData.pages[0];
   if (!page1) return '';
   if (page1.gridRows && page1.gridRows.length > 0) {
+    const rows = page1.gridRows.map((r) => r.join(' ').trim()).filter(Boolean);
+    const headerIdx = rows.findIndex((r) => isTableHeaderRow(r.toLowerCase()));
     const nonTxnLines: string[] = [];
-    for (const row of page1.gridRows) {
-      const joined = row.join(' ').trim();
-      if (!joined) continue;
-      // Exclude transaction rows (lines starting with DD/MM/YY or SrNo + Date)
-      if (/^\d{1,2}[/\-.]\d{1,2}[/\-.]\d{2,4}\b/.test(joined)) continue;
-      if (/^\d{1,4}\s+\d{1,2}[/\-.]\d{1,2}[/\-.]\d{2,4}\b/.test(joined)) continue;
-      nonTxnLines.push(joined);
+
+    if (headerIdx >= 0) {
+      // Everything above the table header + the table header itself is pure statement metadata
+      for (let i = 0; i <= headerIdx; i++) {
+        nonTxnLines.push(rows[i]);
+      }
+      // Also include explicit bank footer lines below the last transaction row
+      let lastDateIdx = headerIdx;
+      for (let i = headerIdx + 1; i < rows.length; i++) {
+        if (
+          /^\d{1,2}[/\-.]\d{1,2}[/\-.]\d{2,4}\b/.test(rows[i]) ||
+          /^\d{1,4}\s+\d{1,2}[/\-.]\d{1,2}[/\-.]\d{2,4}\b/.test(rows[i])
+        ) {
+          lastDateIdx = i;
+        }
+      }
+      for (let i = lastDateIdx + 1; i < rows.length; i++) {
+        if (isFooterMetaLine(rows[i].toLowerCase())) {
+          nonTxnLines.push(rows[i]);
+        }
+      }
+    } else {
+      for (const joined of rows) {
+        if (/^\d{1,2}[/\-.]\d{1,2}[/\-.]\d{2,4}\b/.test(joined)) continue;
+        if (/^\d{1,4}\s+\d{1,2}[/\-.]\d{1,2}[/\-.]\d{2,4}\b/.test(joined)) continue;
+        nonTxnLines.push(joined);
+      }
     }
+
     if (nonTxnLines.length > 0) {
       return nonTxnLines.join(' ');
     }
