@@ -56,6 +56,9 @@ const PRESERVED_ACRONYMS = new Set([
  */
 export function toTitleCase(str: string): string {
   if (!str) return '';
+  if (str.trim().toUpperCase() === UNREADABLE_PAYEE_LABEL) {
+    return UNREADABLE_PAYEE_LABEL;
+  }
   return str
     .split(/\s+/)
     .map((word) => {
@@ -100,6 +103,51 @@ const INVALID_STANDALONE_DESCRIPTIONS = new Set([
   'NA',
   'N A',
 ]);
+
+export const UNREADABLE_PAYEE_LABEL = 'UNREADABLE PAYEE - CHECK PDF';
+
+/**
+ * Returns true when a candidate payee description is empty, generic noise, numeric-only,
+ * or a masked account placeholder (e.g. "XXXXX8212", "Xxxxx0921", "C-XXXXXXXX0921-NA").
+ */
+export function isUnreadableOrMaskedPayee(value: string | null | undefined): boolean {
+  const trimmed = (value || '').trim();
+  if (!trimmed) return true;
+  const upper = trimmed.toUpperCase();
+  if (upper === UNREADABLE_PAYEE_LABEL) return true;
+  if (INVALID_STANDALONE_DESCRIPTIONS.has(upper)) return true;
+
+  // Purely masked account/card/placeholder strings: XXXXX8212, Xxxxxxxx0921, ****1234, AHB-XXXXX8212-NA
+  if (/^(?:[A-Z]{1,4}[-\s]+)?[X*#]{3,}[-\s]*\d{0,6}(?:[-\s]+(?:NA|N\s*A))?$/i.test(trimmed)) {
+    return true;
+  }
+
+  // Contains a masked X/asterisk run with no meaningful non-X alphabetic payee name
+  if (/(?:^|[\s\-/])[X*]{3,}\d*(?:$|[\s\-/])/i.test(trimmed)) {
+    const remainingAlpha = trimmed
+      .replace(/\b[X*]{3,}\d*\b/gi, ' ')
+      .replace(/\b(?:NA|CR|DR|UPI|IMPS|NEFT|RTGS|FT|EFT|INB|TO|FROM|BY|VIA|A\/C|ACC|ACCT)\b/gi, ' ')
+      .replace(/[^a-zA-Z]/g, '');
+    if (remainingAlpha.length < 3) {
+      return true;
+    }
+  }
+
+  // Numeric-only or punctuation-only placeholder
+  if (/^[\d\s.\-/]+$/.test(trimmed)) {
+    return true;
+  }
+
+  return false;
+}
+
+export function sanitizePayeeDescription(candidate: string | null | undefined): string {
+  const trimmed = (candidate || '').trim();
+  if (isUnreadableOrMaskedPayee(trimmed)) {
+    return UNREADABLE_PAYEE_LABEL;
+  }
+  return trimmed;
+}
 
 /**
  * Single source of truth parser for Indian bank transaction narrations
@@ -358,9 +406,16 @@ export function parseBankNarration(
       desc = working;
     }
 
-    if (desc && !INVALID_STANDALONE_DESCRIPTIONS.has(desc.toUpperCase())) {
+    if (desc && !isUnreadableOrMaskedPayee(desc)) {
       return {
         description: desc,
+        reference: extractedRef || fallbackRef,
+        transactionType: 'IMPS',
+      };
+    }
+    if (isUnreadableOrMaskedPayee(desc)) {
+      return {
+        description: UNREADABLE_PAYEE_LABEL,
         reference: extractedRef || fallbackRef,
         transactionType: 'IMPS',
       };
@@ -385,7 +440,7 @@ export function parseBankNarration(
     }
 
     return {
-      description: desc || 'EFT Transfer',
+      description: isUnreadableOrMaskedPayee(desc) ? UNREADABLE_PAYEE_LABEL : desc,
       reference: extractedRef || fallbackRef,
       transactionType: 'EFT',
     };
@@ -601,8 +656,8 @@ export function parseBankNarration(
     working = working.replace(/-(?:NA|N A)$/i, '');
     working = working.replace(/[-/\s]+$/, '').replace(/^[-/\s]+/, '').trim();
 
-    if (!working || INVALID_STANDALONE_DESCRIPTIONS.has(working.toUpperCase())) {
-      working = 'UPI Payment';
+    if (isUnreadableOrMaskedPayee(working)) {
+      working = UNREADABLE_PAYEE_LABEL;
     }
 
     return {
@@ -637,9 +692,9 @@ export function parseBankNarration(
     const acctMask = acctMaskMatch[1].toUpperCase();
     const purpose = acctMaskMatch[2].replace(/-(?:NA|N A)$/i, '').trim();
     const desc =
-      purpose && !INVALID_STANDALONE_DESCRIPTIONS.has(purpose.toUpperCase())
+      purpose && !isUnreadableOrMaskedPayee(purpose)
         ? `${purpose} (A/c ${acctMask.slice(-4)})`
-        : `Account Transfer (${acctMask.slice(-4)})`;
+        : UNREADABLE_PAYEE_LABEL;
     return {
       description: desc,
       reference: effectiveFallbackRef,
@@ -660,17 +715,19 @@ export function parseBankNarration(
       .replace(/^[-/\s]+|[-/\s]+$/g, '')
       .trim();
     const hasUsefulRemark =
-      remark.length > 0 && !INVALID_STANDALONE_DESCRIPTIONS.has(remark.toUpperCase());
+      remark.length > 0 && !isUnreadableOrMaskedPayee(remark);
     const hasUsefulPrefix =
       prefix.length >= 3 &&
       !/^(?:YTM|UTIB|ICIC|HDFC|SBIN|PYTM)$/i.test(prefix) &&
-      !INVALID_STANDALONE_DESCRIPTIONS.has(prefix.toUpperCase());
+      !isUnreadableOrMaskedPayee(prefix);
 
     let desc = '';
     if (hasUsefulRemark) {
       desc = remark;
     } else if (hasUsefulPrefix) {
       desc = `${prefix} UPI Transfer`;
+    } else if (isUnreadableOrMaskedPayee(remark) && /[X*]{3,}/i.test(remark)) {
+      desc = UNREADABLE_PAYEE_LABEL;
     } else {
       desc = `UPI Transfer (${utr.slice(-4)})`;
     }
@@ -692,8 +749,8 @@ export function parseBankNarration(
   }
 
   let desc = text.slice(0, 100).trim();
-  if (!desc || INVALID_STANDALONE_DESCRIPTIONS.has(desc.toUpperCase())) {
-    desc = 'Bank Transaction';
+  if (isUnreadableOrMaskedPayee(desc)) {
+    desc = UNREADABLE_PAYEE_LABEL;
   }
 
   return {

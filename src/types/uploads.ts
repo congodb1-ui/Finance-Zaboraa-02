@@ -39,6 +39,11 @@ export interface StatementUpload {
   updated_at: string;
   reconciliation_warning?: boolean;
   reconciliation_diff?: number;
+  opening_balance?: number | null;
+  closing_balance?: number | null;
+  summary_closing_balance?: number | null;
+  closing_balance_mismatch?: boolean;
+  closing_balance_diff?: number;
   // Joined account details for UI rendering
   account?: {
     id: string;
@@ -101,6 +106,9 @@ export interface ParsedTransaction {
   timestamp?: string | null;
   raw_notes?: string | null;
   raw_description?: string | null;
+  balance_mismatch?: boolean;
+  needs_review?: boolean;
+  balance_status?: 'OK' | 'BALANCE_MISMATCH';
 }
 
 export interface ParseResult {
@@ -113,6 +121,10 @@ export interface ParseResult {
   suggested_mapping?: ColumnMapping;
   opening_balance?: number | null;
   closing_balance?: number | null;
+  summary_closing_balance?: number | null;
+  last_row_balance?: number | null;
+  closing_balance_mismatch?: boolean;
+  closing_balance_diff?: number;
   statement_period_start?: string | null;
   statement_period_end?: string | null;
   reconciliation_warning?: boolean;
@@ -136,6 +148,12 @@ export interface UploadApiResponse {
   existing_upload_id?: string;
   existing_status?: string;
   file_type?: FileType;
+  opening_balance?: number | null;
+  closing_balance?: number | null;
+  summary_closing_balance?: number | null;
+  last_row_balance?: number | null;
+  closing_balance_mismatch?: boolean;
+  closing_balance_diff?: number;
   reconciliation_warning?: boolean;
   reconciliation_diff?: number;
 }

@@ -68,6 +68,36 @@ export function checkReconciliation(
 }
 
 /**
+ * Checks if statement's detected account last4 mismatches the user-selected destination account's last4.
+ */
+export function checkAccountMismatch(
+  detectedLast4?: string | null,
+  selectedLast4?: string | null
+): {
+  isMismatch: boolean;
+  detectedLast4: string | null;
+  selectedLast4: string | null;
+  message: string | null;
+} {
+  const det = (detectedLast4 || '').replace(/\D/g, '').slice(-4);
+  const sel = (selectedLast4 || '').replace(/\D/g, '').slice(-4);
+  if (!det || !sel || det === sel) {
+    return {
+      isMismatch: false,
+      detectedLast4: det || null,
+      selectedLast4: sel || null,
+      message: null,
+    };
+  }
+  return {
+    isMismatch: true,
+    detectedLast4: det,
+    selectedLast4: sel,
+    message: `This statement is for ...${det}, but you selected ...${sel}. Continue?`,
+  };
+}
+
+/**
  * Computes SHA-256 hash string of raw array buffer bytes
  */
 export async function computeSHA256(buffer: ArrayBuffer): Promise<string> {
@@ -246,16 +276,19 @@ export async function processStatementUpload(
     throw new Error(parseResult.parseError || 'No transaction rows could be parsed from this file.');
   }
 
-  // STEP 6 — Reconciliation check (tolerance: ±1 INR)
+  // STEP 6 — Reconciliation check (tolerance: ±1 INR) + Summary vs Last-Row Closing Balance check
   const recon = checkReconciliation(
     parseResult.rows,
     parseResult.suggested_mapping,
     parseResult.opening_balance,
     parseResult.closing_balance
   );
-  if (recon.warning) {
+  if (recon.warning || parseResult.closing_balance_mismatch) {
     parseResult.reconciliation_warning = true;
-    parseResult.reconciliation_diff = recon.diff;
+    parseResult.reconciliation_diff = Math.max(
+      recon.diff || 0,
+      parseResult.closing_balance_diff || 0
+    );
   }
 
   // STEP 7 — Create statement_uploads record
@@ -356,6 +389,12 @@ export async function processStatementUpload(
     detected_account_last4: parseResult.detected_account_last4 ?? null,
     sample_rows: parseResult.rows.slice(0, 5),
     file_type: fileType,
+    opening_balance: parseResult.opening_balance ?? null,
+    closing_balance: parseResult.closing_balance ?? null,
+    summary_closing_balance: parseResult.summary_closing_balance ?? null,
+    last_row_balance: parseResult.last_row_balance ?? null,
+    closing_balance_mismatch: Boolean(parseResult.closing_balance_mismatch),
+    closing_balance_diff: parseResult.closing_balance_diff ?? 0,
     reconciliation_warning: parseResult.reconciliation_warning,
     reconciliation_diff: parseResult.reconciliation_diff,
   };

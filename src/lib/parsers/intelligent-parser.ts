@@ -11,7 +11,11 @@
 import type { ColumnMapping, ParseResult, ParsedTransaction as UploadParsedTransaction } from '../../types/uploads';
 import { extractPDFRawData, extractStatementPeriod, type PDFExtractionResult } from './pdf';
 import { isStatementNoiseLine } from './strip-statement-noise';
-import { parseBankNarration } from './bank-transaction';
+import {
+  parseBankNarration,
+  isUnreadableOrMaskedPayee,
+  UNREADABLE_PAYEE_LABEL,
+} from './bank-transaction';
 import { extractCrossSourceRefs, normalizeReferenceNumber } from './utils';
 
 export interface ParsedTransaction {
@@ -82,6 +86,9 @@ const PRESERVED_ACRONYMS = new Set([
  */
 export function toTitleCase(str: string): string {
   if (!str) return '';
+  if (str.trim().toUpperCase() === UNREADABLE_PAYEE_LABEL) {
+    return UNREADABLE_PAYEE_LABEL;
+  }
   return str
     .split(/\s+/)
     .map((word) => {
@@ -378,21 +385,22 @@ export function cleanNarrationPipeline(rawNarration: string, explicitRef?: strin
   }
 
   const isMaskedAcctTransfer = /^[A-Z]{1,4}-[X*]+\d{4}-/i.test(joinedWords.replace(/^(?:\d{10,20}\s+)?(?:\d{1,2}[/\-.]\d{1,2}[/\-.]\d{2,4}\s+)?/, ''));
-  const cleanDescription = isStandardRail
+  let cleanDescription = isStandardRail
     ? stripNoiseSuffixes(toTitleCase(mergeWordFragments(bankParsed.description)))
     : isMaskedAcctTransfer
       ? bankParsed.description.replace(/^([^(]+)(\(A\/c \d{4}\))$/, (_, p, a) => `${toTitleCase(p.trim())} ${a}`)
       : stripNoiseSuffixes(extractPayeeName(nonRailSource));
 
-  const fallbackBankDesc =
-    bankParsed.description && bankParsed.description !== 'Bank Transaction'
-      ? bankParsed.description
-      : finalRef
-        ? `Bank Transfer (${finalRef.slice(-4)})`
-        : 'Bank Transaction';
+  if (
+    !cleanDescription ||
+    isUnreadableOrMaskedPayee(cleanDescription) ||
+    bankParsed.description === UNREADABLE_PAYEE_LABEL
+  ) {
+    cleanDescription = UNREADABLE_PAYEE_LABEL;
+  }
 
   return {
-    cleanDescription: cleanDescription || fallbackBankDesc,
+    cleanDescription,
     reference: finalRef,
   };
 }
@@ -581,24 +589,58 @@ export async function parsePDFIntelligent(
   const rawLines: string[] = [];
   let summaryReached = false;
 
+  interface ColumnBounds {
+    dateMaxX: number;
+    narrMinX: number;
+    narrMaxX: number;
+    refMinX: number;
+    refMaxX: number;
+    amtMinX: number;
+    pageDebitX: number | null;
+    pageCreditX: number | null;
+    pageBalanceX: number | null;
+    debitMaxX: number;
+    creditMaxX: number;
+  }
+
   interface VisualLine {
     y: number;
     text: string;
     items: typeof pdfData.pages[0]['textItems'];
-    colBounds?: {
-      dateMaxX: number;
-      narrMinX: number;
-      narrMaxX: number;
-      refMinX: number;
-      refMaxX: number;
-      amtMinX: number;
-      debitMaxX: number;
-      creditMaxX: number;
-    };
+    colBounds?: ColumnBounds;
   }
 
   const allVisualLines: VisualLine[] = [];
-  let persistedBounds: VisualLine['colBounds'] | undefined;
+  // Per-file bounds ONLY (never cached across calls/files)
+  let fileBounds: ColumnBounds | undefined;
+
+  type RawItem = typeof pdfData.pages[0]['textItems'][0];
+  const itemMidX = (it: RawItem) => (it.width && it.width > 0 ? it.x + it.width / 2 : it.x);
+  const itemRightX = (it: RawItem) => it.x + (it.width || 0);
+
+  const mergeAdjacentHeaderTokens = (items: RawItem[]): RawItem[] => {
+    const merged: RawItem[] = [];
+    for (const it of items) {
+      const prev = merged[merged.length - 1];
+      if (prev) {
+        const gap = it.x - itemRightX(prev);
+        const combined = `${prev.text.trim()} ${it.text.trim()}`;
+        if (
+          gap >= -2 &&
+          gap <= 10 &&
+          /^(?:withdrawal\s+amt\.?|deposit\s+amt\.?|closing\s+bal(?:ance)?|value\s+dt\.?|chq\.?\/?\s*ref\.?\s*no\.?|amt\.?\s*withdrawn|amt\.?\s*deposited|txn\s+date)$/i.test(
+            combined
+          )
+        ) {
+          prev.text = combined;
+          prev.width = Math.max(prev.width || 0, itemRightX(it) - prev.x);
+          continue;
+        }
+      }
+      merged.push({ ...it });
+    }
+    return merged;
+  };
 
   const TOP_META_MARKER_RE =
     /(?:Page\s*No\s*\.?\s*:|Statement\s+of\s+account|Statement\s+From\s*:|Account\s+Branch\s*:|Account\s+No\s*:|Account\s+Type\s*:|Nomination\s*:|Cust\s+ID\s*:|RTGS\/NEFT\s+IFSC|OD\s+Limit\s*:|Email\s*:|Joint\s+Holders|Branch\s+Code\s*:|Address\s*:|City\s*:|State\s*:|Currency\s*:\s*INR)/i;
@@ -620,13 +662,15 @@ export async function parsePDFIntelligent(
         }
       }
 
-      // Detect dynamic column boundaries from page header row (supports HDFC, SBI, ICICI, Axis, Kotak, etc.)
-      let pageBounds: VisualLine['colBounds'] | undefined = persistedBounds;
+      // Compute column boundaries dynamically from THIS page's header row (or THIS file's earlier page header)
+      let pageBounds: ColumnBounds | undefined = fileBounds;
+      let headerLineIdx: number | null = null;
       let headerY: number | null = null;
       let firstDateRowY: number | null = null;
       let lastDateRowY: number | null = null;
 
-      for (const line of linesMap) {
+      for (let lIdx = 0; lIdx < linesMap.length; lIdx++) {
+        const line = linesMap[lIdx];
         line.items.sort((a, b) => a.x - b.x);
         line.text = line.items.map((i) => i.text).join(' ');
         if (/^\s*\d{1,2}[\/\-.]\d{1,2}[\/\-.]\d{2,4}\b/.test(line.text)) {
@@ -638,39 +682,126 @@ export async function parsePDFIntelligent(
           line.items.some((i) => /debit|withdrawal|credit|deposit|balance|amount/i.test(i.text));
         if (isHeader && headerY === null) {
           headerY = line.y;
-          const dateIt = line.items.find((i) => /\bdate\b/i.test(i.text));
-          const narrIt = line.items.find((i) => /narration|particulars|description|remarks/i.test(i.text));
-          const refIt = line.items.find((i) => /ref|chq|cheque|utr/i.test(i.text));
-          const valDtIt = line.items.find((i) => /value/i.test(i.text));
-          const w = line.items.find((i) => /withdrawal|debit|\bdr\b/i.test(i.text));
-          const d = line.items.find((i) => /deposit|credit|\bcr\b/i.test(i.text));
-          const b = line.items.find((i) => /balance|\bbal\b/i.test(i.text));
-
-          const dateMaxX = narrIt ? Math.max(dateIt ? dateIt.x + 48 : 80, narrIt.x - 4) : 100;
-          const narrMinX = narrIt
-            ? Math.min(narrIt.x - 10, dateIt ? dateIt.x + 22 : 62)
-            : 62;
-          const narrMaxX = refIt ? refIt.x - 4 : (w ? w.x - 4 : 280);
-          const refMinX = refIt ? refIt.x - 6 : narrMaxX;
-          const refMaxX = valDtIt ? valDtIt.x - 2 : (w ? w.x - 6 : 365);
-          const amtMinX = valDtIt ? valDtIt.x + 28 : (w ? w.x - 30 : 380);
-          const wRight = w ? w.x + (w.width || 45) : 455;
-          const dCenter = d ? d.x + (d.width || 45) / 2 : 510;
-          const debitMaxX = w && d ? (wRight + d.x) / 2 + 4 : (b ? b.x - 70 : 478);
-          const creditMaxX = d && b ? (dCenter + b.x) / 2 + 6 : (b ? b.x - 10 : 548);
-
-          pageBounds = {
-            dateMaxX,
-            narrMinX,
-            narrMaxX,
-            refMinX,
-            refMaxX,
-            amtMinX,
-            debitMaxX,
-            creditMaxX,
-          };
-          persistedBounds = pageBounds;
+          headerLineIdx = lIdx;
         }
+      }
+
+      if (headerLineIdx !== null) {
+        const headerLine = linesMap[headerLineIdx];
+        const headerTokens = mergeAdjacentHeaderTokens(headerLine.items);
+
+        // Measure actual date token span from sample data rows below header (purely from this PDF)
+        let observedDateRightMax: number | null = null;
+        for (let rIdx = headerLineIdx + 1; rIdx < Math.min(linesMap.length, headerLineIdx + 12); rIdx++) {
+          const dTok = linesMap[rIdx].items.find((i) =>
+            /^\d{1,2}[\/\-.]\d{1,2}[\/\-.]\d{2,4}$/.test(i.text.trim())
+          );
+          if (dTok) {
+            const right = itemRightX(dTok);
+            if (observedDateRightMax === null || right > observedDateRightMax) {
+              observedDateRightMax = right;
+            }
+          }
+        }
+
+        const dateIt = headerTokens.find((i) => /\b(?:txn\s*)?date\b/i.test(i.text));
+        const narrIt = headerTokens.find((i) => /narration|particulars|description|remarks/i.test(i.text));
+        const refIt = headerTokens.find((i) => /ref|chq|cheque|utr/i.test(i.text));
+        const valDtIt = headerTokens.find((i) => /value/i.test(i.text));
+        const w = headerTokens.find((i) => /withdrawal|debit|\bdr\b|withdrawn/i.test(i.text));
+        const d = headerTokens.find((i) => /deposit|credit|\bcr\b|deposited/i.test(i.text));
+        const b = headerTokens.find((i) => /balance|\bbal\b/i.test(i.text));
+
+        const pageDebitX = w ? itemMidX(w) : null;
+        const pageCreditX = d ? itemMidX(d) : null;
+        const pageBalanceX = b ? itemMidX(b) : null;
+
+        const firstAmountHeader = w || d || b;
+        const fallbackAnchorX = firstAmountHeader ? firstAmountHeader.x : Infinity;
+
+        let dateMaxX: number;
+        if (observedDateRightMax !== null && dateIt) {
+          const anchorRight = Math.max(itemRightX(dateIt), observedDateRightMax);
+          dateMaxX = narrIt ? Math.min(narrIt.x - 1, anchorRight + 8) : anchorRight + 8;
+        } else if (dateIt && narrIt) {
+          dateMaxX = Math.max(itemRightX(dateIt) + 4, (itemRightX(dateIt) + narrIt.x) / 2);
+        } else if (dateIt) {
+          dateMaxX = itemRightX(dateIt) + Math.max(dateIt.width || 24, 24);
+        } else if (narrIt) {
+          dateMaxX = Math.max(0, narrIt.x - 2);
+        } else {
+          dateMaxX = Infinity;
+        }
+
+        const narrMinX =
+          observedDateRightMax !== null
+            ? Math.min(dateMaxX, observedDateRightMax + 1)
+            : dateIt
+              ? Math.min(dateMaxX, itemRightX(dateIt) + 1)
+              : narrIt
+                ? Math.max(0, narrIt.x - 10)
+                : 0;
+
+        const narrMaxX = refIt
+          ? refIt.x - 4
+          : valDtIt
+            ? valDtIt.x - 4
+            : firstAmountHeader
+              ? firstAmountHeader.x - 4
+              : Infinity;
+
+        const refMinX = refIt ? refIt.x - 6 : narrMaxX;
+        const refMaxX = valDtIt
+          ? valDtIt.x - 2
+          : firstAmountHeader
+            ? firstAmountHeader.x - 4
+            : Infinity;
+
+        let amtMinX: number;
+        if (valDtIt && firstAmountHeader) {
+          amtMinX = (itemRightX(valDtIt) + firstAmountHeader.x) / 2;
+        } else if (refIt && firstAmountHeader) {
+          amtMinX = (itemRightX(refIt) + firstAmountHeader.x) / 2;
+        } else if (w && d && pageDebitX !== null && pageCreditX !== null) {
+          amtMinX = w.x - Math.max((pageCreditX - pageDebitX) * 0.45, 20);
+        } else if (firstAmountHeader) {
+          amtMinX = Math.max(0, fallbackAnchorX - Math.max(firstAmountHeader.width || 30, 30));
+        } else {
+          amtMinX = refMaxX < Infinity ? refMaxX : 0;
+        }
+
+        let debitMaxX = Infinity;
+        if (pageDebitX !== null && pageCreditX !== null) {
+          debitMaxX = (pageDebitX + pageCreditX) / 2;
+        } else if (pageDebitX !== null && pageBalanceX !== null) {
+          debitMaxX = (pageDebitX + pageBalanceX) / 2;
+        } else if (d) {
+          debitMaxX = d.x - 1;
+        }
+
+        let creditMaxX = Infinity;
+        if (pageCreditX !== null && pageBalanceX !== null) {
+          creditMaxX = (pageCreditX + pageBalanceX) / 2;
+        } else if (pageDebitX !== null && pageCreditX !== null) {
+          creditMaxX = pageCreditX + (pageCreditX - pageDebitX) / 2;
+        } else if (b) {
+          creditMaxX = b.x - 1;
+        }
+
+        pageBounds = {
+          dateMaxX,
+          narrMinX,
+          narrMaxX,
+          refMinX,
+          refMaxX,
+          amtMinX,
+          pageDebitX,
+          pageCreditX,
+          pageBalanceX,
+          debitMaxX,
+          creditMaxX,
+        };
+        fileBounds = pageBounds;
       }
 
       // On continuation pages (e.g. HDFC Page 2+), the top address/metadata block repeats without a column header row.
@@ -768,10 +899,11 @@ export async function parsePDFIntelligent(
         }
       }
 
-      const maxDateX = vLine.colBounds?.dateMaxX ?? 100;
-      const dateItem = vLine.items.find(
-        (i) => i.x < maxDateX && /^\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}/.test(i.text.trim())
-      );
+      const dateItem = vLine.colBounds
+        ? vLine.items.find(
+            (i) => i.x < vLine.colBounds!.dateMaxX && /^\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}/.test(i.text.trim())
+          )
+        : vLine.items.find((i) => /^\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}/.test(i.text.trim()));
 
       if (dateMatch && (dateItem || !hasVisualItems)) {
         if (currentBlock) {
@@ -845,27 +977,36 @@ export async function parsePDFIntelligent(
 
     if (block.anchorLine && block.anchorLine.items.length > 0) {
       const items = [...block.anchorLine.items].sort((a, b) => a.x - b.x);
-      const bounds = block.anchorLine.colBounds || {
-        dateMaxX: 100,
-        narrMinX: 65,
-        narrMaxX: 280,
-        refMinX: 280,
-        refMaxX: 355,
-        amtMinX: 380,
-        debitMaxX: 460,
-        creditMaxX: 535,
-      };
+      const bounds = block.anchorLine.colBounds;
 
-      const dateItm = items.find((it) => it.x < bounds.dateMaxX && /^\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}/.test(it.text.trim()));
+      const dateItm = bounds
+        ? items.find(
+            (it) => it.x < bounds.dateMaxX && /^\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}/.test(it.text.trim())
+          )
+        : items.find((it) => /^\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}/.test(it.text.trim()));
 
-      const narrItms = items.filter((it) => it !== dateItm && it.x >= bounds.narrMinX && it.x < bounds.narrMaxX);
-      const refItms = items.filter((it) => it !== dateItm && it.x >= bounds.refMinX && it.x < bounds.refMaxX);
+      let narrItms: typeof items;
+      let refItms: typeof items;
+      let amountItems: typeof items;
+
+      if (bounds) {
+        narrItms = items.filter((it) => it !== dateItm && it.x >= bounds.narrMinX && it.x < bounds.narrMaxX);
+        refItms = items.filter((it) => it !== dateItm && it.x >= bounds.refMinX && it.x < bounds.refMaxX);
+        amountItems = items.filter((it) => it !== dateItm && it.x >= bounds.amtMinX);
+      } else {
+        // Dynamic headerless fallback: numeric items on the right are amounts, non-numeric items after date are narration
+        const numericRight = items.filter(
+          (it) => it !== dateItm && /^[-+]?(?:inr|rs\.?|₹)?\s*[\d,]+\.\d{2}(?:\s*(?:cr|dr))?$/i.test(it.text.trim())
+        );
+        const firstAmtX = numericRight.length > 0 ? numericRight[0].x : Infinity;
+        amountItems = numericRight;
+        narrItms = items.filter((it) => it !== dateItm && it.x < firstAmtX);
+        refItms = [];
+      }
 
       if (refItms.length > 0) {
         explicitRef = refItms.map((it) => it.text).join('').trim();
       }
-
-      const amountItems = items.filter((it) => it !== dateItm && it.x >= bounds.amtMinX);
 
       interface AmtItem {
         num: number;
@@ -875,7 +1016,7 @@ export async function parsePDFIntelligent(
       for (const it of amountItems) {
         const n = cleanNumber(it.text);
         if (n !== null) {
-          extractedAmts.push({ num: n, x: it.x + (it.width || 0) / 2 });
+          extractedAmts.push({ num: n, x: itemMidX(it) });
         }
       }
 
@@ -885,30 +1026,36 @@ export async function parsePDFIntelligent(
         balance = balItem.num;
 
         const candidateAmounts = extractedAmts.slice(0, extractedAmts.length - 1);
+        const hasSeparateDrCrCols = Boolean(
+          bounds && bounds.pageDebitX !== null && bounds.pageCreditX !== null
+        );
 
         if (candidateAmounts.length === 1) {
           const amt = candidateAmounts[0];
-          // Check balance math first when runningBalance is reliable, otherwise dynamic X-position
-          if (runningBalance !== null) {
-            const dDiff = Math.abs(runningBalance - amt.num - balance);
-            const cDiff = Math.abs(runningBalance + amt.num - balance);
-            if (dDiff < 0.05 && cDiff >= 0.05) {
-              debit = amt.num;
-            } else if (cDiff < 0.05 && dDiff >= 0.05) {
-              credit = amt.num;
-            } else if (amt.x < bounds.debitMaxX) {
+          if (hasSeparateDrCrCols && bounds) {
+            // Strict column-X assignment from this file's header row (never silently invert via runningBalance!)
+            if (amt.x < bounds.debitMaxX) {
               debit = amt.num;
             } else if (amt.x < bounds.creditMaxX) {
               credit = amt.num;
             } else {
-              const isCr = CREDIT_KEYWORDS.some((kw) => kw.test(joinedRawNarration));
-              if (isCr) credit = amt.num;
+              const drDist = Math.abs(amt.x - bounds.pageDebitX!);
+              const crDist = Math.abs(amt.x - bounds.pageCreditX!);
+              if (crDist < drDist) credit = amt.num;
               else debit = amt.num;
             }
-          } else if (amt.x < bounds.debitMaxX) {
+          } else if (bounds && bounds.pageDebitX !== null && bounds.pageCreditX === null) {
             debit = amt.num;
-          } else if (amt.x >= bounds.debitMaxX && amt.x < bounds.creditMaxX) {
+          } else if (bounds && bounds.pageCreditX !== null && bounds.pageDebitX === null) {
             credit = amt.num;
+          } else if (runningBalance !== null) {
+            // Single-amount-column statement without separate Debit/Credit headers
+            const dDiff = Math.abs(runningBalance - amt.num - balance);
+            const cDiff = Math.abs(runningBalance + amt.num - balance);
+            if (dDiff <= 0.01 && cDiff > 0.01) debit = amt.num;
+            else if (cDiff <= 0.01 && dDiff > 0.01) credit = amt.num;
+            else if (CREDIT_KEYWORDS.some((kw) => kw.test(joinedRawNarration))) credit = amt.num;
+            else debit = amt.num;
           } else {
             const isCr = CREDIT_KEYWORDS.some((kw) => kw.test(joinedRawNarration));
             if (isCr) credit = amt.num;
@@ -919,9 +1066,12 @@ export async function parsePDFIntelligent(
           const second = candidateAmounts[1];
           if (first.num > 0 && second.num === 0) debit = first.num;
           else if (second.num > 0 && first.num === 0) credit = second.num;
-          else {
+          else if (bounds) {
             if (first.x < bounds.debitMaxX) debit = first.num;
             if (second.x >= bounds.debitMaxX) credit = second.num;
+          } else {
+            debit = first.num;
+            credit = second.num;
           }
         }
       }
@@ -931,7 +1081,9 @@ export async function parsePDFIntelligent(
       let rawFullNarr = anchorNarr;
       for (const cl of block.continuationLines) {
         const cBounds = cl.colBounds || bounds;
-        const cNarrItms = cl.items.filter((it) => it.x >= cBounds.narrMinX - 15 && it.x < cBounds.refMaxX);
+        const cNarrItms = cBounds
+          ? cl.items.filter((it) => it.x >= cBounds.narrMinX - 15 && it.x < cBounds.refMaxX)
+          : cl.items;
         const cText = cNarrItms.map((it) => it.text).join(' ').trim();
         if (cText && !isStatementNoiseLine(cText)) {
           rawFullNarr = smartJoin(rawFullNarr, cText);
@@ -961,15 +1113,19 @@ export async function parsePDFIntelligent(
         balance = nums[nums.length - 1];
         const amt = nums[nums.length - 2];
 
-        if (runningBalance !== null) {
+        const isCr = CREDIT_KEYWORDS.some((kw) => kw.test(joinedRawNarration));
+        const isDr = DEBIT_KEYWORDS.some((kw) => kw.test(joinedRawNarration));
+        if (isCr && !isDr) {
+          credit = amt;
+        } else if (isDr && !isCr) {
+          debit = amt;
+        } else if (runningBalance !== null) {
           const dDiff = Math.abs(runningBalance - amt - balance);
           const cDiff = Math.abs(runningBalance + amt - balance);
-          if (cDiff < dDiff || cDiff < 0.05) credit = amt;
+          if (cDiff <= 0.01 && dDiff > 0.01) credit = amt;
           else debit = amt;
         } else {
-          const isCr = CREDIT_KEYWORDS.some((kw) => kw.test(joinedRawNarration));
-          if (isCr) credit = amt;
-          else debit = amt;
+          debit = amt;
         }
       } else if (nums.length === 1) {
         balance = nums[0];
@@ -993,16 +1149,23 @@ export async function parsePDFIntelligent(
     }
   }
 
-  // STEP 8: BALANCE CONTINUITY VERIFICATION
-  for (let i = 1; i < parsedTxns.length; i++) {
-    const prev = parsedTxns[i - 1];
+  // STEP 8: BALANCE CONTINUITY VERIFICATION (tolerance 0.01; starts from openingBalance if available)
+  let prevBalForCheck: number | null =
+    pdfData.openingBalance !== null && pdfData.openingBalance !== undefined
+      ? pdfData.openingBalance
+      : null;
+
+  for (let i = 0; i < parsedTxns.length; i++) {
     const curr = parsedTxns[i];
-    if (prev.balance > 0 && curr.balance > 0) {
-      const expected = prev.balance - curr.debit + curr.credit;
+    if (prevBalForCheck !== null && Number.isFinite(curr.balance)) {
+      const expected = prevBalForCheck + curr.credit - curr.debit;
       const diff = Math.abs(expected - curr.balance);
-      if (diff > 0.05) {
+      if (diff > 0.01) {
         curr.balanceMismatch = true;
       }
+    }
+    if (Number.isFinite(curr.balance)) {
+      prevBalForCheck = curr.balance;
     }
   }
 
@@ -1028,7 +1191,8 @@ export async function parsePDFIntelligent(
       'Ref No./Cheque No.': normRef || '',
       Debit: t.debit > 0 ? t.debit.toFixed(2) : '',
       Credit: t.credit > 0 ? t.credit.toFixed(2) : '',
-      Balance: t.balance > 0 ? t.balance.toFixed(2) : '',
+      Balance: Number.isFinite(t.balance) && (t.balance !== 0 || t.debit > 0 || t.credit > 0) ? t.balance.toFixed(2) : '',
+      balance_status: t.balanceMismatch ? 'BALANCE_MISMATCH' : 'OK',
       ...(t.balanceMismatch ? { needs_review: 'true' } : {}),
     });
 
@@ -1038,12 +1202,15 @@ export async function parsePDFIntelligent(
       raw_description: t.rawNarration,
       debit: t.debit > 0 ? t.debit : null,
       credit: t.credit > 0 ? t.credit : null,
-      balance: t.balance > 0 ? t.balance : null,
-      balance_after: t.balance > 0 ? t.balance : null,
+      balance: Number.isFinite(t.balance) && (t.balance !== 0 || t.debit > 0 || t.credit > 0) ? t.balance : null,
+      balance_after: Number.isFinite(t.balance) && (t.balance !== 0 || t.debit > 0 || t.credit > 0) ? t.balance : null,
       reference_number: normRef,
       upi_ref_no: refs.upi_ref_no,
       imps_ref_no: refs.imps_ref_no,
       source: 'statement_import',
+      balance_mismatch: t.balanceMismatch,
+      needs_review: t.balanceMismatch,
+      balance_status: t.balanceMismatch ? 'BALANCE_MISMATCH' : 'OK',
     });
   }
 
@@ -1072,6 +1239,17 @@ export async function parsePDFIntelligent(
     periodEnd = rows[rows.length - 1].Date;
   }
 
+  const lastRowBalance = rows.length > 0 ? cleanNumber(rows[rows.length - 1].Balance) : null;
+  const summaryClosing = pdfData.closingBalance ?? null;
+  const closingBalance = summaryClosing !== null ? summaryClosing : lastRowBalance;
+  const closingMismatch =
+    summaryClosing !== null &&
+    lastRowBalance !== null &&
+    Math.abs(summaryClosing - lastRowBalance) > 0.01;
+  const closingDiff = closingMismatch
+    ? Math.round(Math.abs(summaryClosing! - lastRowBalance!) * 100) / 100
+    : 0;
+
   return {
     headers,
     rows,
@@ -1082,7 +1260,12 @@ export async function parsePDFIntelligent(
     confidence: 'high',
     suggested_mapping,
     opening_balance: pdfData.openingBalance,
-    closing_balance: rows.length > 0 ? cleanNumber(rows[rows.length - 1].Balance) : pdfData.closingBalance,
+    closing_balance: closingBalance,
+    summary_closing_balance: summaryClosing,
+    last_row_balance: lastRowBalance,
+    closing_balance_mismatch: closingMismatch,
+    closing_balance_diff: closingDiff,
+    ...(closingMismatch ? { reconciliation_warning: true, reconciliation_diff: closingDiff } : {}),
     statement_period_start: periodStart,
     statement_period_end: periodEnd,
     raw_text: pdfData.fullDocumentText,

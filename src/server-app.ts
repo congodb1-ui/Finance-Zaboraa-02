@@ -1046,9 +1046,10 @@ export async function runServer() {
           parseResult.opening_balance,
           parseResult.closing_balance
         );
-        if (recon.warning) {
+        if (recon.warning || parseResult.closing_balance_mismatch) {
           parseResult.reconciliation_warning = true;
-          parseResult.reconciliation_diff = recon.diff;
+          parseResult.reconciliation_diff =
+            parseResult.closing_balance_diff ?? recon.diff;
         }
 
         const columnMapping: ColumnMapping | null = parseResult.suggested_mapping || null;
@@ -1183,6 +1184,12 @@ export async function runServer() {
           file_type: fileType,
           reconciliation_warning: parseResult.reconciliation_warning,
           reconciliation_diff: parseResult.reconciliation_diff,
+          opening_balance: parseResult.opening_balance ?? null,
+          closing_balance: parseResult.closing_balance ?? null,
+          summary_closing_balance: parseResult.summary_closing_balance ?? null,
+          last_row_balance: parseResult.last_row_balance ?? null,
+          closing_balance_mismatch: parseResult.closing_balance_mismatch ?? false,
+          closing_balance_diff: parseResult.closing_balance_diff ?? null,
         });
       } catch (err) {
         console.error('Upload API route error:', err);

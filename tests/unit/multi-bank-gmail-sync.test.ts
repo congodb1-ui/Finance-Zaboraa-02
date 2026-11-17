@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { parseStatementPDF } from '../../src/lib/parsers';
-import { checkReconciliation } from '../../src/lib/actions/upload';
+import { checkReconciliation, checkAccountMismatch } from '../../src/lib/actions/upload';
 import {
   GMAIL_ALERT_QUERY_BASE,
   parseGmailTransactionEmail,
@@ -13,7 +13,11 @@ import {
   type DedupCandidateTx,
   type IncomingDedupRow,
 } from '../../src/lib/dedup-sync';
-import { parseBankNarration, formatTransactionSubtitle } from '../../src/lib/parsers/bank-transaction';
+import {
+  parseBankNarration,
+  formatTransactionSubtitle,
+  UNREADABLE_PAYEE_LABEL,
+} from '../../src/lib/parsers/bank-transaction';
 import { toTitleCase } from '../../src/lib/parsers/intelligent-parser';
 import {
   orderTransactionsChronologically,
@@ -21,7 +25,11 @@ import {
   computeAuthoritativeAccountBalance,
 } from '../../src/lib/balance-utils';
 import { deleteGmailImportedData } from '../../src/lib/gmail-sync-service';
-import type { PDFExtractionResult } from '../../src/lib/parsers/pdf';
+import {
+  extractStatementBalances,
+  extractStatementAccountInfo,
+  type PDFExtractionResult,
+} from '../../src/lib/parsers/pdf';
 
 function toArrayBuffer(filePath: string): ArrayBuffer {
   const buf = fs.readFileSync(path.resolve(process.cwd(), filePath));
@@ -1039,5 +1047,169 @@ describe('Delete All Gmail Imported Data', () => {
     expect(subImps).toBe('IMPS · 25/12/2024');
   });
 });
+
+describe('Phase 2 Fixes — Dynamic Columns, 2-Row Summary, Account Mismatch & Payee Guard', () => {
+  it('FIX 1: detects column X dynamically per file without caching & flags BALANCE_MISMATCH without silent debit/credit inversion', async () => {
+    // File A: +140px shifted columns + one broken math row where Withdrawal must remain Debit and be flagged
+    const shiftedPdfA: PDFExtractionResult = {
+      openingBalance: 10000,
+      closingBalance: 14500,
+      fullDocumentText: 'HDFC BANK LIMITED Statement From : 01/01/2026 To : 31/01/2026',
+      allGridRows: [],
+      pages: [
+        {
+          pageNumber: 1,
+          fullText: 'HDFC BANK LIMITED',
+          gridRows: [],
+          textItems: [
+            { text: 'Date', x: 180, y: 700, width: 20, height: 10 },
+            { text: 'Narration', x: 260, y: 700, width: 40, height: 10 },
+            { text: 'Chq./Ref.No.', x: 420, y: 700, width: 48, height: 10 },
+            { text: 'Value Dt', x: 500, y: 700, width: 32, height: 10 },
+            { text: 'Withdrawal Amt.', x: 560, y: 700, width: 60, height: 10 },
+            { text: 'Deposit Amt.', x: 645, y: 700, width: 50, height: 10 },
+            { text: 'Closing Balance', x: 720, y: 700, width: 60, height: 10 },
+            // Row 1: Credit +5000 -> 15000 (OK)
+            { text: '02/01/26', x: 175, y: 675, width: 30, height: 10 },
+            { text: 'UPI-ACME CORP-ACME@OKAXIS-HDFC0001-111222333444-NA', x: 245, y: 675, width: 140, height: 10 },
+            { text: '0000111222333444', x: 420, y: 675, width: 65, height: 10 },
+            { text: '02/01/26', x: 500, y: 675, width: 30, height: 10 },
+            { text: '5,000.00', x: 655, y: 675, width: 35, height: 10 },
+            { text: '15,000.00', x: 730, y: 675, width: 42, height: 10 },
+            // Row 2: In Withdrawal column (580), Debit 500, but Balance printed as 16,000.00 (math mismatch!)
+            // Parser MUST keep it in Debit (500) and flag BALANCE_MISMATCH instead of silently flipping to Credit.
+            { text: '03/01/26', x: 175, y: 655, width: 30, height: 10 },
+            { text: 'UPI-VENDOR TWO-V2@OKSBI-SBIN0001-555666777888-NA', x: 245, y: 655, width: 140, height: 10 },
+            { text: '0000555666777888', x: 420, y: 655, width: 65, height: 10 },
+            { text: '03/01/26', x: 500, y: 655, width: 30, height: 10 },
+            { text: '500.00', x: 580, y: 655, width: 28, height: 10 },
+            { text: '16,000.00', x: 730, y: 655, width: 42, height: 10 },
+          ],
+        },
+      ],
+    };
+
+    const resA = await parseStatementPDF(new Uint8Array(0), { preExtracted: shiftedPdfA });
+    const txA = resA.transactions || [];
+    expect(txA).toHaveLength(2);
+    expect(txA[0].credit).toBe(5000);
+    expect(txA[0].debit).toBeNull();
+    expect(txA[0].balance_status).toBe('OK');
+
+    expect(txA[1].debit).toBe(500);
+    expect(txA[1].credit).toBeNull();
+    expect(txA[1].balance_mismatch).toBe(true);
+    expect(txA[1].balance_status).toBe('BALANCE_MISMATCH');
+    expect(txA[1].needs_review).toBe(true);
+
+    // FIX 2 closing balance mismatch also detected when summary (14500) != last row balance (16000)
+    expect(resA.closing_balance_mismatch).toBe(true);
+    expect(resA.closing_balance_diff).toBe(1500);
+    expect(resA.reconciliation_warning).toBe(true);
+
+    // File B immediately after File A: compressed -40px layout (no cross-file X cache)
+    const compressedPdfB: PDFExtractionResult = {
+      openingBalance: 1000,
+      closingBalance: 750,
+      fullDocumentText: 'HDFC BANK LIMITED Statement From : 01/02/2026 To : 28/02/2026',
+      allGridRows: [],
+      pages: [
+        {
+          pageNumber: 1,
+          fullText: 'HDFC BANK LIMITED',
+          gridRows: [],
+          textItems: [
+            { text: 'Date', x: 12, y: 700, width: 18, height: 10 },
+            { text: 'Narration', x: 55, y: 700, width: 36, height: 10 },
+            { text: 'Chq./Ref.No.', x: 195, y: 700, width: 45, height: 10 },
+            { text: 'Value Dt', x: 265, y: 700, width: 30, height: 10 },
+            { text: 'Withdrawal Amt.', x: 320, y: 700, width: 55, height: 10 },
+            { text: 'Deposit Amt.', x: 390, y: 700, width: 45, height: 10 },
+            { text: 'Closing Balance', x: 455, y: 700, width: 55, height: 10 },
+            // Row 1: Debit 250 -> 750 (OK)
+            { text: '05/02/26', x: 12, y: 675, width: 28, height: 10 },
+            { text: 'UPI-CAFE THREE-C3@OKAXIS-HDFC0001-999000111222-NA', x: 55, y: 675, width: 120, height: 10 },
+            { text: '0000999000111222', x: 195, y: 675, width: 60, height: 10 },
+            { text: '05/02/26', x: 265, y: 675, width: 28, height: 10 },
+            { text: '250.00', x: 335, y: 675, width: 26, height: 10 },
+            { text: '750.00', x: 470, y: 675, width: 30, height: 10 },
+          ],
+        },
+      ],
+    };
+
+    const resB = await parseStatementPDF(new Uint8Array(0), { preExtracted: compressedPdfB });
+    const txB = resB.transactions || [];
+    expect(txB).toHaveLength(1);
+    expect(txB[0].debit).toBe(250);
+    expect(txB[0].credit).toBeNull();
+    expect(txB[0].balance).toBe(750);
+    expect(txB[0].balance_status).toBe('OK');
+    expect(resB.closing_balance_mismatch).toBe(false);
+  });
+
+  it('FIX 2: extractStatementBalances handles 2-row HDFC summary with merged cells and collapsed text', () => {
+    // Merged grid row (nextRow has fewer cells than headerRow)
+    const mergedGrid = [
+      ['Opening Balance', 'Dr Count', 'Cr Count', 'Debits', 'Credits', 'Closing Bal'],
+      ['0.00 22 16', '2,978,162.93', '4,728,683.17', '1,750,520.24'],
+    ];
+    expect(extractStatementBalances('', mergedGrid)).toEqual({
+      opening: 0,
+      closing: 1750520.24,
+    });
+
+    // Collapsed inline summary text fallback
+    const collapsed =
+      'Summary for Account 50200078768458 Opening Balance Dr Count Cr Count Debits Credits Closing Bal 656,605.29 185 22 5,746,280.65 5,588,638.22 498,962.86';
+    expect(extractStatementBalances(collapsed)).toEqual({
+      opening: 656605.29,
+      closing: 498962.86,
+    });
+  });
+
+  it('FIX 3: extracts statement account last4 and blocks/prompts on account mismatch', () => {
+    expect(extractStatementAccountInfo('Account No : 50100879613011 Statement')).toEqual({
+      accountNumber: '50100879613011',
+      accountLast4: '3011',
+    });
+    expect(extractStatementAccountInfo('A/c No. 5020 0078 7684 58 INR')).toEqual({
+      accountNumber: '50200078768458',
+      accountLast4: '8458',
+    });
+
+    const mismatch = checkAccountMismatch('8458', '3011');
+    expect(mismatch).toEqual({
+      isMismatch: true,
+      detectedLast4: '8458',
+      selectedLast4: '3011',
+      message: 'This statement is for ...8458, but you selected ...3011. Continue?',
+    });
+
+    expect(checkAccountMismatch('8458', '8458').isMismatch).toBe(false);
+    expect(checkAccountMismatch(null, '8458').isMismatch).toBe(false);
+  });
+
+  it('FIX 4: replaces Xxxxx / unreadable masked-account placeholders with UNREADABLE PAYEE - CHECK PDF', () => {
+    const maskedCases = [
+      'UPI-XXXXX8212-8212@YBL-YESB0YBLUPI-6986531676151-NA',
+      'IMPS-6986531676151-XXXXX8212',
+      'C-XXXXXXXX0921-NA',
+      'Xxxxx8212',
+    ];
+    for (const raw of maskedCases) {
+      const parsed = parseBankNarration(raw, '6986531676151');
+      expect(parsed.description).toBe(UNREADABLE_PAYEE_LABEL);
+      expect(parsed.description).not.toMatch(/Xxxxx/i);
+      expect(toTitleCase(parsed.description)).toBe(UNREADABLE_PAYEE_LABEL);
+    }
+
+    // Named transfer with masked account still preserves the real name
+    expect(parseBankNarration('C-XXXXXXXX0921-FAMILY', '0000300112504365').description).toBe(
+      'FAMILY (A/c 0921)'
+    );
+  });
+});
+
 
 

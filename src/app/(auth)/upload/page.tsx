@@ -17,6 +17,7 @@ import {
   getUploads,
   getUploadDetails,
   checkDateOverlap,
+  checkAccountMismatch,
 } from '../../../lib/actions/upload';
 import { apiPost } from '../../../lib/api-client';
 import { getAccounts } from '../../../lib/actions/accounts';
@@ -72,6 +73,13 @@ export default function StatementUploadPage() {
   const [activeUpload, setActiveUpload] = useState<StatementUpload | null>(null);
   const [stagedTransactions, setStagedTransactions] = useState<StagedTransaction[]>([]);
   const [overlapResult, setOverlapResult] = useState<OverlapCheckResult | null>(null);
+  const [pendingAccountMismatch, setPendingAccountMismatch] = useState<{
+    response: UploadApiResponse;
+    detectedLast4: string;
+    selectedLast4: string;
+    message: string;
+    usedLocalSavedPassword: boolean;
+  } | null>(null);
 
   // History state & read-only viewing
   const [uploadsHistory, setUploadsHistory] = useState<StatementUpload[]>([]);
@@ -135,16 +143,77 @@ export default function StatementUploadPage() {
     setPasswordError(null);
   };
 
+  const mergeUploadBalanceMeta = (
+    upload: StatementUpload | null,
+    response?: UploadApiResponse | null
+  ): StatementUpload | null => {
+    if (!upload) return null;
+    if (!response) return upload;
+    return {
+      ...upload,
+      opening_balance: response.opening_balance ?? upload.opening_balance ?? null,
+      closing_balance: response.closing_balance ?? upload.closing_balance ?? null,
+      summary_closing_balance:
+        response.summary_closing_balance ?? upload.summary_closing_balance ?? null,
+      closing_balance_mismatch:
+        response.closing_balance_mismatch ?? upload.closing_balance_mismatch,
+      closing_balance_diff: response.closing_balance_diff ?? upload.closing_balance_diff,
+      reconciliation_warning: response.reconciliation_warning ?? upload.reconciliation_warning,
+      reconciliation_diff: response.reconciliation_diff ?? upload.reconciliation_diff,
+    };
+  };
+
   const handleClearFile = () => {
     setSelectedFile(null);
     setCurrentStep('select');
     setUploadApiResponse(null);
     setActiveUpload(null);
     setStagedTransactions([]);
+    setPendingAccountMismatch(null);
     setStatusMessage(null);
     setIsReadOnlyInspection(false);
     setIsPasswordModalOpen(false);
     setPasswordError(null);
+  };
+
+  const finalizeParsingResponse = async (
+    response: UploadApiResponse,
+    usedLocalSavedPassword: boolean
+  ) => {
+    const details = await getUploadDetails(response.upload_id);
+    setActiveUpload(mergeUploadBalanceMeta(details.upload, response));
+
+    // If auto-detection succeeded with high confidence, auto-stage; otherwise show ColumnMappingWizard
+    if (!response.needs_mapping && response.column_mapping) {
+      const stagedRes = await confirmMappingAndStaging(response.upload_id, response.column_mapping, false);
+      const updatedDetails = await getUploadDetails(response.upload_id);
+      setActiveUpload(mergeUploadBalanceMeta(updatedDetails.upload, response));
+      setStagedTransactions(updatedDetails.transactions);
+
+      const overlap = await checkDateOverlap(
+        selectedAccountId,
+        stagedRes.date_start,
+        stagedRes.date_end,
+        response.upload_id
+      );
+      setOverlapResult(overlap);
+
+      setCurrentStep('review');
+      setStatusMessage({
+        type: 'success',
+        text: `Parsed ${response.row_count} rows with ${response.detected_bank || 'Standard'} format auto-detection${
+          usedLocalSavedPassword ? ' (PDF unlocked using saved local password)' : ''
+        }.`,
+      });
+    } else {
+      setCurrentStep('map');
+      if (usedLocalSavedPassword) {
+        setStatusMessage({
+          type: 'info',
+          text: 'PDF unlocked automatically using the locally saved password for this account.',
+        });
+      }
+    }
   };
 
   // STEP 1-8: Trigger Upload & Parse
@@ -165,6 +234,7 @@ export default function StatementUploadPage() {
 
     setIsProcessing(true);
     setStatusMessage(null);
+    setPendingAccountMismatch(null);
     setCurrentStep('parse');
 
     try {
@@ -200,44 +270,25 @@ export default function StatementUploadPage() {
       setPasswordError(null);
       setUploadApiResponse(response);
 
-      // Fetch newly created statement upload record
-      const details = await getUploadDetails(response.upload_id);
-      setActiveUpload(details.upload);
-
-      // If auto-detection succeeded with high confidence, auto-stage; otherwise show ColumnMappingWizard
-      if (!response.needs_mapping && response.column_mapping) {
-        // Auto-confirm high confidence mapping
-        const stagedRes = await confirmMappingAndStaging(response.upload_id, response.column_mapping, false);
-        const updatedDetails = await getUploadDetails(response.upload_id);
-        setActiveUpload(updatedDetails.upload);
-        setStagedTransactions(updatedDetails.transactions);
-
-        // Check for date range overlap with existing imports
-        const overlap = await checkDateOverlap(
-          selectedAccountId,
-          stagedRes.date_start,
-          stagedRes.date_end,
-          response.upload_id
-        );
-        setOverlapResult(overlap);
-
-        setCurrentStep('review');
-        setStatusMessage({
-          type: 'success',
-          text: `Parsed ${response.row_count} rows with ${response.detected_bank || 'Standard'} format auto-detection${
-            usedLocalSavedPassword ? ' (PDF unlocked using saved local password)' : ''
-          }.`,
+      // FIX 3: Account mismatch guard — block auto-staging / auto-import and ask confirmation
+      const selectedAcc = accounts.find((a) => a.id === selectedAccountId);
+      const mismatch = checkAccountMismatch(
+        response.detected_account_last4,
+        selectedAcc?.account_number_last4
+      );
+      if (mismatch.isMismatch && mismatch.detectedLast4 && mismatch.selectedLast4 && mismatch.message) {
+        setPendingAccountMismatch({
+          response,
+          detectedLast4: mismatch.detectedLast4,
+          selectedLast4: mismatch.selectedLast4,
+          message: mismatch.message,
+          usedLocalSavedPassword,
         });
-      } else {
-        // Show Column Mapping Wizard
-        setCurrentStep('map');
-        if (usedLocalSavedPassword) {
-          setStatusMessage({
-            type: 'info',
-            text: 'PDF unlocked automatically using the locally saved password for this account.',
-          });
-        }
+        setCurrentStep('select');
+        return;
       }
+
+      await finalizeParsingResponse(response, usedLocalSavedPassword);
     } catch (err: any) {
       console.error('Upload failed:', err);
       const isPasswordError =
@@ -281,6 +332,42 @@ export default function StatementUploadPage() {
     await handleStartParsing(password, saveLocally);
   };
 
+  const handleCancelMismatch = async () => {
+    const pending = pendingAccountMismatch;
+    if (!pending) return;
+    setIsProcessing(true);
+    try {
+      await deleteUpload(pending.response.upload_id);
+      const freshHistory = await getUploads();
+      setUploadsHistory(freshHistory);
+    } catch (e) {
+      console.warn('Mismatch cancel cleanup notice:', e);
+    } finally {
+      handleClearFile();
+      setStatusMessage({
+        type: 'info',
+        text: `Upload cancelled: statement belongs to ...${pending.detectedLast4}, not ...${pending.selectedLast4}.`,
+      });
+      setIsProcessing(false);
+    }
+  };
+
+  const handleContinueMismatch = async () => {
+    const pending = pendingAccountMismatch;
+    if (!pending) return;
+    setPendingAccountMismatch(null);
+    setIsProcessing(true);
+    setCurrentStep('parse');
+    try {
+      await finalizeParsingResponse(pending.response, pending.usedLocalSavedPassword);
+    } catch (err: any) {
+      setStatusMessage({ type: 'error', text: err.message || 'Failed to stage statement.' });
+      setCurrentStep('select');
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
   // Handle manual column mapping confirmation from ColumnMappingWizard
   const handleConfirmMapping = async (mapping: ColumnMapping, skipBalance: boolean) => {
     if (!uploadApiResponse) return;
@@ -289,7 +376,7 @@ export default function StatementUploadPage() {
     try {
       const res = await confirmMappingAndStaging(uploadApiResponse.upload_id, mapping, skipBalance);
       const details = await getUploadDetails(uploadApiResponse.upload_id);
-      setActiveUpload(details.upload);
+      setActiveUpload(mergeUploadBalanceMeta(details.upload, uploadApiResponse));
       setStagedTransactions(details.transactions);
 
       // Check date range overlap
@@ -778,6 +865,53 @@ export default function StatementUploadPage() {
               </div>
             </Card>
           )}
+        </div>
+      )}
+
+      {/* Account Mismatch Guard Modal (FIX 3) */}
+      {pendingAccountMismatch && (
+        <div
+          data-testid="account-mismatch-modal"
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-xs animate-in fade-in"
+        >
+          <div className="bg-white dark:bg-slate-900 border border-amber-300 dark:border-amber-700 rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-4">
+            <div className="flex items-start gap-3">
+              <div className="w-10 h-10 rounded-xl bg-amber-100 dark:bg-amber-950/80 text-amber-600 dark:text-amber-400 flex items-center justify-center shrink-0">
+                <AlertCircle className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="font-heading font-bold text-base text-slate-900 dark:text-white">
+                  Account Mismatch Detected
+                </h3>
+                <p className="text-xs text-slate-600 dark:text-slate-300 mt-1 leading-relaxed">
+                  {pendingAccountMismatch.message}
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-3 pt-2">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                data-testid="mismatch-cancel-button"
+                onClick={handleCancelMismatch}
+                disabled={isProcessing}
+              >
+                Cancel
+              </Button>
+              <Button
+                type="button"
+                variant="primary"
+                size="sm"
+                data-testid="mismatch-continue-button"
+                onClick={handleContinueMismatch}
+                isLoading={isProcessing}
+              >
+                Continue
+              </Button>
+            </div>
+          </div>
         </div>
       )}
 

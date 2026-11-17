@@ -189,7 +189,7 @@ export async function extractPDFRawData(
     });
   }
 
-  const balances = extractStatementBalances(fullDocumentText, allGridRows);
+  const balances = extractStatementBalances(fullDocumentText, allGridRows, pages);
   const period = extractStatementPeriod(fullDocumentText);
   const acct = extractStatementAccountInfo(fullDocumentText);
 
@@ -215,10 +215,12 @@ export function extractStatementAccountInfo(text: string): {
 } {
   if (!text) return { accountNumber: null, accountLast4: null };
   const m =
+    text.match(/(?:Account|A\/c)\s*(?:No|Number)\.?\s*[:\-]?\s*([Xx*\d](?:[Xx*\d]|[ \-](?=[Xx*\d])){4,26}\d{2,4})(?=\s|$|[^Xx*\d\-])/i) ||
+    text.match(/Statement\s+(?:for|of)\s+Account\s*(?:No\.?)?\s*[:\-]?\s*([Xx*\d](?:[Xx*\d]|[ \-](?=[Xx*\d])){4,26}\d{2,4})(?=\s|$|[^Xx*\d\-])/i) ||
     text.match(/(?:Account|A\/c)\s*(?:No|Number)\.?\s*[:\-]?\s*([Xx*\d]{6,20})/i) ||
     text.match(/Statement\s+for\s+Account\s+No\.?\s*[:\-]?\s*([Xx*\d]{6,20})/i);
   if (!m?.[1]) return { accountNumber: null, accountLast4: null };
-  const raw = m[1].trim();
+  const raw = m[1].replace(/[\s\-]+/g, '').trim();
   const digits = raw.match(/(\d{4})$/)?.[1] || null;
   return { accountNumber: raw, accountLast4: digits };
 }
@@ -257,30 +259,145 @@ export function extractStatementPeriod(text: string): { start: string | null; en
   return { start: null, end: null };
 }
 
+function parseSummaryNumber(token: string | undefined): number | null {
+  if (!token) return null;
+  const cleaned = token.replace(/,/g, '').replace(/[^\d.\-]/g, '').trim();
+  if (!cleaned || cleaned === '-' || cleaned === '.') return null;
+  const num = parseFloat(cleaned);
+  return Number.isFinite(num) ? num : null;
+}
+
 /**
- * Searches statement text & tabular summary grid rows for opening and closing balance patterns
+ * Searches statement text, tabular summary grid rows, and page coordinates
+ * for opening and closing balance patterns (including HDFC 2-row Summary tables).
  */
 export function extractStatementBalances(
   text: string,
-  allGridRows?: string[][]
+  allGridRows?: string[][],
+  pages?: PDFRawPage[]
 ): { opening: number | null; closing: number | null } {
   let opening: number | null = null;
   let closing: number | null = null;
 
-  // Check HDFC-style 2-row summary header:
+  // 1. Coordinate-aware 2-row Summary detection on page textItems (handles shifted/merged HDFC summaries)
+  if (pages && pages.length > 0) {
+    for (const page of pages) {
+      if (!page.textItems || page.textItems.length === 0) continue;
+      const rows: Array<{ y: number; items: ExtractedTextItem[] }> = [];
+      const sorted = [...page.textItems].sort((a, b) => b.y - a.y || a.x - b.x);
+      for (const it of sorted) {
+        if (!it.text || !it.text.trim()) continue;
+        const row = rows.find((r) => Math.abs(r.y - it.y) <= 3.5);
+        if (row) row.items.push(it);
+        else rows.push({ y: it.y, items: [it] });
+      }
+      for (const r of rows) r.items.sort((a, b) => a.x - b.x);
+
+      for (let rIdx = 0; rIdx < rows.length - 1; rIdx++) {
+        const hdr = rows[rIdx];
+        const hdrText = hdr.items.map((i) => i.text.trim()).join(' ');
+        if (
+          !/opening\s+bal(?:ance)?/i.test(hdrText) ||
+          !/(?:closing|ending|clg)\s+bal(?:ance)?/i.test(hdrText)
+        ) {
+          continue;
+        }
+
+        // Find the first numeric value row below header row within ~45px
+        for (let vIdx = rIdx + 1; vIdx < Math.min(rows.length, rIdx + 4); vIdx++) {
+          const valRow = rows[vIdx];
+          if (hdr.y - valRow.y > 48) break;
+          const numericItems = valRow.items
+            .flatMap((it) => {
+              const parts = it.text.trim().split(/\s+/);
+              if (parts.length <= 1) {
+                const n = parseSummaryNumber(it.text);
+                return n !== null ? [{ num: n, cx: it.x + (it.width || 0) / 2 }] : [];
+              }
+              const step = (it.width || it.text.length * 4) / parts.length;
+              return parts
+                .map((p, idx) => {
+                  const n = parseSummaryNumber(p);
+                  return n !== null ? { num: n, cx: it.x + step * (idx + 0.5) } : null;
+                })
+                .filter((x): x is { num: number; cx: number } => x !== null);
+            });
+
+          if (numericItems.length < 2) continue;
+
+          const openHeaderIt = hdr.items.find((i) => /opening\s+bal/i.test(i.text));
+          const closeHeaderIt = hdr.items.find((i) => /(?:closing|ending|clg)\s+bal/i.test(i.text));
+
+          if (openHeaderIt && closeHeaderIt && openHeaderIt !== closeHeaderIt) {
+            const openCx = openHeaderIt.x + (openHeaderIt.width || 0) / 2;
+            const closeCx = closeHeaderIt.x + (closeHeaderIt.width || 0) / 2;
+            let bestOpen = numericItems[0];
+            let bestClose = numericItems[numericItems.length - 1];
+            let bestOpenDist = Infinity;
+            let bestCloseDist = Infinity;
+            for (const ni of numericItems) {
+              const od = Math.abs(ni.cx - openCx);
+              if (od < bestOpenDist) {
+                bestOpenDist = od;
+                bestOpen = ni;
+              }
+              const cd = Math.abs(ni.cx - closeCx);
+              if (cd < bestCloseDist) {
+                bestCloseDist = cd;
+                bestClose = ni;
+              }
+            }
+            opening = bestOpen.num;
+            closing = bestClose.num;
+          } else {
+            opening = numericItems[0].num;
+            closing = numericItems[numericItems.length - 1].num;
+          }
+
+          if (opening !== null && closing !== null) {
+            return { opening, closing };
+          }
+        }
+      }
+    }
+  }
+
+  // 2. Check HDFC-style 2-row summary header in gridRows:
   // Row i:   ['Opening Balance', 'Dr Count', 'Cr Count', 'Debits', 'Credits', 'Closing Bal']
   // Row i+1: ['0.00', '22', '16', '2,978,162.93', '4,728,683.17', '1,750,520.24']
   if (allGridRows && allGridRows.length > 1) {
     for (let i = 0; i < allGridRows.length - 1; i++) {
       const headerRow = allGridRows[i];
-      const nextRow = allGridRows[i + 1];
-      const openColIdx = headerRow.findIndex((c) => /^opening\s+bal(?:ance)?$/i.test(c.trim()));
-      const closeColIdx = headerRow.findIndex((c) => /^(?:closing|ending)\s+bal(?:ance)?$/i.test(c.trim()));
-      if (openColIdx >= 0 && closeColIdx >= 0 && nextRow.length >= headerRow.length) {
-        const oNum = parseFloat(String(nextRow[openColIdx] || '').replace(/,/g, ''));
-        const cNum = parseFloat(String(nextRow[closeColIdx] || '').replace(/,/g, ''));
-        if (!isNaN(oNum)) opening = oNum;
-        if (!isNaN(cNum)) closing = cNum;
+      const joinedHeader = headerRow.join(' ');
+      if (
+        !/opening\s+bal(?:ance)?/i.test(joinedHeader) ||
+        !/(?:closing|ending|clg)\s+bal(?:ance)?/i.test(joinedHeader)
+      ) {
+        continue;
+      }
+
+      const openColIdx = headerRow.findIndex((c) => /opening\s+bal(?:ance)?/i.test(c.trim()));
+      const closeColIdx = headerRow.findIndex((c) => /(?:closing|ending|clg)\s+bal(?:ance)?/i.test(c.trim()));
+
+      for (let look = 1; look <= 2 && i + look < allGridRows.length; look++) {
+        const nextRow = allGridRows[i + look];
+        const numericTokens = nextRow
+          .flatMap((cell) => cell.trim().split(/\s+/))
+          .map((tok) => parseSummaryNumber(tok))
+          .filter((n): n is number => n !== null);
+        if (numericTokens.length < 2) continue;
+
+        if (openColIdx >= 0 && closeColIdx >= 0 && openColIdx !== closeColIdx && nextRow.length >= headerRow.length) {
+          const oNum = parseSummaryNumber(nextRow[openColIdx]);
+          const cNum = parseSummaryNumber(nextRow[closeColIdx]);
+          if (oNum !== null) opening = oNum;
+          if (cNum !== null) closing = cNum;
+        } else {
+          // Handles merged count/header cells by taking first (Opening Balance) and last (Closing Bal) numbers
+          opening = numericTokens[0];
+          closing = numericTokens[numericTokens.length - 1];
+        }
+
         if (opening !== null && closing !== null) {
           return { opening, closing };
         }
@@ -288,18 +405,32 @@ export function extractStatementBalances(
     }
   }
 
+  // 3. Collapsed inline 2-row HDFC summary text fallback:
+  // "Opening Balance Dr Count Cr Count Debits Credits Closing Bal 0.00 22 16 2,978,162.93 4,728,683.17 1,750,520.24"
+  const collapsedSummary = text.match(
+    /opening\s+bal(?:ance)?\s+dr\.?\s*count\s+cr\.?\s*count\s+debits?\s+credits?\s+(?:closing|ending|clg)\s+bal(?:ance)?\s+(-?[\d,]+\.\d{2}|-?[\d,]+)\s+\d+\s+\d+\s+[\d,.]+\s+[\d,.]+\s+(-?[\d,]+\.\d{2}|-?[\d,]+)/i
+  );
+  if (collapsedSummary) {
+    const oNum = parseSummaryNumber(collapsedSummary[1]);
+    const cNum = parseSummaryNumber(collapsedSummary[2]);
+    if (oNum !== null && cNum !== null) {
+      return { opening: oNum, closing: cNum };
+    }
+  }
+
   // Inline patterns for Opening Balance
   const openingPatterns = [
-    /opening\s+bal(?:ance)?\s*[:\-]?\s*(?:inr|rs\.?)?\s*([\d,]+\.\d{2}|[\d,]+)/i,
-    /b\/f\s+bal(?:ance)?\s*[:\-]?\s*(?:inr|rs\.?)?\s*([\d,]+\.\d{2})/i,
-    /brought\s+forward\s*[:\-]?\s*(?:inr|rs\.?)?\s*([\d,]+\.\d{2})/i,
+    /opening\s+bal(?:ance)?\s*[:\-]\s*(?:inr|rs\.?)?\s*(-?[\d,]+\.\d{2}|-?[\d,]+)/i,
+    /opening\s+bal(?:ance)?\s+(?:inr|rs\.?)?\s*(-?[\d,]+\.\d{2})/i,
+    /b\/f\s+bal(?:ance)?\s*[:\-]?\s*(?:inr|rs\.?)?\s*(-?[\d,]+\.\d{2})/i,
+    /brought\s+forward\s*[:\-]?\s*(?:inr|rs\.?)?\s*(-?[\d,]+\.\d{2})/i,
   ];
 
   for (const pat of openingPatterns) {
     const match = text.match(pat);
     if (match && match[1]) {
-      const num = parseFloat(match[1].replace(/,/g, ''));
-      if (!isNaN(num)) {
+      const num = parseSummaryNumber(match[1]);
+      if (num !== null) {
         opening = num;
         break;
       }
@@ -308,17 +439,17 @@ export function extractStatementBalances(
 
   // Inline patterns for Closing Balance
   const closingPatterns = [
-    /closing\s+bal(?:ance)?\s*[:\-]?\s*(?:inr|rs\.?)?\s*([\d,]+\.\d{2}|[\d,]+)/i,
-    /c\/f\s+bal(?:ance)?\s*[:\-]?\s*(?:inr|rs\.?)?\s*([\d,]+\.\d{2})/i,
-    /ending\s+bal(?:ance)?\s*[:\-]?\s*(?:inr|rs\.?)?\s*([\d,]+\.\d{2})/i,
-    /carried\s+forward\s*[:\-]?\s*(?:inr|rs\.?)?\s*([\d,]+\.\d{2})/i,
+    /(?:closing|ending|clg)\s+bal(?:ance)?\s*[:\-]\s*(?:inr|rs\.?)?\s*(-?[\d,]+\.\d{2}|-?[\d,]+)/i,
+    /(?:closing|ending|clg)\s+bal(?:ance)?\s+(?:inr|rs\.?)?\s*(-?[\d,]+\.\d{2})/i,
+    /c\/f\s+bal(?:ance)?\s*[:\-]?\s*(?:inr|rs\.?)?\s*(-?[\d,]+\.\d{2})/i,
+    /carried\s+forward\s*[:\-]?\s*(?:inr|rs\.?)?\s*(-?[\d,]+\.\d{2})/i,
   ];
 
   for (const pat of closingPatterns) {
     const match = text.match(pat);
     if (match && match[1]) {
-      const num = parseFloat(match[1].replace(/,/g, ''));
-      if (!isNaN(num)) {
+      const num = parseSummaryNumber(match[1]);
+      if (num !== null) {
         closing = num;
         break;
       }

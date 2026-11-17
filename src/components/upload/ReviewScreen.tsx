@@ -62,11 +62,11 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
     reference_number: string;
   }>({ txn_date: '', description: '', debit: '', credit: '', reference_number: '' });
 
-  // Batch 3b: Modal state for replacing PDF imports
   const [showReplaceModal, setShowReplaceModal] = useState(false);
   const [replaceConfirmationText, setReplaceConfirmationText] = useState('');
   const [showEditModal, setShowEditModal] = useState(false);
   const [showRevertModal, setShowRevertModal] = useState(false);
+  const [acknowledgeClosingMismatch, setAcknowledgeClosingMismatch] = useState(false);
 
   const pageSize = 50;
 
@@ -87,30 +87,71 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
     }
   }
 
-  // Reconstruct true chronological balance sequence and detect genuine breaks only
-  const { orderedChronological, displayTransactions, balanceDiscontinuity } = React.useMemo(() => {
+  // Reconstruct true chronological balance sequence and detect genuine breaks (tolerance 0.01)
+  const {
+    orderedChronological,
+    displayTransactions,
+    balanceDiscontinuity,
+    mismatchRowIds,
+    lastChronologicalBalance,
+  } = React.useMemo(() => {
     if (!transactions || transactions.length === 0) {
       return {
         orderedChronological: [] as StagedTransaction[],
         displayTransactions: [] as StagedTransaction[],
         balanceDiscontinuity: null as { count: number } | null,
+        mismatchRowIds: new Set<string>(),
+        lastChronologicalBalance: null as number | null,
       };
     }
 
-    const { ordered, breaks, originalDirection } = orderTransactionsChronologically(transactions);
+    const { ordered, originalDirection } = orderTransactionsChronologically(transactions);
     const rowsWithBalance = ordered.filter(
       (t) => typeof t.balance === 'number' && !isNaN(t.balance)
     );
 
+    const mismatches = new Set<string>();
+    let prevBal: number | null =
+      upload.opening_balance !== undefined && upload.opening_balance !== null
+        ? Number(upload.opening_balance)
+        : null;
+
+    for (const row of ordered) {
+      const bal = typeof row.balance === 'number' && Number.isFinite(row.balance) ? row.balance : null;
+      if (prevBal !== null && bal !== null) {
+        const expected = prevBal + Number(row.credit ?? 0) - Number(row.debit ?? 0);
+        if (Math.abs(expected - bal) > 0.01) {
+          mismatches.add(row.id);
+        }
+      }
+      if (bal !== null) {
+        prevBal = bal;
+      }
+    }
+
     const displayList =
       originalDirection === 'descending' ? [...ordered].reverse() : ordered;
+    const lastBal =
+      rowsWithBalance.length > 0 ? Number(rowsWithBalance[rowsWithBalance.length - 1].balance) : null;
 
     return {
       orderedChronological: ordered,
       displayTransactions: displayList,
-      balanceDiscontinuity: rowsWithBalance.length >= 2 && breaks > 0 ? { count: breaks } : null,
+      balanceDiscontinuity: mismatches.size > 0 ? { count: mismatches.size } : null,
+      mismatchRowIds: mismatches,
+      lastChronologicalBalance: lastBal,
     };
-  }, [transactions]);
+  }, [transactions, upload.opening_balance]);
+
+  const effectiveOpeningBalance =
+    upload.opening_balance !== undefined ? upload.opening_balance : null;
+  const effectiveClosingBalance =
+    upload.summary_closing_balance !== undefined && upload.summary_closing_balance !== null
+      ? upload.summary_closing_balance
+      : upload.closing_balance !== undefined && upload.closing_balance !== null
+        ? upload.closing_balance
+        : lastChronologicalBalance;
+  const hasClosingMismatch = Boolean(upload.closing_balance_mismatch);
 
   const totalPages = Math.ceil(displayTransactions.length / pageSize) || 1;
   const paginatedTransactions = displayTransactions.slice(
@@ -284,7 +325,11 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
                 data-testid="confirm-import-button"
                 onClick={handleConfirm}
                 isLoading={isSubmitting}
-                disabled={isSubmitting || (overlapInfo?.has_overlap && !replaceDecision)}
+                disabled={
+                  isSubmitting ||
+                  (overlapInfo?.has_overlap && !replaceDecision) ||
+                  (hasClosingMismatch && !acknowledgeClosingMismatch)
+                }
                 rightIcon={<ArrowRight className="w-4 h-4" />}
               >
                 Confirm & Import
@@ -293,6 +338,47 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
           )}
         </div>
       </div>
+
+      {/* Summary Closing Balance vs Last Row Balance Mismatch Guard (FIX 2) */}
+      {hasClosingMismatch && (
+        <div
+          data-testid="closing-balance-mismatch-banner"
+          className="p-4 rounded-xl bg-red-50 dark:bg-red-950/50 border border-red-300 dark:border-red-700 text-red-900 dark:text-red-100 space-y-2.5 animate-in fade-in shadow-2xs"
+        >
+          <div className="flex items-start gap-3">
+            <AlertTriangle className="w-5 h-5 text-red-600 dark:text-red-400 shrink-0 mt-0.5" />
+            <div className="text-xs">
+              <span className="font-semibold text-sm block">
+                Closing Balance Mismatch Detected
+              </span>
+              <p className="mt-0.5 leading-relaxed text-red-800 dark:text-red-200">
+                Statement Summary Closing Balance (
+                <strong className="font-tabular">
+                  {effectiveClosingBalance !== null ? formatINR(effectiveClosingBalance) : 'N/A'}
+                </strong>
+                ) differs from the last transaction row balance (
+                <strong className="font-tabular">
+                  {lastChronologicalBalance !== null ? formatINR(lastChronologicalBalance) : 'N/A'}
+                </strong>
+                ) by{' '}
+                <strong className="font-tabular">{formatINR(upload.closing_balance_diff || 0)}</strong>.
+                Review highlighted rows before saving.
+              </p>
+            </div>
+          </div>
+          {!isReadOnly && (
+            <label className="flex items-center gap-2 text-xs font-medium text-red-900 dark:text-red-100 pl-8 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={acknowledgeClosingMismatch}
+                onChange={(e) => setAcknowledgeClosingMismatch(e.target.checked)}
+                className="rounded border-red-400 text-red-600 focus:ring-red-500"
+              />
+              <span>I have verified the closing balance mismatch and want to import anyway</span>
+            </label>
+          )}
+        </div>
+      )}
 
       {/* Deliverable 4: Reconciliation Warning Banner (dismissable) */}
       {upload.reconciliation_warning && showReconWarning && (
@@ -452,7 +538,7 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
       )}
 
       {/* Summary KPI Strip */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
         {/* Total Count */}
         <Card className="p-4 flex items-center justify-between">
           <div>
@@ -471,13 +557,33 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
           </div>
         </Card>
 
+        {/* Opening Balance */}
+        <Card className="p-4 flex items-center justify-between">
+          <div>
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400 block">
+              Opening Balance
+            </span>
+            <span
+              data-testid="review-opening-balance"
+              className="font-heading font-bold text-xl text-slate-900 dark:text-white font-tabular mt-1 block"
+            >
+              {effectiveOpeningBalance !== null && effectiveOpeningBalance !== undefined
+                ? formatINR(effectiveOpeningBalance)
+                : '—'}
+            </span>
+            <span className="text-[11px] text-slate-500 mt-0.5 block">
+              From statement summary
+            </span>
+          </div>
+        </Card>
+
         {/* Debits Total */}
         <Card className="p-4 flex items-center justify-between">
           <div>
             <span className="text-[11px] font-semibold uppercase tracking-wider text-red-600 dark:text-red-400 block">
               Total Debits (Outflow)
             </span>
-            <span className="font-heading font-bold text-2xl text-red-600 dark:text-red-400 font-tabular mt-1 block">
+            <span className="font-heading font-bold text-xl text-red-600 dark:text-red-400 font-tabular mt-1 block">
               −{formatINR(totalDebits)}
             </span>
             <span className="text-[11px] text-slate-500 mt-0.5 block">
@@ -495,7 +601,7 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
             <span className="text-[11px] font-semibold uppercase tracking-wider text-green-600 dark:text-green-400 block">
               Total Credits (Inflow)
             </span>
-            <span className="font-heading font-bold text-2xl text-green-600 dark:text-green-400 font-tabular mt-1 block">
+            <span className="font-heading font-bold text-xl text-green-600 dark:text-green-400 font-tabular mt-1 block">
               +{formatINR(totalCredits)}
             </span>
             <span className="text-[11px] text-slate-500 mt-0.5 block">
@@ -504,6 +610,30 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
           </div>
           <div className="w-10 h-10 rounded-lg bg-green-50 dark:bg-green-950/60 text-green-600 dark:text-green-400 flex items-center justify-center">
             <span className="font-bold text-lg leading-none">+</span>
+          </div>
+        </Card>
+
+        {/* Closing Balance */}
+        <Card className="p-4 flex items-center justify-between">
+          <div>
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400 block">
+              Closing Balance
+            </span>
+            <span
+              data-testid="review-closing-balance"
+              className={`font-heading font-bold text-xl font-tabular mt-1 block ${
+                hasClosingMismatch
+                  ? 'text-red-600 dark:text-red-400'
+                  : 'text-slate-900 dark:text-white'
+              }`}
+            >
+              {effectiveClosingBalance !== null && effectiveClosingBalance !== undefined
+                ? formatINR(effectiveClosingBalance)
+                : '—'}
+            </span>
+            <span className="text-[11px] text-slate-500 mt-0.5 block">
+              {hasClosingMismatch ? 'Mismatch vs last row' : 'Summary verified'}
+            </span>
           </div>
         </Card>
       </div>
@@ -663,13 +793,16 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
                   );
                 }
 
+                const isUnreadablePayee = tx.description === 'UNREADABLE PAYEE - CHECK PDF';
+                const hasBalanceMismatch = mismatchRowIds.has(tx.id);
+
                 return (
                   <tr
                     key={tx.id}
                     onClick={startEditing}
                     className={`hover:bg-slate-50/60 dark:hover:bg-slate-800/40 transition-colors ${
-                      !isReadOnly && onUpdateStagedRow ? 'cursor-pointer' : ''
-                    }`}
+                      hasBalanceMismatch ? 'bg-amber-50/40 dark:bg-amber-950/20' : ''
+                    } ${!isReadOnly && onUpdateStagedRow ? 'cursor-pointer' : ''}`}
                   >
                     <td className="py-3 px-4 text-center font-mono text-slate-400 text-[11px]">
                       {rowNum}
@@ -678,8 +811,20 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
                       {tx.txn_date}
                     </td>
                     <td className="py-3 px-4">
-                      <div className="font-medium text-slate-900 dark:text-white">
-                        {tx.description}
+                      <div
+                        title={tx.raw_description || undefined}
+                        className={`font-medium flex items-center gap-2 flex-wrap ${
+                          isUnreadablePayee
+                            ? 'text-amber-700 dark:text-amber-400'
+                            : 'text-slate-900 dark:text-white'
+                        }`}
+                      >
+                        <span>{tx.description}</span>
+                        {hasBalanceMismatch && (
+                          <span className="text-[10px] font-mono font-semibold px-1.5 py-0.5 rounded bg-red-100 dark:bg-red-950/80 text-red-700 dark:text-red-300 border border-red-200 dark:border-red-800">
+                            BALANCE_MISMATCH
+                          </span>
+                        )}
                       </div>
                       {(() => {
                         const subtitle = formatTransactionSubtitle(
