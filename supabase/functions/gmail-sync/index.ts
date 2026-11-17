@@ -46,6 +46,15 @@ const GENERIC_LABELS = new Set([
   'hdfc online transfer', 'upi payment', 'upi sender', 'boi imps transfer',
 ]);
 
+function isGenericCounterpartyLabel(desc?: string | null): boolean {
+  const cleaned = (desc || '').trim().toLowerCase();
+  if (!cleaned) return true;
+  if (GENERIC_LABELS.has(cleaned)) return true;
+  if (/^(bom|boi|hdfc|sbi|icici|axis|kotak)\s+(imps|neft|rtgs|upi|eft)\b/i.test(cleaned)) return true;
+  if (/^upi transfer\b/i.test(cleaned)) return true;
+  return false;
+}
+
 function truncate200(text: string): string {
   return (text || '').replace(/\s+/g, ' ').trim().slice(0, 200);
 }
@@ -534,7 +543,7 @@ async function gmailSyncForUser(supabase: any, userId: string) {
 
   const [{ data: profile }, { data: accounts }, { data: rules }, { data: categories }] = await Promise.all([
     supabase.from('profiles').select('gmail_last_synced, owner_full_name, full_name').eq('user_id', userId).maybeSingle(),
-    supabase.from('accounts').select('id, account_number_last4, account_type').eq('user_id', userId),
+    supabase.from('accounts').select('id, account_number_last4, account_type, opening_balance').eq('user_id', userId),
     supabase.from('transaction_rules').select('*').eq('user_id', userId).eq('is_active', true).order('priority', { ascending: true }),
     supabase.from('categories').select('*').or(`user_id.eq.${userId},is_system.eq.true`),
   ]);
@@ -544,8 +553,10 @@ async function gmailSyncForUser(supabase: any, userId: string) {
     ? Math.max(0, Math.floor(lastMs / 1000) - 60)
     : Math.floor(Date.now() / 1000) - 30 * 86400;
 
-  const accountMap = new Map<string, { id: string; account_type: string }>();
+  const accountMap = new Map<string, { id: string; account_type: string; opening_balance?: number }>();
+  const openingBalMap = new Map<string, number>();
   for (const acc of accounts || []) {
+    openingBalMap.set(acc.id, Number(acc.opening_balance ?? 0));
     if (acc.account_number_last4) accountMap.set(String(acc.account_number_last4).trim(), acc);
   }
 
@@ -569,6 +580,8 @@ async function gmailSyncForUser(supabase: any, userId: string) {
   const geminiKey = Deno.env.get('GEMINI_API_KEY') || '';
   const flashModel = Deno.env.get('GEMINI_MODEL_FLASH') || 'gemini-3.5-flash-lite';
   const ownerName = profile?.owner_full_name || profile?.full_name || '';
+  const touchedAccounts = new Set<string>();
+  const latestAlerts = new Map<string, { balance: number; dateIso: string; internalMs: number }>();
 
   for (const ref of msgs) {
     emailsProcessed++;
@@ -615,11 +628,14 @@ async function gmailSyncForUser(supabase: any, userId: string) {
     }
 
     if (parsed.type === 'balance') {
-      await supabase
-        .from('accounts')
-        .update({ current_balance: parsed.balanceAfter, updated_at: new Date().toISOString() })
-        .eq('id', account.id)
-        .eq('user_id', userId);
+      const rawMs = fullMsg?.internalDate;
+      const internalMs = rawMs && /^\d+$/.test(String(rawMs)) ? Number(rawMs) : Date.now();
+      const dateIso = new Date(internalMs + 5.5 * 3600 * 1000).toISOString().slice(0, 10);
+      const prev = latestAlerts.get(account.id);
+      if (!prev || internalMs >= prev.internalMs) {
+        latestAlerts.set(account.id, { balance: parsed.balanceAfter, dateIso, internalMs });
+      }
+      touchedAccounts.add(account.id);
       continue;
     }
 
@@ -629,7 +645,7 @@ async function gmailSyncForUser(supabase: any, userId: string) {
     const maxD = new Date(parsed.date);
     maxD.setDate(maxD.getDate() + 2);
 
-    const candCols = 'id, account_id, txn_date, description, raw_description, debit, credit, balance_after, reference_number, upi_ref_no, imps_ref_no, source';
+    const candCols = 'id, account_id, txn_date, description, raw_description, debit, credit, balance, balance_after, reference_number, upi_ref_no, imps_ref_no, source';
     const [{ data: refMatches }, { data: winMatches }] = await Promise.all([
       refNum
         ? supabase.from('transactions').select(candCols).eq('user_id', userId).or(`reference_number.eq.${refNum},upi_ref_no.eq.${refNum},imps_ref_no.eq.${refNum}`).limit(10)
@@ -662,15 +678,17 @@ async function gmailSyncForUser(supabase: any, userId: string) {
     if (matchedDup) {
       const patch: Record<string, any> = {};
       if (parsed.balanceAfter !== null && matchedDup.balance_after == null) patch.balance_after = parsed.balanceAfter;
+      if (parsed.balanceAfter !== null && matchedDup.balance == null) patch.balance = parsed.balanceAfter;
       if (refNum && !matchedDup.reference_number) patch.reference_number = refNum;
       if (parsed.upiRef && !matchedDup.upi_ref_no) patch.upi_ref_no = parsed.upiRef;
       if (parsed.impsRef && !matchedDup.imps_ref_no) patch.imps_ref_no = parsed.impsRef;
+      if (isGenericCounterpartyLabel(matchedDup.description) && parsed.payee && !isGenericCounterpartyLabel(parsed.payee)) {
+        patch.description = parsed.payee;
+      }
       if (Object.keys(patch).length > 0) {
         await supabase.from('transactions').update({ ...patch, updated_at: new Date().toISOString() }).eq('id', matchedDup.id).eq('user_id', userId);
       }
-      if (parsed.balanceAfter !== null) {
-        await supabase.from('accounts').update({ current_balance: parsed.balanceAfter, updated_at: new Date().toISOString() }).eq('id', account.id).eq('user_id', userId);
-      }
+      touchedAccounts.add(account.id);
       continue;
     }
 
@@ -726,6 +744,11 @@ async function gmailSyncForUser(supabase: any, userId: string) {
       }
     }
 
+    const alertCreatedAt =
+      fullMsg?.internalDate && /^\d+$/.test(String(fullMsg.internalDate))
+        ? new Date(Number(fullMsg.internalDate)).toISOString()
+        : undefined;
+
     const { error: insErr } = await supabase.from('transactions').insert({
       user_id: userId,
       account_id: account.id,
@@ -747,6 +770,7 @@ async function gmailSyncForUser(supabase: any, userId: string) {
       is_transfer: false,
       is_self_transfer: false,
       is_manual: false,
+      ...(alertCreatedAt ? { created_at: alertCreatedAt } : {}),
     });
 
     if (insErr) {
@@ -755,13 +779,52 @@ async function gmailSyncForUser(supabase: any, userId: string) {
     }
 
     transactionsAdded++;
-    if (parsed.balanceAfter !== null) {
-      await supabase
-        .from('accounts')
-        .update({ current_balance: parsed.balanceAfter, updated_at: new Date().toISOString() })
-        .eq('id', account.id)
-        .eq('user_id', userId);
+    touchedAccounts.add(account.id);
+  }
+
+  for (const accountId of touchedAccounts) {
+    const txns: any[] = [];
+    const PAGE_SIZE = 1000;
+    let from = 0;
+    while (true) {
+      const { data: pageRows, error: pageErr } = await supabase
+        .from('transactions')
+        .select('txn_date, debit, credit, balance, balance_after')
+        .eq('account_id', accountId)
+        .eq('user_id', userId)
+        .order('txn_date', { ascending: true })
+        .order('created_at', { ascending: true })
+        .range(from, from + PAGE_SIZE - 1);
+      if (pageErr || !pageRows || pageRows.length === 0) break;
+      txns.push(...pageRows);
+      if (pageRows.length < PAGE_SIZE) break;
+      from += PAGE_SIZE;
     }
+
+    let running = openingBalMap.get(accountId) ?? 0;
+    for (const t of txns) {
+      const reported = t.balance_after ?? t.balance;
+      if (reported !== null && reported !== undefined && Number.isFinite(Number(reported))) {
+        running = Number(reported);
+      } else {
+        running = running + Number(t.credit ?? 0) - Number(t.debit ?? 0);
+      }
+    }
+    let nextBal = Math.round(running * 100) / 100;
+
+    const alert = latestAlerts.get(accountId);
+    if (alert) {
+      const latestTxnDate = txns.length > 0 ? txns[txns.length - 1].txn_date || '' : '';
+      if (!latestTxnDate || alert.dateIso >= latestTxnDate) {
+        nextBal = alert.balance;
+      }
+    }
+
+    await supabase
+      .from('accounts')
+      .update({ current_balance: nextBal, updated_at: new Date().toISOString() })
+      .eq('id', accountId)
+      .eq('user_id', userId);
   }
 
   const nowIso = new Date().toISOString();

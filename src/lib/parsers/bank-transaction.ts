@@ -123,12 +123,21 @@ export function parseBankNarration(
   text = text.replace(/([a-zA-Z])-\s*\r?\n\s*([a-zA-Z])/g, '$1$2');
   text = text.replace(/\r?\n|\r/g, ' ').replace(/\s{2,}/g, ' ').trim();
 
-  // Fix common PDF wrapped split words
+  // Fix common PDF wrapped split words and redaction artifacts
   text = text.replace(/\bLIM\s+ITED\b/gi, 'LIMITED');
+  text = text.replace(/\bLIMIT\s+ED\b/gi, 'LIMITED');
   text = text.replace(/\bPA\s+YMENT\b/gi, 'PAYMENT');
+  text = text.replace(/\bPAYM\s+ENT\b/gi, 'PAYMENT');
   text = text.replace(/\bSALIM\s*S\s+AYYED\b/gi, 'SALIM SAYYED');
   text = text.replace(/\bSER\s+VICES\b/gi, 'SERVICES');
+  text = text.replace(/\bSERVI\s+CES\b/gi, 'SERVICES');
   text = text.replace(/\bPRIV\s+ATE\b/gi, 'PRIVATE');
+  text = text.replace(/\bSECURIT\s+IES\b/gi, 'SECURITIES');
+  text = text.replace(/\bDECORA\s+TORS\b/gi, 'DECORATORS');
+  text = text.replace(/\bTECHNOLO\s+GIES\b/gi, 'TECHNOLOGIES');
+  text = text.replace(/\bSENT\s+FR\s+OM\b/gi, 'SENT FROM');
+  text = text.replace(/\bPA\s+YTM\b/gi, 'PAYTM');
+  text = text.replace(/\bAddresscity\s+State\b/gi, ' ');
   text = text.replace(/\bSECURITIES\s*LIM(?:\s+ITED)?\b/gi, 'SECURITIES LIMITED');
   text = text.replace(/([A-Z]{3,})([A-Z]{1,2})\s+([A-Z]{2,})(?=\s|$|-)/g, (m, a, b, c) => {
     // Only rejoin likely split words like "SECURITIESLIM ITED" -> keep normal two words intact unless prefix ends in LIM/CON/TECH
@@ -136,6 +145,7 @@ export function parseBankNarration(
     if ((b === 'LIM' || b === 'L') && /^ITED$/i.test(c)) return `${a} ${b}${c}`;
     return m;
   });
+  text = text.replace(/\s{2,}/g, ' ').trim();
 
   // STEP 4A & 4B: Strip leading UTR prefix and/or date prepended to narration (Old bank statement format)
   // e.g. "0000234669620494 12/12/22 SAYYED-WASIMSSAYYED@ICICI-ICIC0003182-234669620494-SAVING-UPI PAYMENT"
@@ -445,18 +455,58 @@ export function parseBankNarration(
 
     // 2. Strip noise phrases
     working = working.replace(
-      /[-/\s]*(SENT USING PAYTM U|SENT USING PAYTM|SENT USING PAYT M U|SENT USING GPAY|SENT USING PHONEPE|SENT USING BHIM|VIA NETBANKING|INTERNET BANKING|MOBILE BANKING|UPI MANDATE|PAY TO BHARATPE ME|VERIFIED PAYTM MER|EXECUTION TEST)[-/\s]*/gi,
+      /[-/\s]*(SENT USING PAYTM U|SENT USING PAYTM|SENT USING PAYT M U|SENT USING GPAY|SENT USING PHONEPE|SENT USING BHIM|SENT FROM PAYTM|SENT FROM GPAY|SENT FROM PHONEPE|SENT FROM BHIM|VIA NETBANKING|INTERNET BANKING|MOBILE BANKING|UPI MANDATE|PAY TO BHARATPE ME|VERIFIED PAYTM MER|EXECUTION TEST)[-/\s]*/gi,
       ''
     );
 
     // 3. Extract Merchant / Payee
     if (hasUpiPrefix) {
-      // Standard format: UPI-<NAME>-<MASKED>@BANK or UPI-<NAME>-<IFSC>-<UTR>
-      const splitMatch = working.match(
-        /^(.*?)(?:-[*]{2,}[A-Za-z0-9._%+-]*@[a-zA-Z0-9.-]+|-[*]{3,}|-[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+|-[A-Z]{4}0[A-Z0-9]{6}|-\d{12}|@[a-zA-Z0-9.-]+)/
-      );
-      if (splitMatch && splitMatch[1] && splitMatch[1].trim().length > 0) {
-        working = splitMatch[1].trim();
+      // Standard format: UPI-<NAME>-<VPA>@BANK-<IFSC>-<UTR> or UPI/<NAME>/<VPA>@BANK
+      const atIdx = working.search(/\s*@[a-zA-Z][a-zA-Z0-9.-]*/);
+      if (atIdx !== -1) {
+        const beforeAt = working.slice(0, atIdx).trim();
+        const sep = beforeAt.includes('/') && !beforeAt.includes('-') ? '/' : '-';
+        const parts = beforeAt
+          .split(sep)
+          .map((p) => p.trim())
+          .filter(Boolean);
+
+        if (parts.length >= 2) {
+          // Strip trailing numeric VPA discriminator (e.g. "-1", "-2")
+          if (parts.length >= 3 && /^\d{1,2}$/.test(parts[parts.length - 1])) {
+            parts.pop();
+          }
+          // Strip the VPA local-part segment right before @ (handles wrapped spaces like "ADIZAFFARSAYYED727 6" or "BHARATPE.90070652 442")
+          const last = parts[parts.length - 1];
+          const looksLikeVpaLocal =
+            /^[*]{2,}/.test(last) ||
+            /^[\d\s.]{5,}$/.test(last) ||
+            /^[A-Za-z0-9*._%+-]+(?:\s+[\dA-Za-z._%+-]{1,6})?$/.test(last);
+          if (parts.length >= 2 && looksLikeVpaLocal) {
+            parts.pop();
+          }
+          // Strip preceding wallet qualifier tag if present (e.g. "... -GPAY-1125139179 9@OKBIZAXIS")
+          if (
+            parts.length >= 2 &&
+            /^(?:GPAY|G-?PAY|BHARATPE|PAYTM|PHONEPE|BHIM|WHATSAPP)$/i.test(
+              parts[parts.length - 1]
+            )
+          ) {
+            parts.pop();
+          }
+        }
+
+        const joined = parts.join(sep === '/' ? ' ' : '-').trim();
+        if (joined.length > 0) {
+          working = joined;
+        }
+      } else {
+        const splitMatch = working.match(
+          /^(.*?)(?:-[*]{3,}|-[A-Z]{4}0[A-Z0-9]{6}|-\d{12})/
+        );
+        if (splitMatch && splitMatch[1] && splitMatch[1].trim().length > 0) {
+          working = splitMatch[1].trim();
+        }
       }
     } else {
       // Old statement format without UPI prefix: [SENDER-]VPA_USER@BANK-IFSC-UTR

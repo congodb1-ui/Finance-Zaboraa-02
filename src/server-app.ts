@@ -1074,7 +1074,8 @@ export async function runServer() {
           return res.status(500).json({ error: 'Failed to save upload record.' });
         }
 
-        // Stage parsed rows into staged_transactions
+        // Stage parsed rows into staged_transactions with monotonic timestamps to preserve statement row order
+        const stageBaseMs = Date.now();
         const stagedRows = parseResult.rows.map((row, idx) => {
           const parsedTx = parseResult.transactions?.[idx];
           const rawDate = columnMapping?.date_col ? row[columnMapping.date_col] : parsedTx?.txn_date || null;
@@ -1138,6 +1139,7 @@ export async function runServer() {
             imps_ref_no: parsedTx?.imps_ref_no || imps_ref_no,
             source: 'statement_import' as const,
             is_duplicate: false,
+            created_at: new Date(stageBaseMs + idx).toISOString(),
           };
         });
 

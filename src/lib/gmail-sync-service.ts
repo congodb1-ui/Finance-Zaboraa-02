@@ -16,6 +16,10 @@ import {
 } from './dedup-sync';
 import { findFirstMatchingRule } from './rules-engine';
 import { detectAndLinkSelfTransfers } from './self-transfer';
+import {
+  computeAuthoritativeAccountBalance,
+  orderTransactionsChronologically,
+} from './balance-utils';
 import type { Category } from '../types/categories';
 import type { TransactionRule } from '../types/transactions';
 
@@ -170,7 +174,7 @@ export async function runGmailSyncForUser(
       .maybeSingle(),
     serviceSupabase
       .from('accounts')
-      .select('id, account_number_last4, account_type')
+      .select('id, account_number_last4, account_type, opening_balance')
       .eq('user_id', userId),
     serviceSupabase
       .from('transaction_rules')
@@ -200,12 +204,16 @@ export async function runGmailSyncForUser(
     profileRow?.owner_full_name || profileRow?.full_name || undefined;
   const aiEnabled = aiSettingsRow ? Boolean(aiSettingsRow.ai_enabled) : true;
 
-  const accountByLast4 = new Map<string, { id: string; account_type: string }>();
+  const accountByLast4 = new Map<string, { id: string; account_type: string; opening_balance: number }>();
+  const openingBalanceByAccountId = new Map<string, number>();
   for (const acc of accounts || []) {
+    const openBal = Number(acc.opening_balance ?? 0);
+    openingBalanceByAccountId.set(acc.id, openBal);
     if (acc.account_number_last4) {
       accountByLast4.set(String(acc.account_number_last4).trim(), {
         id: acc.id,
         account_type: acc.account_type || 'savings',
+        opening_balance: openBal,
       });
     }
   }
@@ -217,6 +225,11 @@ export async function runGmailSyncForUser(
   let transactionsAdded = 0;
   let errorsCount = 0;
   const insertedTxIds: string[] = [];
+  const touchedAccountIds = new Set<string>();
+  const latestBalanceAlertByAccount = new Map<
+    string,
+    { balance: number; dateIso: string; internalMs: number }
+  >();
 
   // 4 & 5. Fetch & parse each message -> dedup -> categorise -> insert
   for (const ref of messageRefs) {
@@ -261,16 +274,20 @@ export async function runGmailSyncForUser(
         continue;
       }
 
-      // Balance alert: update accounts.current_balance ONLY (no transaction row, skip dedup)
+      // Balance alert: record latest alert per account and reconcile after loop
       if (outcome.record_type === 'balance_alert') {
-        await serviceSupabase
-          .from('accounts')
-          .update({
-            current_balance: outcome.balance_after,
-            updated_at: new Date().toISOString(),
-          })
-          .eq('id', matchedAccount.id)
-          .eq('user_id', userId);
+        const rawMs = (fullMsg as any)?.internalDate;
+        const internalMs = rawMs && /^\d+$/.test(String(rawMs)) ? Number(rawMs) : Date.now();
+        const dateIso = new Date(internalMs + 5.5 * 3600 * 1000).toISOString().slice(0, 10);
+        const prev = latestBalanceAlertByAccount.get(matchedAccount.id);
+        if (!prev || internalMs >= prev.internalMs) {
+          latestBalanceAlertByAccount.set(matchedAccount.id, {
+            balance: outcome.balance_after,
+            dateIso,
+            internalMs,
+          });
+        }
+        touchedAccountIds.add(matchedAccount.id);
         continue;
       }
 
@@ -361,16 +378,7 @@ export async function runGmailSyncForUser(
             .eq('id', dedupMatch.matched.id)
             .eq('user_id', userId);
         }
-        if (parsedTx.balance_after !== null && parsedTx.balance_after !== undefined) {
-          await serviceSupabase
-            .from('accounts')
-            .update({
-              current_balance: parsedTx.balance_after,
-              updated_at: new Date().toISOString(),
-            })
-            .eq('id', matchedAccount.id)
-            .eq('user_id', userId);
-        }
+        touchedAccountIds.add(matchedAccount.id);
         continue; // Silent cross-source / replay dedup skip
       }
 
@@ -413,7 +421,13 @@ export async function runGmailSyncForUser(
         }
       }
 
-      // Step 7: Insert transaction (using Zaboraa schema columns)
+      // Step 7: Insert transaction (preserve Gmail alert timestamp for chronological intra-day order)
+      const rawInternalMs = (fullMsg as any)?.internalDate;
+      const alertCreatedAt =
+        rawInternalMs && /^\d+$/.test(String(rawInternalMs))
+          ? new Date(Number(rawInternalMs)).toISOString()
+          : undefined;
+
       const { data: insertedTx, error: insertErr } = await serviceSupabase
         .from('transactions')
         .insert({
@@ -438,6 +452,7 @@ export async function runGmailSyncForUser(
           is_self_transfer: false,
           is_manual: false,
           tags,
+          ...(alertCreatedAt ? { created_at: alertCreatedAt } : {}),
         })
         .select('id')
         .single();
@@ -457,18 +472,7 @@ export async function runGmailSyncForUser(
 
       transactionsAdded++;
       insertedTxIds.push(insertedTx.id);
-
-      // Step 8: Update account current_balance if balance_after was extracted
-      if (parsedTx.balance_after !== null && parsedTx.balance_after !== undefined) {
-        await serviceSupabase
-          .from('accounts')
-          .update({
-            current_balance: parsedTx.balance_after,
-            updated_at: new Date().toISOString(),
-          })
-          .eq('id', matchedAccount.id)
-          .eq('user_id', userId);
-      }
+      touchedAccountIds.add(matchedAccount.id);
     } catch (msgErr: any) {
       errorsCount++;
       await serviceSupabase
@@ -491,6 +495,55 @@ export async function runGmailSyncForUser(
       await detectAndLinkSelfTransfers(serviceSupabase, userId, insertedTxIds);
     } catch (stErr: any) {
       console.error('[gmail-sync] Self-transfer linking warning:', stErr?.message);
+    }
+  }
+
+  // Step 8: Recompute authoritative current_balance chronologically for every touched account
+  for (const accountId of touchedAccountIds) {
+    try {
+      const txns: any[] = [];
+      const PAGE_SIZE = 1000;
+      let from = 0;
+      while (true) {
+        const { data: pageRows, error: pageErr } = await serviceSupabase
+          .from('transactions')
+          .select('txn_date, debit, credit, balance, balance_after')
+          .eq('account_id', accountId)
+          .eq('user_id', userId)
+          .order('txn_date', { ascending: true })
+          .order('created_at', { ascending: true })
+          .range(from, from + PAGE_SIZE - 1);
+        if (pageErr || !pageRows || pageRows.length === 0) break;
+        txns.push(...pageRows);
+        if (pageRows.length < PAGE_SIZE) break;
+        from += PAGE_SIZE;
+      }
+
+      const openBal = openingBalanceByAccountId.get(accountId) ?? 0;
+      const { ordered: chronologicalTxns } = orderTransactionsChronologically(txns);
+      let nextBal = computeAuthoritativeAccountBalance(openBal, chronologicalTxns);
+
+      const alert = latestBalanceAlertByAccount.get(accountId);
+      if (alert) {
+        const latestTxnDate =
+          chronologicalTxns.length > 0
+            ? chronologicalTxns[chronologicalTxns.length - 1].txn_date || ''
+            : '';
+        if (!latestTxnDate || alert.dateIso >= latestTxnDate) {
+          nextBal = alert.balance;
+        }
+      }
+
+      await serviceSupabase
+        .from('accounts')
+        .update({
+          current_balance: nextBal,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', accountId)
+        .eq('user_id', userId);
+    } catch (balErr: any) {
+      console.warn('[gmail-sync] Account balance recompute warning:', balErr?.message);
     }
   }
 

@@ -12,11 +12,12 @@ import { findFirstMatchingRule } from '../rules-engine';
 import { getAccounts } from './accounts';
 import { getCategories } from './categories';
 import { getWorkspaces } from './workspaces';
-import { getUploadDetails } from './upload';
+import { getUploadDetails, syncAccountBalance } from './upload';
 import { getAiSettings } from './aiSettings';
 import { resolvePaytmTagCategory } from '../parsers/paytm-upi';
 import { extractCrossSourceRefs, normalizeReferenceNumber } from '../parsers/utils';
 import { detectAndLinkSelfTransfers } from '../self-transfer';
+import { orderTransactionsChronologically } from '../balance-utils';
 import {
   findBestCrossSourceMatch,
   type DedupCandidateTx,
@@ -214,38 +215,62 @@ export async function commitUploadTransactions(
   const candidateFields =
     'id, account_id, upload_id, txn_date, description, raw_description, debit, credit, balance, balance_after, reference_number, upi_ref_no, imps_ref_no, source';
 
-  // STEP 3A — Query existing transactions by UPI Ref, IMPS Ref, Generic UTR/Ref, and ±2d date window
-  const [upiMatchesRes, impsMatchesRes, refMatchesRes, existingTxnsRes] = await Promise.all([
-    incomingUpiRefs.size > 0
-      ? supabase
-          .from('transactions')
-          .select(candidateFields)
-          .eq('user_id', user.id)
-          .in('upi_ref_no', Array.from(incomingUpiRefs))
-      : Promise.resolve({ data: [], error: null }),
-    incomingImpsRefs.size > 0
-      ? supabase
-          .from('transactions')
-          .select(candidateFields)
-          .eq('user_id', user.id)
-          .in('imps_ref_no', Array.from(incomingImpsRefs))
-      : Promise.resolve({ data: [], error: null }),
-    incomingGenericRefs.size > 0
-      ? supabase
-          .from('transactions')
-          .select(candidateFields)
-          .eq('user_id', user.id)
-          .eq('account_id', upload.account_id)
-          .in('reference_number', Array.from(incomingGenericRefs))
-      : Promise.resolve({ data: [], error: null }),
-    supabase
-      .from('transactions')
-      .select(candidateFields)
-      .eq('user_id', user.id)
-      .eq('account_id', upload.account_id)
-      .neq('upload_id', uploadId)
-      .gte('txn_date', minWindowDate)
-      .lte('txn_date', maxWindowDate),
+  const queryRefsInChunks = async (
+    column: 'upi_ref_no' | 'imps_ref_no' | 'reference_number',
+    values: string[],
+    accountScoped?: string
+  ): Promise<any[]> => {
+    if (values.length === 0) return [];
+    const results: any[] = [];
+    const CHUNK = 150;
+    for (let i = 0; i < values.length; i += CHUNK) {
+      const slice = values.slice(i, i + CHUNK);
+      let q = supabase
+        .from('transactions')
+        .select(candidateFields)
+        .eq('user_id', user.id);
+      if (accountScoped) {
+        q = q.eq('account_id', accountScoped);
+      }
+      q = q.in(column, slice);
+      const { data } = await q;
+      if (data) results.push(...data);
+    }
+    return results;
+  };
+
+  const fetchWindowCandidates = async (): Promise<{ data: any[]; error: any }> => {
+    const collected: any[] = [];
+    const PAGE_SIZE = 1000;
+    let from = 0;
+    while (true) {
+      const q = supabase
+        .from('transactions')
+        .select(candidateFields)
+        .eq('user_id', user.id)
+        .eq('account_id', upload.account_id)
+        .or(`upload_id.is.null,upload_id.neq.${uploadId}`)
+        .gte('txn_date', minWindowDate)
+        .lte('txn_date', maxWindowDate)
+        .order('txn_date', { ascending: true })
+        .order('id', { ascending: true });
+      const { data: pageRows, error: pageErr } =
+        typeof q.range === 'function' ? await q.range(from, from + PAGE_SIZE - 1) : await q;
+      if (pageErr) return { data: collected, error: pageErr };
+      if (!pageRows || pageRows.length === 0) break;
+      collected.push(...pageRows);
+      if (typeof q.range !== 'function' || pageRows.length < PAGE_SIZE) break;
+      from += PAGE_SIZE;
+    }
+    return { data: collected, error: null };
+  };
+
+  // STEP 3A — Query existing transactions by UPI Ref, IMPS Ref, Generic UTR/Ref, and ±2d date window (including upload_id IS NULL gmail_auto rows)
+  const [upiMatches, impsMatches, refMatches, existingTxnsRes] = await Promise.all([
+    queryRefsInChunks('upi_ref_no', Array.from(incomingUpiRefs)),
+    queryRefsInChunks('imps_ref_no', Array.from(incomingImpsRefs)),
+    queryRefsInChunks('reference_number', Array.from(incomingGenericRefs), upload.account_id),
+    fetchWindowCandidates(),
   ]);
 
   if (existingTxnsRes.error) {
@@ -256,9 +281,9 @@ export async function commitUploadTransactions(
 
   const allCandidatesMap = new Map<string, DedupCandidateTx>();
   for (const row of [
-    ...(upiMatchesRes.data || []),
-    ...(impsMatchesRes.data || []),
-    ...(refMatchesRes.data || []),
+    ...upiMatches,
+    ...impsMatches,
+    ...refMatches,
     ...(existingTxnsRes.data || []),
   ]) {
     if (row.upload_id === uploadId) continue;
@@ -395,7 +420,10 @@ export async function commitUploadTransactions(
   const isPaytmUpload = Boolean(upload.parser_version?.startsWith('paytm-upi'));
   const skipAiStagedIds = new Set<string>();
 
-  const finalInsertPayloads = nonDuplicateStaged.map((row) => {
+  const { ordered: chronologicalStaged } = orderTransactionsChronologically(nonDuplicateStaged);
+  const commitBaseMs = Date.now();
+
+  const finalInsertPayloads = chronologicalStaged.map((row, idx) => {
     let determinedType: Transaction['txn_type'] = row.debit ? 'expense' : 'income';
     let assignedCategoryId: string | null = null;
     let assignedWorkspaceId: string | null = null;
@@ -473,6 +501,7 @@ export async function commitUploadTransactions(
       tags: assignedTags,
       is_manual: false,
       source_staged_id: row.id,
+      created_at: new Date(commitBaseMs + idx).toISOString(),
     };
   });
 
@@ -577,6 +606,13 @@ export async function commitUploadTransactions(
 
   if (uploadUpdateErr) {
     throw new Error(`Failed to finalize upload record: ${uploadUpdateErr.message}`);
+  }
+
+  // STEP 8 — Sync authoritative account current_balance from bank-reported balances + ledger deltas
+  try {
+    await syncAccountBalance(upload.account_id, supabase);
+  } catch (balErr) {
+    console.warn('Account balance sync notice:', balErr);
   }
 
   // STEP 9 — Optional post-import AI pipeline
@@ -731,15 +767,34 @@ export async function getTransactions(
     .order('created_at', { ascending: false })
     .range(from, to);
 
-  let totalsQuery = supabase
-    .from('transactions')
-    .select('debit, credit')
-    .eq('user_id', user.id);
-  totalsQuery = applyTransactionFiltersToQuery(totalsQuery, filters);
+  const fetchAllFilteredTotals = async (): Promise<Array<{ debit: any; credit: any }>> => {
+    const collected: Array<{ debit: any; credit: any }> = [];
+    const PAGE_SIZE = 1000;
+    let totalsFrom = 0;
+    while (true) {
+      let tq = supabase
+        .from('transactions')
+        .select('debit, credit')
+        .eq('user_id', user.id);
+      tq = applyTransactionFiltersToQuery(tq, filters);
+      if (typeof tq.order === 'function') {
+        tq = tq.order('id', { ascending: true });
+      }
+      const { data: pageRows, error: pageErr } =
+        typeof tq.range === 'function'
+          ? await tq.range(totalsFrom, totalsFrom + PAGE_SIZE - 1)
+          : await tq;
+      if (pageErr || !pageRows || pageRows.length === 0) break;
+      collected.push(...pageRows);
+      if (typeof tq.range !== 'function' || pageRows.length < PAGE_SIZE) break;
+      totalsFrom += PAGE_SIZE;
+    }
+    return collected;
+  };
 
-  const [{ data, count, error }, { data: totalsData }] = await Promise.all([
+  const [{ data, count, error }, totalsData] = await Promise.all([
     dataQuery,
-    totalsQuery,
+    fetchAllFilteredTotals(),
   ]);
 
   if (error) {
@@ -755,7 +810,7 @@ export async function getTransactions(
 
   let totalDebits = 0;
   let totalCredits = 0;
-  for (const row of totalsData || []) {
+  for (const row of totalsData) {
     if (row.debit) totalDebits += Number(row.debit);
     if (row.credit) totalCredits += Number(row.credit);
   }
@@ -814,8 +869,26 @@ export async function getSelfTransferPairs(
     }
   }
 
-  const { data, error } = await query;
-  if (error || !data) {
+  const data: any[] = [];
+  let error: any = null;
+  {
+    const PAGE_SIZE = 1000;
+    let qFrom = 0;
+    while (true) {
+      const pagedQ =
+        typeof query.range === 'function' ? query.range(qFrom, qFrom + PAGE_SIZE - 1) : query;
+      const { data: pageRows, error: pageErr } = await pagedQ;
+      if (pageErr) {
+        error = pageErr;
+        break;
+      }
+      if (!pageRows || pageRows.length === 0) break;
+      data.push(...pageRows);
+      if (typeof query.range !== 'function' || pageRows.length < PAGE_SIZE) break;
+      qFrom += PAGE_SIZE;
+    }
+  }
+  if (error) {
     console.error('Error querying self-transfer pairs:', error?.message);
     return { pairs: [], totalTransferred: 0 };
   }
@@ -967,6 +1040,12 @@ export async function createManualTransaction(
 
   if (error || !inserted) {
     throw new Error(error?.message || 'Failed to create manual transaction.');
+  }
+
+  try {
+    await syncAccountBalance(data.account_id, supabase);
+  } catch (balErr) {
+    console.warn('Manual transaction balance sync notice:', balErr);
   }
 
   const createdTx = mapDbTransaction(inserted);
@@ -1266,30 +1345,71 @@ export async function getAccountLedgerWithRunningBalance(
 
   const openingBalance = Number(account.opening_balance ?? 0);
 
-  const { data: rawTxns, error } = await supabase
-    .from('transactions')
-    .select(TRANSACTION_SELECT)
-    .eq('user_id', user.id)
-    .eq('account_id', accountId)
-    .order('txn_date', { ascending: true })
-    .order('created_at', { ascending: true });
-
-  if (error) {
-    throw new Error(`Failed to fetch account ledger: ${error.message}`);
+  const rawTxns: any[] = [];
+  {
+    const PAGE_SIZE = 1000;
+    let from = 0;
+    while (true) {
+      const q = supabase
+        .from('transactions')
+        .select(TRANSACTION_SELECT)
+        .eq('user_id', user.id)
+        .eq('account_id', accountId)
+        .order('txn_date', { ascending: true })
+        .order('created_at', { ascending: true });
+      const { data: pageRows, error: pageErr } =
+        typeof q.range === 'function' ? await q.range(from, from + PAGE_SIZE - 1) : await q;
+      if (pageErr) {
+        throw new Error(`Failed to fetch account ledger: ${pageErr.message}`);
+      }
+      if (!pageRows || pageRows.length === 0) break;
+      rawTxns.push(...pageRows);
+      if (typeof q.range !== 'function' || pageRows.length < PAGE_SIZE) break;
+      from += PAGE_SIZE;
+    }
   }
 
-  const allAccountTxns = (rawTxns || []).map(mapDbTransaction);
+  const mappedTxns = rawTxns.map(mapDbTransaction);
+  const { ordered: allAccountTxns } = orderTransactionsChronologically(mappedTxns);
 
-  let running = openingBalance;
+  // Determine effective starting balance before row 0 when opening_balance === 0 and bank balances are present
+  let effectiveOpening = openingBalance;
+  const firstBankIdx = allAccountTxns.findIndex(
+    (t) =>
+      (t.balance_after !== null && t.balance_after !== undefined) ||
+      (t.balance !== null && t.balance !== undefined)
+  );
+  if (firstBankIdx !== -1 && openingBalance === 0) {
+    const firstBankBal = Number(
+      allAccountTxns[firstBankIdx].balance_after ?? allAccountTxns[firstBankIdx].balance
+    );
+    let netUpToFirst = 0;
+    for (let i = 0; i <= firstBankIdx; i++) {
+      netUpToFirst += (allAccountTxns[i].credit ?? 0) - (allAccountTxns[i].debit ?? 0);
+    }
+    effectiveOpening = Math.round((firstBankBal - netUpToFirst) * 100) / 100;
+  }
+
+  let running = effectiveOpening;
   const chronologicalWithBalance: (Transaction & {
     calculated_running_balance: number;
   })[] = [];
   const balanceByDate = new Map<string, number>();
 
   for (const tx of allAccountTxns) {
-    const debit = tx.debit ?? 0;
-    const credit = tx.credit ?? 0;
-    running = running + credit - debit;
+    const reported =
+      tx.balance_after !== null && tx.balance_after !== undefined
+        ? tx.balance_after
+        : tx.balance !== null && tx.balance !== undefined
+        ? tx.balance
+        : null;
+    if (reported !== null && Number.isFinite(Number(reported))) {
+      running = Number(reported);
+    } else {
+      const debit = tx.debit ?? 0;
+      const credit = tx.credit ?? 0;
+      running = running + credit - debit;
+    }
     const rounded = Math.round(running * 100) / 100;
     chronologicalWithBalance.push({
       ...tx,
@@ -1302,7 +1422,7 @@ export async function getAccountLedgerWithRunningBalance(
   if (options?.startDate && options?.endDate) {
     const cur = new Date(options.startDate);
     const end = new Date(options.endDate);
-    let lastKnownBalance = openingBalance;
+    let lastKnownBalance = effectiveOpening;
 
     while (cur <= end) {
       const dStr = cur.toISOString().split('T')[0];

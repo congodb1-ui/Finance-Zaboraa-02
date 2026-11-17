@@ -1,4 +1,5 @@
 import { createClient } from '../supabase/client';
+import { computeAuthoritativeAccountBalance } from '../balance-utils';
 import type { Account, AccountFormData, AccountWithBalance } from '../../types/accounts';
 
 export async function getAccountById(
@@ -32,16 +33,34 @@ export async function getAccounts(client?: any): Promise<AccountWithBalance[]> {
   }
 
   const accountIds = data.map((acc: Account) => acc.id);
-  const balanceMap = new Map<string, number>();
+  const txnsByAccount = new Map<string, any[]>();
   const lastImportMap = new Map<string, string>();
 
   if (accountIds.length > 0) {
-    const [{ data: txnRows }, { data: uploadRows }] = await Promise.all([
-      supabase
-        .from('transactions')
-        .select('account_id, debit, credit')
-        .eq('user_id', user.id)
-        .in('account_id', accountIds),
+    const fetchAllAccountTxns = async (): Promise<any[]> => {
+      const collected: any[] = [];
+      const PAGE_SIZE = 1000;
+      let from = 0;
+      while (true) {
+        const q = supabase
+          .from('transactions')
+          .select('account_id, txn_date, debit, credit, balance, balance_after')
+          .eq('user_id', user.id)
+          .in('account_id', accountIds)
+          .order('txn_date', { ascending: true })
+          .order('created_at', { ascending: true });
+        const { data: pageRows, error: pageErr } =
+          typeof q.range === 'function' ? await q.range(from, from + PAGE_SIZE - 1) : await q;
+        if (pageErr || !pageRows || pageRows.length === 0) break;
+        collected.push(...pageRows);
+        if (typeof q.range !== 'function' || pageRows.length < PAGE_SIZE) break;
+        from += PAGE_SIZE;
+      }
+      return collected;
+    };
+
+    const [txnRows, { data: uploadRows }] = await Promise.all([
+      fetchAllAccountTxns(),
       supabase
         .from('statement_uploads')
         .select('account_id, imported_at')
@@ -51,12 +70,10 @@ export async function getAccounts(client?: any): Promise<AccountWithBalance[]> {
         .order('imported_at', { ascending: false }),
     ]);
 
-    if (txnRows) {
-      for (const tx of txnRows) {
-        const cur = balanceMap.get(tx.account_id) || 0;
-        const delta = Number(tx.credit ?? 0) - Number(tx.debit ?? 0);
-        balanceMap.set(tx.account_id, cur + delta);
-      }
+    for (const tx of txnRows) {
+      const list = txnsByAccount.get(tx.account_id) || [];
+      list.push(tx);
+      txnsByAccount.set(tx.account_id, list);
     }
 
     if (uploadRows) {
@@ -70,8 +87,8 @@ export async function getAccounts(client?: any): Promise<AccountWithBalance[]> {
 
   return data.map((acc: Account) => {
     const openBal = Number(acc.opening_balance ?? 0);
-    const delta = balanceMap.get(acc.id) || 0;
-    const computedBal = Math.round((openBal + delta) * 100) / 100;
+    const accTxns = txnsByAccount.get(acc.id) || [];
+    const computedBal = computeAuthoritativeAccountBalance(openBal, accTxns);
     const storedBal =
       acc.current_balance !== null && acc.current_balance !== undefined
         ? Number(acc.current_balance)

@@ -10,6 +10,10 @@ import type {
 import { parseStatementCSV, parseStatementPDF } from '../parsers';
 import { parseXLSX } from '../parsers/xlsx';
 import { extractCrossSourceRefs, normalizeReferenceNumber } from '../parsers/utils';
+import {
+  computeAuthoritativeAccountBalance,
+  orderTransactionsChronologically,
+} from '../balance-utils';
 
 /**
  * Runs reconciliation check:
@@ -284,6 +288,7 @@ export async function processStatementUpload(
 
   // STEP 8 — Stage raw parsed rows into staged_transactions (raw JSON stored in raw_description)
   const columnMapping = parseResult.suggested_mapping || null;
+  const stageBaseMs = Date.now();
   const stagedPayload = parseResult.rows.map((row, idx) => {
     const parsedTx = parseResult.transactions?.[idx];
     const rawDate = columnMapping?.date_col ? row[columnMapping.date_col] : parsedTx?.txn_date || null;
@@ -323,6 +328,7 @@ export async function processStatementUpload(
       imps_ref_no: parsedTx?.imps_ref_no || imps_ref_no,
       source: 'statement_import' as const,
       is_duplicate: false,
+      created_at: new Date(stageBaseMs + idx).toISOString(),
     };
   });
 
@@ -386,17 +392,36 @@ export async function confirmMappingAndStaging(
     throw new Error('Upload record not found.');
   }
 
-  const { data: existingStaged, error: stagedFetchErr } = await supabase
-    .from('staged_transactions')
-    .select('*')
-    .eq('upload_id', uploadId)
-    .eq('user_id', user.id)
-    .order('created_at', { ascending: true });
+  const existingStaged: any[] = [];
+  let stagedFetchErr: any = null;
+  {
+    const PAGE_SIZE = 1000;
+    let from = 0;
+    while (true) {
+      const q = supabase
+        .from('staged_transactions')
+        .select('*')
+        .eq('upload_id', uploadId)
+        .eq('user_id', user.id)
+        .order('created_at', { ascending: true });
+      const { data: pageRows, error: pageErr } =
+        typeof q.range === 'function' ? await q.range(from, from + PAGE_SIZE - 1) : await q;
+      if (pageErr) {
+        stagedFetchErr = pageErr;
+        break;
+      }
+      if (!pageRows || pageRows.length === 0) break;
+      existingStaged.push(...pageRows);
+      if (typeof q.range !== 'function' || pageRows.length < PAGE_SIZE) break;
+      from += PAGE_SIZE;
+    }
+  }
 
-  if (stagedFetchErr || !existingStaged || existingStaged.length === 0) {
+  if (stagedFetchErr || existingStaged.length === 0) {
     throw new Error('No raw rows available for this upload. Please re-upload.');
   }
 
+  const mappedBaseMs = Date.now();
   const mappedRows: Array<{
     user_id: string;
     upload_id: string;
@@ -414,6 +439,7 @@ export async function confirmMappingAndStaging(
     source: 'statement_import';
     is_duplicate: boolean;
     duplicate_of_id: null;
+    created_at: string;
   }> = [];
 
   let minDate = '';
@@ -464,6 +490,7 @@ export async function confirmMappingAndStaging(
         source: 'statement_import',
         is_duplicate: false,
         duplicate_of_id: null,
+        created_at: new Date(mappedBaseMs + mappedRows.length).toISOString(),
       });
       continue;
     }
@@ -536,6 +563,7 @@ export async function confirmMappingAndStaging(
       source: 'statement_import',
       is_duplicate: false,
       duplicate_of_id: null,
+      created_at: new Date(mappedBaseMs + mappedRows.length).toISOString(),
     });
   }
 
@@ -708,20 +736,32 @@ export async function getUploadDetails(
     return { upload: null, transactions: [] };
   }
 
-  const [{ data: uploadData }, { data: stagedData }] = await Promise.all([
-    supabase
-      .from('statement_uploads')
-      .select('*, accounts(id, name, bank_name, account_number_last4)')
-      .eq('id', uploadId)
-      .eq('user_id', user.id)
-      .maybeSingle(),
-    supabase
-      .from('staged_transactions')
-      .select('*')
-      .eq('upload_id', uploadId)
-      .eq('user_id', user.id)
-      .order('txn_date', { ascending: false }),
-  ]);
+  const { data: uploadData } = await supabase
+    .from('statement_uploads')
+    .select('*, accounts(id, name, bank_name, account_number_last4)')
+    .eq('id', uploadId)
+    .eq('user_id', user.id)
+    .maybeSingle();
+
+  const stagedData: any[] = [];
+  {
+    const PAGE_SIZE = 1000;
+    let from = 0;
+    while (true) {
+      const q = supabase
+        .from('staged_transactions')
+        .select('*')
+        .eq('upload_id', uploadId)
+        .eq('user_id', user.id)
+        .order('created_at', { ascending: true });
+      const { data: pageRows, error: pageErr } =
+        typeof q.range === 'function' ? await q.range(from, from + PAGE_SIZE - 1) : await q;
+      if (pageErr || !pageRows || pageRows.length === 0) break;
+      stagedData.push(...pageRows);
+      if (typeof q.range !== 'function' || pageRows.length < PAGE_SIZE) break;
+      from += PAGE_SIZE;
+    }
+  }
 
   return {
     upload: uploadData
@@ -730,7 +770,7 @@ export async function getUploadDetails(
           account: uploadData.accounts || undefined,
         }
       : null,
-    transactions: (stagedData || []).map((t: any) => ({
+    transactions: stagedData.map((t: any) => ({
       ...t,
       debit: t.debit !== null ? Number(t.debit) : null,
       credit: t.credit !== null ? Number(t.credit) : null,
@@ -823,19 +863,37 @@ export async function syncAccountBalance(accountId: string, client?: any): Promi
   } = await supabase.auth.getUser();
   if (!user || !accountId) return 0;
 
-  const [{ data: acc }, { data: txns }] = await Promise.all([
-    supabase.from('accounts').select('opening_balance').eq('id', accountId).eq('user_id', user.id).maybeSingle(),
-    supabase.from('transactions').select('debit, credit').eq('account_id', accountId).eq('user_id', user.id),
-  ]);
+  const { data: acc } = await supabase
+    .from('accounts')
+    .select('opening_balance')
+    .eq('id', accountId)
+    .eq('user_id', user.id)
+    .maybeSingle();
 
-  const openBal = Number(acc?.opening_balance ?? 0);
-  let delta = 0;
-  if (txns) {
-    for (const tx of txns) {
-      delta += Number(tx.credit ?? 0) - Number(tx.debit ?? 0);
+  const txns: any[] = [];
+  {
+    const PAGE_SIZE = 1000;
+    let from = 0;
+    while (true) {
+      const q = supabase
+        .from('transactions')
+        .select('txn_date, debit, credit, balance, balance_after')
+        .eq('account_id', accountId)
+        .eq('user_id', user.id)
+        .order('txn_date', { ascending: true })
+        .order('created_at', { ascending: true });
+      const { data: pageRows, error: pageErr } =
+        typeof q.range === 'function' ? await q.range(from, from + PAGE_SIZE - 1) : await q;
+      if (pageErr || !pageRows || pageRows.length === 0) break;
+      txns.push(...pageRows);
+      if (typeof q.range !== 'function' || pageRows.length < PAGE_SIZE) break;
+      from += PAGE_SIZE;
     }
   }
-  const newBal = Math.round((openBal + delta) * 100) / 100;
+
+  const openBal = Number(acc?.opening_balance ?? 0);
+  const { ordered: chronologicalTxns } = orderTransactionsChronologically(txns);
+  const newBal = computeAuthoritativeAccountBalance(openBal, chronologicalTxns);
 
   await supabase
     .from('accounts')

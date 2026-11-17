@@ -114,20 +114,34 @@ export function normalizeDateToISO(dateStr: string): string {
 
 // STEP 7: NARRATION CLEANERS & JOINERS
 
+const SAFE_STANDALONE_SHORT_WORDS = new Set([
+  'ALI', 'DAS', 'ROY', 'SEN', 'PAL', 'DEV', 'RAY', 'JHA', 'RAI', 'KAR', 'GILL', 'BOSE', 'NAIR',
+  'PVT', 'LTD', 'LLP', 'INC', 'CO', 'PLC', 'LLC', 'AND', 'THE', 'FOR', 'NOT', 'VIA', 'TO', 'BY',
+  'IN', 'ON', 'AT', 'OF', 'FROM', 'SO', 'DO', 'WO', 'CR', 'DR', 'NA', 'MR', 'MS', 'MRS', 'DR',
+  'MD', 'SK', 'KM', 'SRI', 'SH', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L',
+  'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z',
+]);
+
 export function smartJoin(existing: string, continuation: string): string {
   if (!existing) return continuation;
   if (!continuation) return existing;
 
   const existingEndsInLetter = /[A-Za-z]$/.test(existing);
   const continuationStartsLetter = /^[A-Za-z]/.test(continuation);
-  const fragmentIsShort = continuation.split(' ')[0].length <= 4;
-  const existingLastWordIsLong = (existing.split(' ').pop() || '').length >= 4;
+  const firstContWord = continuation.split(/\s+/)[0] || '';
+  const fragmentIsShort = firstContWord.length <= 4;
+  const existingLastWord = existing.split(/\s+/).pop() || '';
+  const existingLastWordIsLong = existingLastWord.length >= 4;
+  const isProtectedShortWord = SAFE_STANDALONE_SHORT_WORDS.has(
+    firstContWord.replace(/[^A-Za-z]/g, '').toUpperCase()
+  );
 
   if (
     existingEndsInLetter &&
     continuationStartsLetter &&
     fragmentIsShort &&
-    existingLastWordIsLong
+    existingLastWordIsLong &&
+    !isProtectedShortWord
   ) {
     return existing + continuation;
   }
@@ -136,7 +150,25 @@ export function smartJoin(existing: string, continuation: string): string {
 }
 
 export function mergeWordFragments(name: string): string {
-  return name.replace(/([A-Za-z]{4,})\s+([A-Za-z]{1,3})(?=\s|$)/g, '$1$2');
+  if (!name) return '';
+  return name
+    .replace(/\bLIM\s+ITED\b/gi, 'LIMITED')
+    .replace(/\bLIMIT\s+ED\b/gi, 'LIMITED')
+    .replace(/\bSER\s+VICES\b/gi, 'SERVICES')
+    .replace(/\bSERVI\s+CES\b/gi, 'SERVICES')
+    .replace(/\bPRIV\s+ATE\b/gi, 'PRIVATE')
+    .replace(/\bSECURIT\s+IES\b/gi, 'SECURITIES')
+    .replace(/\bDECORA\s+TORS\b/gi, 'DECORATORS')
+    .replace(/\bTECHNOLO\s+GIES\b/gi, 'TECHNOLOGIES')
+    .replace(/\bENTERPR\s+ISES\b/gi, 'ENTERPRISES')
+    .replace(/\bPA\s+YMENT\b/gi, 'PAYMENT')
+    .replace(/\bPAYM\s+ENT\b/gi, 'PAYMENT')
+    .replace(/\bS\s+AYYED\b/gi, 'SAYYED')
+    .replace(/\bFR\s+OM\b/gi, 'FROM')
+    .replace(/\bPA\s+YTM\b/gi, 'PAYTM')
+    .replace(/\bAddresscity\s+State\b/gi, ' ')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
 }
 
 export function stripUTRPrefix(narration: string): { narration: string; ref: string } {

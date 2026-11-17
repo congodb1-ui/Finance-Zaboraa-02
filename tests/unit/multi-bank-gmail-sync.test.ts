@@ -13,6 +13,13 @@ import {
   type DedupCandidateTx,
   type IncomingDedupRow,
 } from '../../src/lib/dedup-sync';
+import { parseBankNarration } from '../../src/lib/parsers/bank-transaction';
+import { toTitleCase } from '../../src/lib/parsers/intelligent-parser';
+import {
+  orderTransactionsChronologically,
+  countChronologicalBreaks,
+  computeAuthoritativeAccountBalance,
+} from '../../src/lib/balance-utils';
 
 function toArrayBuffer(filePath: string): ArrayBuffer {
   const buf = fs.readFileSync(path.resolve(process.cwd(), filePath));
@@ -489,5 +496,146 @@ describe('Bidirectional Cross-Source Deduplication & Enrichment', () => {
       source: 'statement_import',
     };
     expect(findBestCrossSourceMatch(bomCreditOn8212, existingDebitOn8458)).toBeNull();
+  });
+
+  it('upgrades generic Gmail counterparty labels when statement row brings real beneficiary name & fills balance', () => {
+    const existingGenericGmail: DedupCandidateTx[] = [
+      {
+        id: 'tx-bom-gmail-1',
+        account_id: 'acc-8212',
+        txn_date: '2026-07-30',
+        description: 'REMITTER',
+        raw_description: 'IMPS/621104845495/REMITTER',
+        debit: null,
+        credit: 589,
+        balance: null,
+        balance_after: null,
+        reference_number: '621104845495',
+        upi_ref_no: null,
+        imps_ref_no: '621104845495',
+        source: 'gmail_auto',
+      },
+    ];
+
+    const stmtRow: IncomingDedupRow = {
+      account_id: 'acc-8212',
+      upload_id: 'up-bom-1',
+      txn_date: '2026-07-30',
+      description: 'ZABORA DIGITAL SERVICES',
+      raw_description: 'IMPS/621104845495/ZABORA DIGITAL SERVICES',
+      debit: null,
+      credit: 589,
+      balance: 30163.9,
+      reference_number: '621104845495',
+      upi_ref_no: null,
+      imps_ref_no: '621104845495',
+      source: 'statement_import',
+    };
+
+    const match = findBestCrossSourceMatch(stmtRow, existingGenericGmail);
+    expect(match?.matched.id).toBe('tx-bom-gmail-1');
+    expect(match?.enrichmentPatch?.description).toBe('ZABORA DIGITAL SERVICES');
+    expect(match?.enrichmentPatch?.balance).toBe(30163.9);
+    expect(match?.enrichmentPatch?.balance_after).toBe(30163.9);
+  });
+});
+
+describe('UPI Narration Cleanup & Intra-Day Balance Continuity Healing', () => {
+  it('strips VPA fragments, redaction artifacts, and PDF line-wrap splits without merging valid initials', () => {
+    const cases: Array<[string, string, string]> = [
+      [
+        'UPI-ADIL ASLAM SAYYED-ADIZAFFARSAYYED727 6-1@OKHDFCBANK-HDFC0000029-430891522824- UPI',
+        'Adil Aslam Sayyed',
+        '430891522824',
+      ],
+      [
+        'UPI-SAVERA DECORATORS-IRSHADSHAIKH7621-1 Addresscity State @OKAXIS-HDFC0000029-430707130698-SENT FR OM PAYTM',
+        'Savera Decorators',
+        '430707130698',
+      ],
+      [
+        'UPI-SHAHIL ALI SO KALIM -GPAY-1125139179 9@OKBIZAXIS-UTIB0000553-430767867444-NA',
+        'Shahil Ali So Kalim',
+        '430767867444',
+      ],
+      [
+        'UPI-TASLIMMUSHAQURESHI-BHARATPE.90070652 442@FBPE-FDRL0001382-430749132578-PAY TO BHARATPE ME',
+        'Taslimmushaqureshi',
+        '430749132578',
+      ],
+      [
+        'UPI-ANWAR GULAMDASTAGIR Addresscity State -ANWARSHAIKH6781 @OKAXIS-KKBK0000724-430624635858-SENT FR OM PAYTM',
+        'Anwar Gulamdastagir',
+        '430624635858',
+      ],
+      [
+        'UPI-IRFAN ABDUL REHMAN S-SHIAKHIS16@OKAX IS-BKID0000520-430704074340-SENT FROM PA YTM',
+        'Irfan Abdul Rehman S',
+        '430704074340',
+      ],
+      [
+        'UPI-ATIF MHAMMED HASAN Q-9168466515@YBL- RATN0000000-467311064591-SENT FROM PAYTM',
+        'Atif Mhammed Hasan Q',
+        '467311064591',
+      ],
+    ];
+
+    for (const [raw, expectedDesc, expectedRef] of cases) {
+      const parsed = parseBankNarration(raw, expectedRef);
+      expect(parsed.description).toBe(expectedDesc.toUpperCase());
+      expect(toTitleCase(parsed.description)).toBe(expectedDesc);
+      expect(parsed.reference).toBe(expectedRef);
+    }
+  });
+
+  it('reconstructs scrambled intra-day statement rows with zero false continuity breaks', () => {
+    // Exact balance chain from Screenshot 2 (2024-11-01 to 2024-11-03) in scrambled descending DB order
+    const scrambledRows = [
+      { txn_date: '2024-11-03', debit: 800, credit: null, balance: 16505.86 },
+      { txn_date: '2024-11-03', debit: 1000, credit: null, balance: 17305.86 },
+      { txn_date: '2024-11-03', debit: 8000, credit: null, balance: 18305.86 },
+      { txn_date: '2024-11-03', debit: 800, credit: null, balance: 26305.86 },
+      { txn_date: '2024-11-03', debit: 600, credit: null, balance: 27105.86 },
+      { txn_date: '2024-11-03', debit: 1450, credit: null, balance: 27705.86 },
+      // Scrambled 2024-11-02 rows (indices 7..13 in Screenshot 2)
+      { txn_date: '2024-11-02', debit: 570, credit: null, balance: 29155.86 },
+      { txn_date: '2024-11-02', debit: 11500, credit: null, balance: 29725.86 },
+      { txn_date: '2024-11-02', debit: 50, credit: null, balance: 41225.86 },
+      { txn_date: '2024-11-02', debit: 70, credit: null, balance: 43695.86 },
+      { txn_date: '2024-11-02', debit: 40, credit: null, balance: 43655.86 },
+      { txn_date: '2024-11-02', debit: 1380, credit: null, balance: 42275.86 },
+      { txn_date: '2024-11-02', debit: 1000, credit: null, balance: 41275.86 },
+      // 2024-11-01 anchor (note: opening before 1000 debit on Nov 2 requires prior credit/closing = 43,765.86; simulate 2024-11-01 ending at 43765.86)
+      { txn_date: '2024-11-01', debit: 1650, credit: null, balance: 43765.86 },
+    ];
+
+    const result = orderTransactionsChronologically(scrambledRows);
+    expect(result.breaks).toBe(0);
+    expect(result.ordered[0].balance).toBe(43765.86);
+    expect(result.ordered[1].balance).toBe(43695.86); // 43765.86 - 70
+    expect(result.ordered[2].balance).toBe(43655.86); // - 40
+    expect(result.ordered[3].balance).toBe(42275.86); // - 1380
+    expect(result.ordered[4].balance).toBe(41275.86); // - 1000
+    expect(result.ordered[5].balance).toBe(41225.86); // - 50
+    expect(result.ordered[6].balance).toBe(29725.86); // - 11500
+    expect(result.ordered[7].balance).toBe(29155.86); // - 570
+    expect(result.ordered[result.ordered.length - 1].balance).toBe(16505.86);
+
+    // Genuine discontinuity still flagged
+    const withGenuineBreak = [
+      { txn_date: '2024-11-01', debit: 100, credit: null, balance: 5000 },
+      { txn_date: '2024-11-02', debit: 200, credit: null, balance: 4000 }, // missing Rs.800 gap
+    ];
+    expect(countChronologicalBreaks(withGenuineBreak).breaks).toBe(1);
+    expect(orderTransactionsChronologically(withGenuineBreak).breaks).toBe(1);
+  });
+
+  it('computes authoritative account balance from bank balance anchors plus subsequent balance-less Gmail txns', () => {
+    const txs = [
+      { txn_date: '2026-11-10', debit: 500, credit: null, balance: 20000 },
+      { txn_date: '2026-11-11', debit: 494.42, credit: null, balance: null, balance_after: null }, // Gmail UPI debit
+      { txn_date: '2026-11-12', debit: null, credit: 5000, balance: null, balance_after: null }, // Gmail credit
+    ];
+    expect(computeAuthoritativeAccountBalance(0, txs)).toBe(24505.58);
   });
 });

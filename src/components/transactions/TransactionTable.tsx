@@ -365,19 +365,22 @@ export const TransactionTable: React.FC<TransactionTableProps> = ({
                   </td>
 
                   <td className="py-3 px-3 text-right whitespace-nowrap font-tabular font-medium">
-                    {tx.balance !== null && tx.balance !== undefined ? (
-                      <span
-                        className={
-                          tx.balance < 0
-                            ? 'text-red-600 dark:text-red-400 font-semibold'
-                            : 'text-slate-800 dark:text-slate-200'
-                        }
-                      >
-                        {formatINR(tx.balance)}
-                      </span>
-                    ) : (
-                      <span className="text-slate-300 dark:text-slate-700">—</span>
-                    )}
+                    {(() => {
+                      const displayBal = tx.balance ?? tx.balance_after ?? null;
+                      return displayBal !== null && displayBal !== undefined ? (
+                        <span
+                          className={
+                            displayBal < 0
+                              ? 'text-red-600 dark:text-red-400 font-semibold'
+                              : 'text-slate-800 dark:text-slate-200'
+                          }
+                        >
+                          {formatINR(displayBal)}
+                        </span>
+                      ) : (
+                        <span className="text-slate-300 dark:text-slate-700">—</span>
+                      );
+                    })()}
                   </td>
 
                   <td className="py-3 px-3 whitespace-nowrap">

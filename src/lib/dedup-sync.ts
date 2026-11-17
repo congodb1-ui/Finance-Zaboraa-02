@@ -88,7 +88,23 @@ const GENERIC_LABELS = new Set([
   'upi payment',
   'upi sender',
   'boi imps transfer',
+  'bom imps',
+  'imps transfer',
+  'neft transfer',
+  'rtgs transfer',
+  'eft transfer',
+  'bank transaction',
 ]);
+
+export function isGenericCounterpartyLabel(desc?: string | null): boolean {
+  const clean = (desc || '').trim().toLowerCase();
+  if (!clean) return true;
+  if (GENERIC_LABELS.has(clean)) return true;
+  if (/^(?:upi transfer \(\d+\)|boi imps(?:\s+\d+)?|bom imps)$/i.test(clean)) {
+    return true;
+  }
+  return false;
+}
 
 export function normalizeRefForDedup(raw?: string | null): string | null {
   return normalizeReferenceNumber(raw);
@@ -148,7 +164,7 @@ export function areCounterpartiesCompatible(
   const cleanB = (descB || '').trim().toLowerCase();
 
   if (!cleanA || !cleanB) return true;
-  if (GENERIC_LABELS.has(cleanA) || GENERIC_LABELS.has(cleanB)) {
+  if (isGenericCounterpartyLabel(cleanA) || isGenericCounterpartyLabel(cleanB)) {
     return true;
   }
 
@@ -216,18 +232,26 @@ export function buildCrossSourceEnrichmentPatch(
       patch.imps_ref_no = incoming.imps_ref_no;
     }
     if (
+      incoming.description &&
+      isGenericCounterpartyLabel(existing.description) &&
+      !isGenericCounterpartyLabel(incoming.description)
+    ) {
+      patch.description = incoming.description.trim();
+    }
+    if (
       incoming.raw_description &&
       incoming.raw_description.length > (existing.raw_description || '').length
     ) {
       patch.raw_description = incoming.raw_description;
     }
   } else if (incoming.source === 'gmail_auto' && existing.source !== 'gmail_auto') {
-    if (
-      incoming.balance !== null &&
-      incoming.balance !== undefined &&
-      (existing.balance_after === null || existing.balance_after === undefined)
-    ) {
-      patch.balance_after = incoming.balance;
+    if (incoming.balance !== null && incoming.balance !== undefined) {
+      if (existing.balance === null || existing.balance === undefined) {
+        patch.balance = incoming.balance;
+      }
+      if (existing.balance_after === null || existing.balance_after === undefined) {
+        patch.balance_after = incoming.balance;
+      }
     }
     if (incoming.reference_number && !existing.reference_number) {
       patch.reference_number = normalizeRefForDedup(incoming.reference_number) || incoming.reference_number;
@@ -237,6 +261,13 @@ export function buildCrossSourceEnrichmentPatch(
     }
     if (incoming.imps_ref_no && !existing.imps_ref_no) {
       patch.imps_ref_no = incoming.imps_ref_no;
+    }
+    if (
+      incoming.description &&
+      isGenericCounterpartyLabel(existing.description) &&
+      !isGenericCounterpartyLabel(incoming.description)
+    ) {
+      patch.description = incoming.description.trim();
     }
   }
 

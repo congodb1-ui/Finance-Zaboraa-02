@@ -3,6 +3,7 @@ import type { StatementUpload, StagedTransaction, OverlapCheckResult } from '../
 import { Card, CardHeader, CardTitle, CardContent } from '../ui/Card';
 import { Button } from '../ui/Button';
 import { formatINR } from '../../types/design-system';
+import { orderTransactionsChronologically } from '../../lib/balance-utils';
 import { EditUploadModal } from './EditUploadModal';
 import { RevertModal } from './RevertModal';
 import {
@@ -85,41 +86,36 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
     }
   }
 
-  // Balance continuity check across staged transactions
-  const balanceDiscontinuity = React.useMemo(() => {
-    if (!transactions || transactions.length < 2) return null;
-    const rowsWithBalance = transactions.filter(
+  // Reconstruct true chronological balance sequence and detect genuine breaks only
+  const { orderedChronological, displayTransactions, balanceDiscontinuity } = React.useMemo(() => {
+    if (!transactions || transactions.length === 0) {
+      return {
+        orderedChronological: [] as StagedTransaction[],
+        displayTransactions: [] as StagedTransaction[],
+        balanceDiscontinuity: null as { count: number } | null,
+      };
+    }
+
+    const { ordered, breaks, originalDirection } = orderTransactionsChronologically(transactions);
+    const rowsWithBalance = ordered.filter(
       (t) => typeof t.balance === 'number' && !isNaN(t.balance)
     );
-    if (rowsWithBalance.length < 2) return null;
 
-    let ascendingDiscontinuities = 0;
-    let descendingDiscontinuities = 0;
+    const displayList =
+      originalDirection === 'descending' ? [...ordered].reverse() : ordered;
 
-    for (let i = 0; i < transactions.length - 1; i++) {
-      const cur = transactions[i];
-      const next = transactions[i + 1];
-      if (typeof cur.balance === 'number' && typeof next.balance === 'number') {
-        const expectedNext = cur.balance - (next.debit || 0) + (next.credit || 0);
-        if (Math.abs(expectedNext - next.balance) > 0.05) {
-          ascendingDiscontinuities++;
-        }
-        const expectedCur = next.balance - (cur.debit || 0) + (cur.credit || 0);
-        if (Math.abs(expectedCur - cur.balance) > 0.05) {
-          descendingDiscontinuities++;
-        }
-      }
-    }
-
-    const minMismatches = Math.min(ascendingDiscontinuities, descendingDiscontinuities);
-    if (minMismatches > 0) {
-      return { count: minMismatches };
-    }
-    return null;
+    return {
+      orderedChronological: ordered,
+      displayTransactions: displayList,
+      balanceDiscontinuity: rowsWithBalance.length >= 2 && breaks > 0 ? { count: breaks } : null,
+    };
   }, [transactions]);
 
-  const totalPages = Math.ceil(transactions.length / pageSize) || 1;
-  const paginatedTransactions = transactions.slice((currentPage - 1) * pageSize, currentPage * pageSize);
+  const totalPages = Math.ceil(displayTransactions.length / pageSize) || 1;
+  const paginatedTransactions = displayTransactions.slice(
+    (currentPage - 1) * pageSize,
+    currentPage * pageSize
+  );
 
   const isPDF = upload.file_type === 'pdf';
 
@@ -212,9 +208,14 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
                   return `${start} to ${end}`;
                 }
 
-                if (transactions && transactions.length > 0) {
-                  const txStart = formatToDMY(transactions[transactions.length - 1]?.raw_date || transactions[transactions.length - 1]?.txn_date);
-                  const txEnd = formatToDMY(transactions[0]?.raw_date || transactions[0]?.txn_date);
+                if (orderedChronological.length > 0) {
+                  const txStart = formatToDMY(
+                    orderedChronological[0]?.raw_date || orderedChronological[0]?.txn_date
+                  );
+                  const txEnd = formatToDMY(
+                    orderedChronological[orderedChronological.length - 1]?.raw_date ||
+                      orderedChronological[orderedChronological.length - 1]?.txn_date
+                  );
                   return `${txStart} to ${txEnd}`;
                 }
 
