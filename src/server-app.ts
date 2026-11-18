@@ -1573,7 +1573,8 @@ export async function runServer() {
     async (req: AuthenticatedRequest, res: Response) => {
       try {
         const userId = req.user!.id;
-        const [{ data: profileRow }, { data: latestLog }, { count: gmailImportedCount }] = await Promise.all([
+        const serviceSupabase = getServiceSupabase();
+        let [profileRes, logRes, countRes] = await Promise.all([
           req.supabase
             .from('profiles')
             .select('gmail_connected, gmail_email, gmail_last_synced, gmail_sync_enabled')
@@ -1594,13 +1595,42 @@ export async function runServer() {
             .is('upload_id', null),
         ]);
 
+        if (profileRes.error && serviceSupabase) {
+          profileRes = await serviceSupabase
+            .from('profiles')
+            .select('gmail_connected, gmail_email, gmail_last_synced, gmail_sync_enabled')
+            .eq('user_id', userId)
+            .maybeSingle();
+        }
+        if (logRes.error && serviceSupabase) {
+          logRes = await serviceSupabase
+            .from('gmail_sync_log')
+            .select('last_synced_at, emails_processed, transactions_added, errors_count')
+            .eq('user_id', userId)
+            .order('last_synced_at', { ascending: false })
+            .limit(1)
+            .maybeSingle();
+        }
+        if ((countRes.error || countRes.count === null) && serviceSupabase) {
+          countRes = await serviceSupabase
+            .from('transactions')
+            .select('id', { count: 'exact', head: true })
+            .eq('user_id', userId)
+            .eq('source', 'gmail_auto')
+            .is('upload_id', null);
+        }
+
+        const profileRow = profileRes.data;
+        const latestLog = logRes.data || null;
+        const gmailImportedCount = countRes.count ?? 0;
+
         return res.json({
           gmail_connected: Boolean(profileRow?.gmail_connected),
           gmail_email: profileRow?.gmail_email || null,
           gmail_last_synced: profileRow?.gmail_last_synced || latestLog?.last_synced_at || null,
           gmail_sync_enabled: profileRow?.gmail_sync_enabled ?? true,
-          gmail_imported_count: gmailImportedCount ?? 0,
-          last_sync_summary: latestLog || null,
+          gmail_imported_count: gmailImportedCount,
+          last_sync_summary: latestLog,
           has_offline_refresh_support: Boolean(process.env.GOOGLE_CLIENT_SECRET),
         });
       } catch (err: any) {

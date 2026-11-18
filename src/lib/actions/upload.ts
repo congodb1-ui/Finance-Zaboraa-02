@@ -7,8 +7,6 @@ import type {
   UploadApiResponse,
   OverlapCheckResult,
 } from '../../types/uploads';
-import { parseStatementCSV, parseStatementPDF } from '../parsers';
-import { parseXLSX } from '../parsers/xlsx';
 import { extractCrossSourceRefs, normalizeReferenceNumber } from '../parsers/utils';
 import {
   computeAuthoritativeAccountBalance,
@@ -259,11 +257,14 @@ export async function processStatementUpload(
   let parseResult: ParseResult;
   try {
     if (fileType === 'csv') {
+      const { parseStatementCSV } = await import('../parsers');
       const text = new TextDecoder('utf-8').decode(arrayBuffer);
       parseResult = await parseStatementCSV(text);
     } else if (fileType === 'xlsx') {
+      const { parseXLSX } = await import('../parsers/xlsx');
       parseResult = parseXLSX(arrayBuffer);
     } else {
+      const { parseStatementPDF } = await import('../parsers');
       parseResult = await parseStatementPDF(arrayBuffer, { password });
     }
   } catch (err: any) {

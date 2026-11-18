@@ -1,6 +1,8 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { createClient as createSupabaseClient } from '@supabase/supabase-js';
 import crypto from 'node:crypto';
+import { runGmailSyncForUser } from './_lib/gmail-sync-service.js';
+import { commitUploadTransactions } from './_lib/upload-finalize.js';
 
 // --- Inlined Crypto Helper for Serverless runtime ---
 const CIPHER_PREFIX = 'zbf:v1:';
@@ -411,7 +413,6 @@ async function handleUpload(req: any, res: VercelResponse, path: string) {
     const user = req.user;
 
     try {
-      const { commitUploadTransactions } = await import('../src/lib/actions/transactions');
       const result = await commitUploadTransactions(
         targetUploadId,
         replacePreviousId,
@@ -1131,21 +1132,30 @@ async function handleGmail(req: any, res: VercelResponse, path: string) {
       if (req.method !== 'GET') return res.status(405).json({ error: 'Method Not Allowed' });
       
       try {
-        const { data, error } = await db
+        let profileRes = await db
           .from('profiles')
           .select('gmail_connected, gmail_last_synced, gmail_email, gmail_sync_enabled')
           .eq('user_id', user?.id)
           .maybeSingle();
 
-        if (error) {
-          console.warn('[api/gmail/status] Supabase query warning:', error.message);
+        if (profileRes.error && serviceSupabase && serviceSupabase !== db) {
+          profileRes = await serviceSupabase
+            .from('profiles')
+            .select('gmail_connected, gmail_last_synced, gmail_email, gmail_sync_enabled')
+            .eq('user_id', user?.id)
+            .maybeSingle();
+        }
+
+        const data = profileRes.data;
+        if (profileRes.error) {
+          console.warn('[api/gmail/status] Supabase profile query warning:', profileRes.error.message);
         }
 
         const isConnected = Boolean(data?.gmail_connected);
         const edgeDisabled = process.env.USE_SUPABASE_EDGE_GMAIL_SYNC === 'false';
         const syncEnabled = isConnected && !edgeDisabled && Boolean(data?.gmail_sync_enabled ?? true);
 
-        const [{ data: lastLog }, { count: gmailImportedCount }] = await Promise.all([
+        let [logRes, countRes] = await Promise.all([
           db
             .from('gmail_sync_log')
             .select('last_synced_at, emails_processed, transactions_added, errors_count')
@@ -1161,14 +1171,36 @@ async function handleGmail(req: any, res: VercelResponse, path: string) {
             .is('upload_id', null),
         ]);
 
+        if (logRes.error && serviceSupabase && serviceSupabase !== db) {
+          logRes = await serviceSupabase
+            .from('gmail_sync_log')
+            .select('last_synced_at, emails_processed, transactions_added, errors_count')
+            .eq('user_id', user?.id)
+            .order('last_synced_at', { ascending: false })
+            .limit(1)
+            .maybeSingle();
+        }
+
+        if ((countRes.error || countRes.count === null) && serviceSupabase && serviceSupabase !== db) {
+          countRes = await serviceSupabase
+            .from('transactions')
+            .select('id', { count: 'exact', head: true })
+            .eq('user_id', user?.id)
+            .eq('source', 'gmail_auto')
+            .is('upload_id', null);
+        }
+
+        const lastLog = logRes.data || null;
+        const gmailImportedCount = countRes.count ?? 0;
+
         return res.status(200).json({
           gmail_connected: isConnected,
           gmail_email: isConnected ? data?.gmail_email || null : null,
-          gmail_last_synced: data?.gmail_last_synced || null,
+          gmail_last_synced: data?.gmail_last_synced || lastLog?.last_synced_at || null,
           gmail_sync_enabled: syncEnabled,
-          gmail_imported_count: gmailImportedCount ?? 0,
+          gmail_imported_count: gmailImportedCount,
           has_offline_refresh_support: Boolean(process.env.GOOGLE_CLIENT_SECRET),
-          last_sync_summary: lastLog || null,
+          last_sync_summary: lastLog,
         });
       } catch (statusErr: any) {
         console.error('[api/gmail/status] Error reading status:', statusErr);
@@ -1377,7 +1409,8 @@ async function handleGmail(req: any, res: VercelResponse, path: string) {
       }
 
       // Enforce 5-minute manual sync cooldown
-      const { data: latestLog } = await db
+      const logDb = serviceSupabase || db;
+      const { data: latestLog } = await logDb
         .from('gmail_sync_log')
         .select('last_synced_at')
         .eq('user_id', user.id)
@@ -1428,7 +1461,6 @@ async function handleGmail(req: any, res: VercelResponse, path: string) {
         }
       }
 
-      const { runGmailSyncForUser } = await import('../src/lib/gmail-sync-service');
       const result = await runGmailSyncForUser(serviceSupabase, user.id);
       return res.status(200).json(result);
     }
