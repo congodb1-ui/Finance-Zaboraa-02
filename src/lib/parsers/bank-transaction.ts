@@ -63,6 +63,9 @@ export function toTitleCase(str: string): string {
     .split(/\s+/)
     .map((word) => {
       if (!word) return '';
+      if (/^\(A\/C$/i.test(word)) {
+        return '(A/c';
+      }
       const cleanWord = word.replace(/[^a-zA-Z0-9]/g, '');
       if (PRESERVED_ACRONYMS.has(cleanWord.toUpperCase())) {
         return word.toUpperCase();
@@ -270,16 +273,37 @@ export function deSplitPdfWords(raw: string): string {
 
 const CARD_TERMINAL_NOISE_REGEX = /^(?=[A-Za-z]*\d)(?=\d*[A-Za-z])[A-Za-z0-9]{5,12}$/;
 
+const IFSC_BANK_NAMES: Record<string, string> = {
+  MAHB: 'Bank of Maharashtra',
+  ICIC: 'ICICI',
+  BARB: 'Bank of Baroda',
+  HDFC: 'HDFC',
+  SBIN: 'SBI',
+  UTIB: 'Axis',
+  KKBK: 'Kotak',
+  CNRB: 'Canara',
+  PUNB: 'PNB',
+  UBIN: 'Union Bank',
+  IDFB: 'IDFC',
+  YESB: 'Yes Bank',
+  INDB: 'IndusInd',
+  BKID: 'Bank of India',
+  PYTM: 'Paytm',
+  JANA: 'Jana Bank',
+};
+
 function parseMaskedCardNarration(
   text: string,
   fallbackRef: string
 ): ParsedBankNarration | null {
   const m = text.match(
-    /^(?:(ATM|ATW|POS|ECOM)[\/\-\s]+)?(\d{4,6}[X*]{4,8}\d{4})(?:[-/\s]+(.*))?$/i
+    /^(?:(ATM|ATW|POS|ECOM|FUEL\s+SURCH(?:AR)?G(?:E)?|SURCH(?:AR)?G(?:E)?)[\/\-\s]+)?(\d{4,6}[X*]{4,8}\d{4})(?:[-/\s]+(.*))?$/i
   );
   if (!m) return null;
 
-  const rail = (m[1] || 'POS').toUpperCase();
+  const explicitRail = m[1] ? m[1].trim().toUpperCase() : '';
+  const isSurcharge = /SURCH/i.test(explicitRail);
+  const rail = explicitRail || 'POS';
   const cardMask = m[2];
   const cardLast4 = cardMask.slice(-4);
   let tail = (m[3] || '').trim();
@@ -289,6 +313,10 @@ function parseMaskedCardNarration(
   if (refMatch) {
     extractedRef = extractedRef || cleanRef(refMatch[1]);
     tail = tail.slice(0, -refMatch[0].length).trim();
+  }
+
+  if (isSurcharge) {
+    tail = tail.replace(/\bDT\s+\d{1,2}[/\-.]\d{1,2}[/\-.]\d{2,4}\b/gi, '').trim();
   }
 
   const rawParts = tail
@@ -306,7 +334,19 @@ function parseMaskedCardNarration(
     return true;
   });
 
-  const explicitRail = m[1] ? m[1].toUpperCase() : '';
+  if (isSurcharge) {
+    const surchLabel = /FUEL/i.test(explicitRail) ? 'Fuel Surcharge' : 'Surcharge';
+    const extra = cleanParts.join(' ').trim();
+    const desc = extra
+      ? `Card / ATM - ${surchLabel} - ${toTitleCase(extra.toLowerCase())} (${cardLast4})`
+      : `Card / ATM - ${surchLabel} (${cardLast4})`;
+    return {
+      description: desc,
+      reference: extractedRef || fallbackRef,
+      transactionType: 'POS',
+    };
+  }
+
   const hasExplicitPosRail = explicitRail === 'POS' || explicitRail === 'ECOM';
   const joiner = tail.includes('-') ? ' - ' : ' ';
   const cleanLocation = cleanParts.join(joiner).trim();
@@ -823,11 +863,37 @@ export function parseBankNarration(
           working = joined;
         }
       } else {
-        const splitMatch = working.match(
-          /^(.*?)(?:-[*]{3,}|-[A-Z]{4}0[A-Z0-9]{6}|-\d{12,14})/
+        const maskedAcctIfscMatch = working.match(
+          /^([X*#]{3,}\d{4})-([A-Z]{4}0[A-Z0-9]{6})-(\d{10,16})(?:-(.*))?$/i
         );
-        if (splitMatch && splitMatch[1] && splitMatch[1].trim().length > 0) {
-          working = splitMatch[1].trim();
+        if (maskedAcctIfscMatch) {
+          const last4 = maskedAcctIfscMatch[1].slice(-4);
+          const bankCode = maskedAcctIfscMatch[2].slice(0, 4).toUpperCase();
+          const utr = maskedAcctIfscMatch[3];
+          if (!extractedRef || extractedRef === fallbackRef) {
+            extractedRef = utr;
+          }
+          const rawRemark = (maskedAcctIfscMatch[4] || '')
+            .replace(/[-/\s]+(?:NA|N A)$/i, '')
+            .replace(/[-/\s]+$/, '')
+            .trim();
+          if (
+            rawRemark &&
+            !/^(?:UPI|NA|N A)$/i.test(rawRemark) &&
+            !isUnreadableOrMaskedPayee(rawRemark)
+          ) {
+            working = `${rawRemark} (A/c ${last4})`;
+          } else {
+            const bankName = IFSC_BANK_NAMES[bankCode] || bankCode;
+            working = `UPI Transfer - ${bankName} (A/c ${last4})`;
+          }
+        } else {
+          const splitMatch = working.match(
+            /^(.*?)(?:-[*]{3,}|-[A-Z]{4}0[A-Z0-9]{6}|-\d{12,14})/
+          );
+          if (splitMatch && splitMatch[1] && splitMatch[1].trim().length > 0) {
+            working = splitMatch[1].trim();
+          }
         }
       }
     } else {
@@ -975,15 +1041,26 @@ export function parseBankNarration(
   if (utrMatch) {
     extractedRef = utrMatch[1];
   }
+  const trailingBankUtrMatch = text.match(/[-/\s]+([A-Z]{3,6}\d{10,20})$/i);
+  if (trailingBankUtrMatch && !extractedRef) {
+    extractedRef = trailingBankUtrMatch[1].toUpperCase();
+  }
 
   let desc = text
     .replace(
       /[-/\s]*(SENT USING PAYTM U|SENT USING PAYTM|SENT USING GPAY|SENT USING PHONEPE|SENT USING BHIM|SENT FROM PAYTM|SENT FROM GPAY|SENT FROM PHONEPE|SENT FROM BHIM|UPI MANDATE|UPI INTENT|UPI PAYMENT)[-/\s]*$/gi,
       ''
     )
-    .replace(/\s+TRANSFER TO \d{6,}(?:\s+TO)?$/i, '')
-    .slice(0, 120)
-    .trim();
+    .replace(/\s+TRANSFER TO \d{6,}(?:\s+TO)?$/i, '');
+
+  if (trailingBankUtrMatch) {
+    desc = desc.slice(0, -trailingBankUtrMatch[0].length);
+  } else if (extractedRef && extractedRef.length >= 8) {
+    const escapedRef = extractedRef.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    desc = desc.replace(new RegExp(`[-/\\s]+${escapedRef}$`, 'i'), '');
+  }
+
+  desc = desc.replace(/[-/\s]+$/, '').slice(0, 120).trim();
   if (isUnreadableOrMaskedPayee(desc)) {
     desc = UNREADABLE_PAYEE_LABEL;
   }
@@ -1024,7 +1101,7 @@ export function formatTransactionSubtitle(
     mode = 'IMPS Transfer';
   } else if (/^(?:EFT|FT|INB)[\/\-\s]/i.test(cleanedRaw)) {
     mode = 'Bank Transfer';
-  } else if (/^(?:POS|ATM|ATW)[\/\-\s]/i.test(cleanedRaw) || /^\d{4,6}[X*]{4,8}\d{4}\b/i.test(cleanedRaw)) {
+  } else if (/^(?:POS|ATM|ATW)[\/\-\s]/i.test(cleanedRaw) || /(?:^|\b)\d{4,6}[X*]{4,8}\d{4}\b/i.test(cleanedRaw)) {
     mode = 'Card / ATM';
   } else if (/^CHQ[\/\-\s]/i.test(cleanedRaw)) {
     mode = 'Cheque';

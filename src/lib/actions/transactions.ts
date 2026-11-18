@@ -882,9 +882,140 @@ export async function getTransactions(
 
   const totalCount = count ?? (data ? data.length : 0);
   const totalPages = Math.ceil(totalCount / pageSize) || 1;
+  let mappedTransactions: Transaction[] = (data || []).map(mapDbTransaction);
+
+  // Backfill chronological running balance for rows lacking a bank-reported balance (e.g. HDFC UPI Gmail alerts)
+  const missingBalAccountIds = Array.from(
+    new Set(
+      mappedTransactions
+        .filter(
+          (tx) =>
+            tx.account_id &&
+            (tx.balance === null || tx.balance === undefined) &&
+            (tx.balance_after === null || tx.balance_after === undefined)
+        )
+        .map((tx) => tx.account_id)
+    )
+  );
+
+  if (missingBalAccountIds.length > 0 && typeof supabase.from === 'function') {
+    try {
+      const calculatedByTxId = new Map<string, number>();
+
+      for (const accountId of missingBalAccountIds) {
+        let openingBalance = 0;
+        let currentBalance = 0;
+
+        try {
+          const { data: accData } = await supabase
+            .from('accounts')
+            .select('opening_balance, current_balance')
+            .eq('id', accountId)
+            .eq('user_id', user.id)
+            .single();
+          if (accData) {
+            openingBalance = Number(accData.opening_balance ?? 0) || 0;
+            currentBalance = Number(accData.current_balance ?? 0) || 0;
+          }
+        } catch {
+          // Account metadata fallback remains 0 if unavailable
+        }
+
+        const acctRows: any[] = [];
+        const ACCT_PAGE = 1000;
+        let acctFrom = 0;
+        while (true) {
+          let aq = supabase
+            .from('transactions')
+            .select('id, txn_date, created_at, debit, credit, balance, balance_after')
+            .eq('user_id', user.id)
+            .eq('account_id', accountId)
+            .order('txn_date', { ascending: true })
+            .order('created_at', { ascending: true });
+          const { data: pageRows, error: pageErr } =
+            typeof aq.range === 'function' ? await aq.range(acctFrom, acctFrom + ACCT_PAGE - 1) : await aq;
+          if (pageErr || !pageRows || pageRows.length === 0) break;
+          acctRows.push(...pageRows);
+          if (typeof aq.range !== 'function' || pageRows.length < ACCT_PAGE) break;
+          acctFrom += ACCT_PAGE;
+        }
+
+        if (acctRows.length === 0) continue;
+
+        const normalizedAcctRows = acctRows.map((r) => ({
+          ...r,
+          debit: r.debit !== null && r.debit !== undefined ? Number(r.debit) : null,
+          credit: r.credit !== null && r.credit !== undefined ? Number(r.credit) : null,
+          balance: r.balance !== null && r.balance !== undefined ? Number(r.balance) : null,
+          balance_after:
+            r.balance_after !== null && r.balance_after !== undefined
+              ? Number(r.balance_after)
+              : null,
+        }));
+
+        const { ordered } = orderTransactionsChronologically(normalizedAcctRows);
+
+        let effectiveOpening = openingBalance;
+        const firstBankIdx = ordered.findIndex(
+          (t) =>
+            (t.balance_after !== null && t.balance_after !== undefined) ||
+            (t.balance !== null && t.balance !== undefined)
+        );
+        if (firstBankIdx !== -1 && openingBalance === 0) {
+          const firstBankBal = Number(
+            ordered[firstBankIdx].balance_after ?? ordered[firstBankIdx].balance
+          );
+          let netUpToFirst = 0;
+          for (let i = 0; i <= firstBankIdx; i++) {
+            netUpToFirst += (ordered[i].credit ?? 0) - (ordered[i].debit ?? 0);
+          }
+          effectiveOpening = Math.round((firstBankBal - netUpToFirst) * 100) / 100;
+        } else if (openingBalance === 0 && firstBankIdx === -1 && currentBalance !== 0) {
+          let totalNet = 0;
+          for (const t of ordered) {
+            totalNet += (t.credit ?? 0) - (t.debit ?? 0);
+          }
+          effectiveOpening = Math.round((currentBalance - totalNet) * 100) / 100;
+        }
+
+        let running = effectiveOpening;
+        for (const tx of ordered) {
+          const reported =
+            tx.balance_after !== null && tx.balance_after !== undefined
+              ? tx.balance_after
+              : tx.balance !== null && tx.balance !== undefined
+                ? tx.balance
+                : null;
+          if (reported !== null && Number.isFinite(Number(reported))) {
+            running = Number(reported);
+          } else {
+            running = running + (tx.credit ?? 0) - (tx.debit ?? 0);
+          }
+          calculatedByTxId.set(tx.id, Math.round(running * 100) / 100);
+        }
+      }
+
+      if (calculatedByTxId.size > 0) {
+        mappedTransactions = mappedTransactions.map((tx) => {
+          if (
+            (tx.balance === null || tx.balance === undefined) &&
+            (tx.balance_after === null || tx.balance_after === undefined)
+          ) {
+            const calc = calculatedByTxId.get(tx.id);
+            if (calc !== undefined) {
+              return { ...tx, balance: calc, balance_after: calc };
+            }
+          }
+          return tx;
+        });
+      }
+    } catch {
+      // Non-fatal: keep raw transaction rows if running-balance backfill encounters mock/network errors
+    }
+  }
 
   return {
-    transactions: (data || []).map(mapDbTransaction),
+    transactions: mappedTransactions,
     totalCount,
     totalPages,
     totalDebits: Math.round(totalDebits * 100) / 100,

@@ -630,6 +630,13 @@ async function recomputeAccountBalanceForUser(
   return nextBal;
 }
 
+function isPermissionDeniedError(err: any): boolean {
+  if (!err) return false;
+  const code = String(err.code || '').trim();
+  const msg = String(err.message || err.details || '').toLowerCase();
+  return code === '42501' || msg.includes('permission denied');
+}
+
 /**
  * Deletes all purely Gmail-imported transactions (source = 'gmail_auto' and upload_id IS NULL),
  * preserves any cross-source statement-backed rows by reclassifying them as 'statement_import',
@@ -638,30 +645,43 @@ async function recomputeAccountBalanceForUser(
  */
 export async function deleteGmailImportedData(
   db: any,
-  userId: string
+  userId: string,
+  fallbackDb?: any
 ): Promise<DeleteGmailDataResult> {
-  if (!db) {
+  if (!db && !fallbackDb) {
     throw new Error('Database client is required to delete Gmail imported data.');
   }
+
+  let activeDb = db || fallbackDb;
+  const altDb = fallbackDb && fallbackDb !== activeDb ? fallbackDb : null;
 
   const gmailRows: Array<{ id: string; account_id: string | null; upload_id: string | null }> = [];
   const PAGE_SIZE = 1000;
   let from = 0;
 
   while (true) {
-    const q = db
-      .from('transactions')
-      .select('id, account_id, upload_id')
-      .eq('user_id', userId)
-      .eq('source', 'gmail_auto');
-    const { data, error } =
-      typeof q.range === 'function' ? await q.range(from, from + PAGE_SIZE - 1) : await q;
+    const runQuery = async (client: any) => {
+      const q = client
+        .from('transactions')
+        .select('id, account_id, upload_id')
+        .eq('user_id', userId)
+        .eq('source', 'gmail_auto');
+      return typeof q.range === 'function' ? await q.range(from, from + PAGE_SIZE - 1) : await q;
+    };
+
+    let res = await runQuery(activeDb);
+    if (res?.error && isPermissionDeniedError(res.error) && altDb && activeDb !== altDb) {
+      activeDb = altDb;
+      res = await runQuery(activeDb);
+    }
+
+    const { data, error } = res || {};
     if (error) {
       throw new Error(`Failed to query Gmail transactions: ${error.message}`);
     }
     if (!data || data.length === 0) break;
     gmailRows.push(...data);
-    if (typeof q.range !== 'function' || data.length < PAGE_SIZE) break;
+    if (data.length < PAGE_SIZE) break;
     from += PAGE_SIZE;
   }
 
@@ -686,7 +706,7 @@ export async function deleteGmailImportedData(
 
     // Unlink any counterpart self-transfer rows pointing to deleted Gmail rows
     try {
-      await db
+      await activeDb
         .from('transactions')
         .update({
           transfer_pair_id: null,
@@ -702,7 +722,7 @@ export async function deleteGmailImportedData(
 
     // Unlink any invoice references pointing to deleted Gmail rows
     try {
-      await db
+      await activeDb
         .from('invoices')
         .update({ linked_transaction_id: null, updated_at: nowIso })
         .eq('user_id', userId)
@@ -711,53 +731,79 @@ export async function deleteGmailImportedData(
       // Best-effort cleanup
     }
 
-    const { error: delErr } = await db
+    let delRes = await activeDb
       .from('transactions')
       .delete()
       .eq('user_id', userId)
       .in('id', chunk);
 
-    if (delErr) {
-      throw new Error(`Failed to delete Gmail transactions: ${delErr.message}`);
+    if (delRes?.error && isPermissionDeniedError(delRes.error) && altDb && activeDb !== altDb) {
+      activeDb = altDb;
+      delRes = await activeDb
+        .from('transactions')
+        .delete()
+        .eq('user_id', userId)
+        .in('id', chunk);
+    }
+
+    if (delRes?.error) {
+      throw new Error(`Failed to delete Gmail transactions: ${delRes.error.message}`);
     }
   }
 
   // Preserve rows that are also backed by a manual statement upload
   for (let i = 0; i < statementLinkedIds.length; i += CHUNK_SIZE) {
     const chunk = statementLinkedIds.slice(i, i + CHUNK_SIZE);
-    const { error: updErr } = await db
+    let updRes = await activeDb
       .from('transactions')
       .update({ source: 'statement_import', updated_at: nowIso })
       .eq('user_id', userId)
       .in('id', chunk);
-    if (updErr) {
-      throw new Error(`Failed to preserve statement-linked transactions: ${updErr.message}`);
+
+    if (updRes?.error && isPermissionDeniedError(updRes.error) && altDb && activeDb !== altDb) {
+      activeDb = altDb;
+      updRes = await activeDb
+        .from('transactions')
+        .update({ source: 'statement_import', updated_at: nowIso })
+        .eq('user_id', userId)
+        .in('id', chunk);
+    }
+
+    if (updRes?.error) {
+      throw new Error(`Failed to preserve statement-linked transactions: ${updRes.error.message}`);
     }
   }
 
-  // Clear Gmail sync logs & parse error logs (best-effort)
-  await Promise.all([
-    Promise.resolve(db.from('gmail_sync_log').delete().eq('user_id', userId)).catch(() => {}),
-    Promise.resolve(db.from('email_parse_errors').delete().eq('user_id', userId)).catch(() => {}),
-  ]);
+  // Clear Gmail sync logs & parse error logs (best-effort across service/user clients)
+  const logClients = Array.from(new Set([fallbackDb, db, activeDb].filter(Boolean)));
+  for (const logClient of logClients) {
+    await Promise.all([
+      Promise.resolve(logClient.from('gmail_sync_log').delete().eq('user_id', userId)).catch(() => {}),
+      Promise.resolve(logClient.from('email_parse_errors').delete().eq('user_id', userId)).catch(() => {}),
+    ]);
+  }
 
   // Reset gmail_last_synced so a future Sync Now can re-fetch alerts cleanly
-  await db
-    .from('profiles')
-    .update({ gmail_last_synced: null, updated_at: nowIso })
-    .eq('user_id', userId);
+  try {
+    await activeDb
+      .from('profiles')
+      .update({ gmail_last_synced: null, updated_at: nowIso })
+      .eq('user_id', userId);
+  } catch {
+    // Non-blocking profile timestamp reset
+  }
 
   // Recalculate current_balance for all affected accounts
   for (const accountId of affectedAccountIds) {
     try {
-      await recomputeAccountBalanceForUser(db, userId, accountId);
+      await recomputeAccountBalanceForUser(activeDb, userId, accountId);
     } catch (balErr: any) {
       console.warn('[gmail-sync] Balance recalculation warning after Gmail wipe:', balErr?.message);
     }
   }
 
   try {
-    await db.from('audit_log').insert({
+    await activeDb.from('audit_log').insert({
       user_id: userId,
       table_name: 'transactions',
       record_id: userId,

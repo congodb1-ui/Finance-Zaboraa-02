@@ -857,7 +857,10 @@ function orderTransactionsChronologicallyServerless<T extends ServerlessBalanceR
   let cursorBal: number | null = null;
 
   for (const d of sortedDates) {
-    const step = chainDayRowsServerless(dateGroups.get(d)!, cursorBal);
+    const step: { ordered: T[]; endBal: number | null } = chainDayRowsServerless(
+      dateGroups.get(d)!,
+      cursorBal
+    );
     ordered.push(...step.ordered);
     cursorBal = step.endBal;
   }
@@ -931,32 +934,52 @@ async function recomputeAccountBalanceServerless(
   return nextBal;
 }
 
+function isPermissionDeniedErrorServerless(err: any): boolean {
+  if (!err) return false;
+  const code = String(err.code || '').trim();
+  const msg = String(err.message || err.details || '').toLowerCase();
+  return code === '42501' || msg.includes('permission denied');
+}
+
 async function deleteGmailImportedDataServerless(
   db: any,
-  userId: string
+  userId: string,
+  fallbackDb?: any
 ): Promise<DeleteGmailDataResult> {
-  if (!db) {
+  if (!db && !fallbackDb) {
     throw new Error('Database client is required to delete Gmail imported data.');
   }
+
+  let activeDb = db || fallbackDb;
+  const altDb = fallbackDb && fallbackDb !== activeDb ? fallbackDb : null;
 
   const gmailRows: Array<{ id: string; account_id: string | null; upload_id: string | null }> = [];
   const PAGE_SIZE = 1000;
   let from = 0;
 
   while (true) {
-    const q = db
-      .from('transactions')
-      .select('id, account_id, upload_id')
-      .eq('user_id', userId)
-      .eq('source', 'gmail_auto');
-    const { data, error } =
-      typeof q.range === 'function' ? await q.range(from, from + PAGE_SIZE - 1) : await q;
+    const runQuery = async (client: any) => {
+      const q = client
+        .from('transactions')
+        .select('id, account_id, upload_id')
+        .eq('user_id', userId)
+        .eq('source', 'gmail_auto');
+      return typeof q.range === 'function' ? await q.range(from, from + PAGE_SIZE - 1) : await q;
+    };
+
+    let res = await runQuery(activeDb);
+    if (res?.error && isPermissionDeniedErrorServerless(res.error) && altDb && activeDb !== altDb) {
+      activeDb = altDb;
+      res = await runQuery(activeDb);
+    }
+
+    const { data, error } = res || {};
     if (error) {
       throw new Error(`Failed to query Gmail transactions: ${error.message}`);
     }
     if (!data || data.length === 0) break;
     gmailRows.push(...data);
-    if (typeof q.range !== 'function' || data.length < PAGE_SIZE) break;
+    if (data.length < PAGE_SIZE) break;
     from += PAGE_SIZE;
   }
 
@@ -980,7 +1003,7 @@ async function deleteGmailImportedDataServerless(
     const chunk = gmailOnlyIds.slice(i, i + CHUNK_SIZE);
 
     try {
-      await db
+      await activeDb
         .from('transactions')
         .update({
           transfer_pair_id: null,
@@ -995,7 +1018,7 @@ async function deleteGmailImportedDataServerless(
     }
 
     try {
-      await db
+      await activeDb
         .from('invoices')
         .update({ linked_transaction_id: null, updated_at: nowIso })
         .eq('user_id', userId)
@@ -1004,49 +1027,75 @@ async function deleteGmailImportedDataServerless(
       // Best-effort unlink
     }
 
-    const { error: delErr } = await db
+    let delRes = await activeDb
       .from('transactions')
       .delete()
       .eq('user_id', userId)
       .in('id', chunk);
 
-    if (delErr) {
-      throw new Error(`Failed to delete Gmail transactions: ${delErr.message}`);
+    if (delRes?.error && isPermissionDeniedErrorServerless(delRes.error) && altDb && activeDb !== altDb) {
+      activeDb = altDb;
+      delRes = await activeDb
+        .from('transactions')
+        .delete()
+        .eq('user_id', userId)
+        .in('id', chunk);
+    }
+
+    if (delRes?.error) {
+      throw new Error(`Failed to delete Gmail transactions: ${delRes.error.message}`);
     }
   }
 
   for (let i = 0; i < statementLinkedIds.length; i += CHUNK_SIZE) {
     const chunk = statementLinkedIds.slice(i, i + CHUNK_SIZE);
-    const { error: updErr } = await db
+    let updRes = await activeDb
       .from('transactions')
       .update({ source: 'statement_import', updated_at: nowIso })
       .eq('user_id', userId)
       .in('id', chunk);
-    if (updErr) {
-      throw new Error(`Failed to preserve statement-linked transactions: ${updErr.message}`);
+
+    if (updRes?.error && isPermissionDeniedErrorServerless(updRes.error) && altDb && activeDb !== altDb) {
+      activeDb = altDb;
+      updRes = await activeDb
+        .from('transactions')
+        .update({ source: 'statement_import', updated_at: nowIso })
+        .eq('user_id', userId)
+        .in('id', chunk);
+    }
+
+    if (updRes?.error) {
+      throw new Error(`Failed to preserve statement-linked transactions: ${updRes.error.message}`);
     }
   }
 
-  await Promise.all([
-    Promise.resolve(db.from('gmail_sync_log').delete().eq('user_id', userId)).catch(() => {}),
-    Promise.resolve(db.from('email_parse_errors').delete().eq('user_id', userId)).catch(() => {}),
-  ]);
+  const logClients = Array.from(new Set([fallbackDb, db, activeDb].filter(Boolean)));
+  for (const logClient of logClients) {
+    await Promise.all([
+      Promise.resolve(logClient.from('gmail_sync_log').delete().eq('user_id', userId)).catch(() => {}),
+      Promise.resolve(logClient.from('email_parse_errors').delete().eq('user_id', userId)).catch(() => {}),
+    ]);
+  }
 
-  await db
-    .from('profiles')
-    .update({ gmail_last_synced: null, updated_at: nowIso })
-    .eq('user_id', userId);
+  try {
+    await activeDb
+      .from('profiles')
+      .update({ gmail_last_synced: null, updated_at: nowIso })
+      .eq('user_id', userId);
+  } catch {
+    // Non-blocking
+  }
 
   for (const accountId of affectedAccountIds) {
     try {
-      await recomputeAccountBalanceServerless(db, userId, accountId);
+      await recomputeAccountBalanceServerless(activeDb, userId, accountId);
     } catch (balErr: any) {
       console.warn('[api/gmail/data] Balance recalculation warning:', balErr?.message);
     }
   }
 
   try {
-    await db.from('audit_log').insert({
+    await activeDb.from('audit_log').insert({
       user_id: userId,
       table_name: 'transactions',
       record_id: userId,
@@ -1386,7 +1435,7 @@ async function handleGmail(req: any, res: VercelResponse, path: string) {
 
     if (path.endsWith('/data')) {
       if (req.method !== 'DELETE') return res.status(405).json({ error: 'Method Not Allowed' });
-      const result = await deleteGmailImportedDataServerless(serviceSupabase || db, user.id);
+      const result = await deleteGmailImportedDataServerless(db, user.id, serviceSupabase);
       return res.status(200).json(result);
     }
 

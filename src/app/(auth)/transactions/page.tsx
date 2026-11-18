@@ -42,6 +42,8 @@ import {
   RefreshCw,
   Trash2,
   Wand2,
+  ChevronDown,
+  AlertTriangle,
 } from 'lucide-react';
 
 export default function TransactionsPage() {
@@ -81,6 +83,11 @@ export default function TransactionsPage() {
   const [gmailImportedCount, setGmailImportedCount] = useState(0);
   const [confirmDeleteGmail, setConfirmDeleteGmail] = useState(false);
   const [isDeletingGmail, setIsDeletingGmail] = useState(false);
+  const [isClearMenuOpen, setIsClearMenuOpen] = useState(false);
+  const [clearScope, setClearScope] = useState<'account' | 'all' | null>(null);
+  const [clearTargetAccountId, setClearTargetAccountId] = useState<string>('');
+  const [deleteAllConfirmText, setDeleteAllConfirmText] = useState<string>('');
+  const [isClearingLedger, setIsClearingLedger] = useState(false);
 
   const loadGmailCount = useCallback(async () => {
     try {
@@ -265,47 +272,87 @@ export default function TransactionsPage() {
                 variant="outline"
                 size="sm"
                 className="text-red-600 border-red-200 dark:border-red-900/50 hover:bg-red-50 dark:hover:bg-red-950/30"
-                onClick={() => setConfirmDeleteGmail((prev) => !prev)}
-                disabled={isDeletingGmail}
+                onClick={() => {
+                  setIsClearMenuOpen(false);
+                  setClearScope(null);
+                  setConfirmDeleteGmail((prev) => !prev);
+                }}
+                disabled={isDeletingGmail || isClearingLedger}
                 leftIcon={<Trash2 className="w-3.5 h-3.5" />}
               >
                 Delete Gmail Data ({gmailImportedCount})
               </Button>
             )}
-            {filters.accountIds.length === 1 && (
+
+            {/* Clear Ledger Dropdown (Account or Entire Ledger) */}
+            <div className="relative">
               <Button
-                variant="destructive"
+                variant="outline"
                 size="sm"
-                onClick={async () => {
-                  const targetAccId = filters.accountIds[0];
-                  const accObj = accounts.find((a) => a.id === targetAccId);
-                  const accName = accObj?.name || 'this account';
-                  if (
-                    window.confirm(
-                      `Delete ALL transactions and uploads for ${accName}? This cannot be undone.`
-                    )
-                  ) {
-                    try {
-                      const { clearAccountTransactions } = await import('../../../lib/actions/upload');
-                      await clearAccountTransactions(targetAccId);
-                      setBannerMessage({
-                        type: 'success',
-                        text: `All transactions for ${accName} cleared successfully.`,
-                      });
-                      setTimeout(() => setBannerMessage(null), 4000);
-                      await Promise.all([loadLedger(), loadGmailCount()]);
-                    } catch (err: any) {
-                      setBannerMessage({
-                        type: 'error',
-                        text: err.message || 'Failed to clear account transactions.',
-                      });
-                    }
-                  }
-                }}
+                className="text-red-600 border-red-200 dark:border-red-900/50 hover:bg-red-50 dark:hover:bg-red-950/30"
+                disabled={isClearingLedger || isDeletingGmail}
+                onClick={() => setIsClearMenuOpen((prev) => !prev)}
+                leftIcon={<Trash2 className="w-3.5 h-3.5" />}
+                rightIcon={<ChevronDown className="w-3.5 h-3.5" />}
               >
-                Delete All for Account
+                Delete Ledger
               </Button>
-            )}
+
+              {isClearMenuOpen && (
+                <>
+                  <div
+                    className="fixed inset-0 z-20"
+                    onClick={() => setIsClearMenuOpen(false)}
+                    aria-hidden="true"
+                  />
+                  <div className="absolute right-0 mt-1.5 w-64 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-lg py-1.5 z-30">
+                    {accounts.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const defaultAccId =
+                            filters.accountIds.length === 1
+                              ? filters.accountIds[0]
+                              : accounts[0]?.id || '';
+                          setClearTargetAccountId(defaultAccId);
+                          setConfirmDeleteGmail(false);
+                          setDeleteAllConfirmText('');
+                          setClearScope('account');
+                          setIsClearMenuOpen(false);
+                        }}
+                        className="w-full text-left px-3.5 py-2 text-xs hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors cursor-pointer"
+                      >
+                        <div className="font-semibold text-slate-900 dark:text-slate-100">
+                          Delete Account Transactions…
+                        </div>
+                        <div className="text-[11px] text-slate-500 dark:text-slate-400">
+                          Clear all transactions &amp; uploads for one account
+                        </div>
+                      </button>
+                    )}
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setConfirmDeleteGmail(false);
+                        setDeleteAllConfirmText('');
+                        setClearScope('all');
+                        setIsClearMenuOpen(false);
+                      }}
+                      className="w-full text-left px-3.5 py-2 text-xs hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors cursor-pointer border-t border-slate-100 dark:border-slate-800"
+                    >
+                      <div className="font-semibold text-red-600 dark:text-red-400">
+                        Delete All Transactions…
+                      </div>
+                      <div className="text-[11px] text-slate-500 dark:text-slate-400">
+                        Wipe entire ledger across all accounts
+                      </div>
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+
             <Button
               variant="outline"
               size="sm"
@@ -396,6 +443,178 @@ export default function TransactionsPage() {
                 size="sm"
                 disabled={isDeletingGmail}
                 onClick={() => setConfirmDeleteGmail(false)}
+              >
+                Cancel
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {/* Inline Confirm Bar for Deleting Transactions from a Particular Account */}
+        {clearScope === 'account' && (
+          <div className="mt-4 p-4 rounded-xl border border-red-200 dark:border-red-900/60 bg-red-50 dark:bg-red-950/40 flex flex-col lg:flex-row lg:items-center justify-between gap-3 text-xs">
+            <div className="space-y-2 flex-1">
+              <div className="flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4 text-red-600 dark:text-red-400 shrink-0" />
+                <p className="font-semibold text-red-900 dark:text-red-200">
+                  Delete all transactions and statement uploads for a specific account
+                </p>
+              </div>
+              <div className="flex flex-col sm:flex-row sm:items-center gap-2">
+                <label
+                  htmlFor="clear-account-select"
+                  className="text-red-800 dark:text-red-300 font-medium shrink-0"
+                >
+                  Select account:
+                </label>
+                <select
+                  id="clear-account-select"
+                  value={clearTargetAccountId}
+                  onChange={(e) => setClearTargetAccountId(e.target.value)}
+                  disabled={isClearingLedger}
+                  className="px-2.5 py-1.5 rounded-lg border border-red-300 dark:border-red-800 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 text-xs font-medium max-w-sm"
+                >
+                  {accounts.map((acc) => (
+                    <option key={acc.id} value={acc.id}>
+                      {acc.name} ({acc.bank_name}
+                      {acc.account_number_last4 ? ` ••${acc.account_number_last4}` : ''})
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <p className="text-red-700 dark:text-red-300">
+                This permanently deletes all transactions and uploaded statements for the selected account and resets its balance to its opening balance.
+              </p>
+            </div>
+
+            <div className="flex items-center gap-2 shrink-0">
+              <Button
+                variant="destructive"
+                size="sm"
+                isLoading={isClearingLedger}
+                disabled={!clearTargetAccountId || isClearingLedger}
+                leftIcon={<Trash2 className="w-3.5 h-3.5" />}
+                onClick={async () => {
+                  if (!clearTargetAccountId) return;
+                  const targetAcc = accounts.find((a) => a.id === clearTargetAccountId);
+                  const accLabel = targetAcc?.name || 'selected account';
+                  setIsClearingLedger(true);
+                  try {
+                    const { clearAccountTransactions } = await import('../../../lib/actions/upload');
+                    const res = await clearAccountTransactions(clearTargetAccountId);
+                    setClearScope(null);
+                    setSelectedIds([]);
+                    setBannerMessage({
+                      type: 'success',
+                      text: `Cleared ${res.clearedTransactions} transaction${res.clearedTransactions === 1 ? '' : 's'} and ${res.clearedUploads} upload${res.clearedUploads === 1 ? '' : 's'} for ${accLabel}.`,
+                    });
+                    setTimeout(() => setBannerMessage(null), 5000);
+                    const [, accs] = await Promise.all([loadLedger(), getAccounts(), loadGmailCount()]);
+                    setAccounts(accs);
+                  } catch (err: any) {
+                    setBannerMessage({
+                      type: 'error',
+                      text: err?.message || 'Failed to clear account transactions.',
+                    });
+                  } finally {
+                    setIsClearingLedger(false);
+                  }
+                }}
+              >
+                Confirm Delete Account Ledger
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={isClearingLedger}
+                onClick={() => setClearScope(null)}
+              >
+                Cancel
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {/* Inline Confirm Bar for Deleting ALL Transactions Across Entire Ledger */}
+        {clearScope === 'all' && (
+          <div className="mt-4 p-4 rounded-xl border border-red-300 dark:border-red-900 bg-red-50 dark:bg-red-950/50 flex flex-col lg:flex-row lg:items-center justify-between gap-3 text-xs">
+            <div className="space-y-2 flex-1">
+              <div className="flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4 text-red-600 dark:text-red-400 shrink-0" />
+                <p className="font-semibold text-red-900 dark:text-red-200">
+                  Delete ALL transactions and statement uploads across your entire ledger?
+                </p>
+              </div>
+              <p className="text-red-700 dark:text-red-300">
+                This action is permanent and will delete every transaction, statement upload, and Gmail sync history across all {accounts.length} account{accounts.length === 1 ? '' : 's'}, resetting all account balances to their opening balances.
+              </p>
+              <div className="flex flex-col sm:flex-row sm:items-center gap-2">
+                <label
+                  htmlFor="delete-all-confirm-input"
+                  className="text-red-800 dark:text-red-300 font-medium shrink-0"
+                >
+                  Type <span className="font-mono font-bold">DELETE</span> to confirm:
+                </label>
+                <input
+                  id="delete-all-confirm-input"
+                  type="text"
+                  value={deleteAllConfirmText}
+                  onChange={(e) => setDeleteAllConfirmText(e.target.value)}
+                  placeholder="DELETE"
+                  disabled={isClearingLedger}
+                  className="px-2.5 py-1.5 rounded-lg border border-red-300 dark:border-red-800 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 text-xs font-mono w-36 focus:outline-none focus:ring-2 focus:ring-red-500"
+                />
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2 shrink-0">
+              <Button
+                variant="destructive"
+                size="sm"
+                isLoading={isClearingLedger}
+                disabled={deleteAllConfirmText.trim().toUpperCase() !== 'DELETE' || isClearingLedger}
+                leftIcon={<Trash2 className="w-3.5 h-3.5" />}
+                onClick={async () => {
+                  setIsClearingLedger(true);
+                  try {
+                    const { clearAllTransactions } = await import('../../../lib/actions/upload');
+                    const res = await clearAllTransactions();
+                    if (typeof window !== 'undefined') {
+                      try {
+                        window.localStorage.removeItem('zaboraa_gmail_banner_dismissed_sync');
+                      } catch {}
+                    }
+                    setClearScope(null);
+                    setDeleteAllConfirmText('');
+                    setGmailImportedCount(0);
+                    setSelectedIds([]);
+                    setBannerMessage({
+                      type: 'success',
+                      text: `Deleted ${res.clearedTransactions} transaction${res.clearedTransactions === 1 ? '' : 's'} and ${res.clearedUploads} upload${res.clearedUploads === 1 ? '' : 's'} across ${res.affectedAccounts} account${res.affectedAccounts === 1 ? '' : 's'}.`,
+                    });
+                    setTimeout(() => setBannerMessage(null), 5000);
+                    const [, accs] = await Promise.all([loadLedger(), getAccounts(), loadGmailCount()]);
+                    setAccounts(accs);
+                  } catch (err: any) {
+                    setBannerMessage({
+                      type: 'error',
+                      text: err?.message || 'Failed to delete all transactions.',
+                    });
+                  } finally {
+                    setIsClearingLedger(false);
+                  }
+                }}
+              >
+                Confirm Delete Entire Ledger
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={isClearingLedger}
+                onClick={() => {
+                  setClearScope(null);
+                  setDeleteAllConfirmText('');
+                }}
               >
                 Cancel
               </Button>

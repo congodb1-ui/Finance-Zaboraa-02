@@ -1901,7 +1901,7 @@ export async function runServer() {
       try {
         const userId = req.user!.id;
         const serviceSupabase = getServiceSupabase();
-        const result = await deleteGmailImportedData(serviceSupabase || req.supabase, userId);
+        const result = await deleteGmailImportedData(req.supabase, userId, serviceSupabase);
         return res.json(result);
       } catch (err: any) {
         console.error('Gmail delete imported data error:', err?.message);

@@ -969,6 +969,103 @@ describe('Delete All Gmail Imported Data', () => {
     expect(store.accounts[0].current_balance).toBe(19800);
   });
 
+  it('falls back to secondary DB client when primary client returns permission denied for table transactions', async () => {
+    const store: Record<string, any[]> = {
+      accounts: [{ id: 'acc-1', user_id: 'u1', opening_balance: 5000, current_balance: 4500 }],
+      transactions: [
+        {
+          id: 'tx-gmail-1',
+          user_id: 'u1',
+          account_id: 'acc-1',
+          upload_id: null,
+          txn_date: '2026-11-10',
+          debit: 500,
+          credit: null,
+          balance: 4500,
+          balance_after: 4500,
+          source: 'gmail_auto',
+          created_at: '2026-11-10T10:00:00Z',
+        },
+      ],
+      invoices: [],
+      gmail_sync_log: [{ id: 'log-1', user_id: 'u1' }],
+      email_parse_errors: [],
+      profiles: [{ user_id: 'u1', gmail_last_synced: '2026-11-10T10:00:00Z' }],
+      audit_log: [],
+    };
+
+    const makeOkBuilder = (table: string) => {
+      const filters: Array<(r: any) => boolean> = [];
+      let op: 'select' | 'update' | 'delete' | 'insert' = 'select';
+      let patch: any = null;
+      const exec = async () => {
+        const rows = store[table] || [];
+        if (op === 'insert') {
+          const items = Array.isArray(patch) ? patch : [patch];
+          rows.push(...items);
+          return { data: items, error: null };
+        }
+        const matched = rows.filter((r) => filters.every((fn) => fn(r)));
+        if (op === 'delete') {
+          const set = new Set(matched);
+          store[table] = rows.filter((r) => !set.has(r));
+          return { data: matched, error: null };
+        }
+        if (op === 'update') {
+          for (const r of matched) Object.assign(r, patch);
+          return { data: matched, error: null };
+        }
+        return { data: matched, error: null };
+      };
+      const b: any = {
+        select: () => { op = 'select'; return b; },
+        update: (p: any) => { op = 'update'; patch = p; return b; },
+        delete: () => { op = 'delete'; return b; },
+        insert: (p: any) => { op = 'insert'; patch = p; return exec(); },
+        eq: (c: string, v: any) => { filters.push((r) => r[c] === v); return b; },
+        in: (c: string, vs: any[]) => { filters.push((r) => vs.includes(r[c])); return b; },
+        order: () => b,
+        range: () => b,
+        maybeSingle: async () => {
+          const r = await exec();
+          return { data: r.data[0] ?? null, error: null };
+        },
+        then: (res: any, rej: any) => exec().then(res, rej),
+      };
+      return b;
+    };
+
+    const deniedDb = {
+      from: () => {
+        const b: any = {
+          select: () => b,
+          delete: () => b,
+          update: () => b,
+          eq: () => b,
+          in: () => b,
+          range: () => b,
+          then: (res: any) =>
+            Promise.resolve({
+              data: null,
+              error: { code: '42501', message: 'permission denied for table transactions' },
+            }).then(res),
+        };
+        return b;
+      },
+    };
+    const workingDb = { from: (t: string) => makeOkBuilder(t) };
+
+    const result = await deleteGmailImportedData(deniedDb, 'u1', workingDb);
+    expect(result).toEqual({
+      success: true,
+      deleted_transactions: 1,
+      preserved_statement_transactions: 0,
+      affected_accounts: 1,
+    });
+    expect(store.transactions).toHaveLength(0);
+    expect(store.accounts[0].current_balance).toBe(5000);
+  });
+
   it('parses 2023 HDFC multi-page PDF without BOI misdetection or AddressCity/this statement footer bleed', async () => {
     const mock2023Pdf: PDFExtractionResult = {
       openingBalance: 53567.32,

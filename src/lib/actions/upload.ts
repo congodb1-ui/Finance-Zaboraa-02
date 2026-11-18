@@ -1227,23 +1227,234 @@ export async function clearAccountTransactions(
     }
   }
 
-  // Also clean up any manual or non-upload transactions on this account
-  const { data: remainingTxns } = await supabase
-    .from('transactions')
-    .select('id')
-    .eq('account_id', accountId)
-    .eq('user_id', user.id);
+  // Paginate remaining manual/gmail/non-upload transactions on this account
+  const remainingIds: string[] = [];
+  const PAGE_SIZE = 1000;
+  let from = 0;
+  while (true) {
+    const q = supabase
+      .from('transactions')
+      .select('id')
+      .eq('account_id', accountId)
+      .eq('user_id', user.id);
+    const { data: pageRows, error: pageErr } =
+      typeof q.range === 'function' ? await q.range(from, from + PAGE_SIZE - 1) : await q;
+    if (pageErr) {
+      throw new Error(`Failed to query account transactions: ${pageErr.message}`);
+    }
+    if (!pageRows || pageRows.length === 0) break;
+    remainingIds.push(...pageRows.map((r: any) => r.id));
+    if (typeof q.range !== 'function' || pageRows.length < PAGE_SIZE) break;
+    from += PAGE_SIZE;
+  }
 
-  if (remainingTxns && remainingTxns.length > 0) {
-    clearedTransactions += remainingTxns.length;
-    await supabase
+  const nowIso = new Date().toISOString();
+  const CHUNK_SIZE = 150;
+  for (let i = 0; i < remainingIds.length; i += CHUNK_SIZE) {
+    const chunk = remainingIds.slice(i, i + CHUNK_SIZE);
+
+    try {
+      await supabase
+        .from('transactions')
+        .update({
+          transfer_pair_id: null,
+          is_self_transfer: false,
+          is_transfer: false,
+          updated_at: nowIso,
+        })
+        .eq('user_id', user.id)
+        .in('transfer_pair_id', chunk);
+    } catch {
+      // Best-effort unlink
+    }
+
+    try {
+      await supabase
+        .from('invoices')
+        .update({ linked_transaction_id: null, updated_at: nowIso })
+        .eq('user_id', user.id)
+        .in('linked_transaction_id', chunk);
+    } catch {
+      // Best-effort unlink
+    }
+
+    const { error: delErr } = await supabase
       .from('transactions')
       .delete()
       .eq('account_id', accountId)
-      .eq('user_id', user.id);
+      .eq('user_id', user.id)
+      .in('id', chunk);
+
+    if (delErr) {
+      throw new Error(`Failed to delete account transactions: ${delErr.message}`);
+    }
+  }
+
+  clearedTransactions += remainingIds.length;
+
+  try {
+    await syncAccountBalance(accountId, supabase);
+  } catch (balErr) {
+    console.warn('Balance reset warning after clearing account:', balErr);
+  }
+
+  try {
+    await supabase.from('audit_log').insert({
+      user_id: user.id,
+      table_name: 'transactions',
+      record_id: accountId,
+      action: 'delete',
+      old_data: {
+        scope: 'account',
+        account_id: accountId,
+        cleared_uploads: clearedUploads,
+        cleared_transactions: clearedTransactions,
+      },
+      new_data: null,
+    });
+  } catch {
+    // Non-blocking audit log
   }
 
   return { success: true, clearedUploads, clearedTransactions };
+}
+
+/**
+ * Clear ALL transactions and statement uploads across all accounts in the user's ledger.
+ */
+export async function clearAllTransactions(
+  client?: any
+): Promise<{
+  success: boolean;
+  clearedUploads: number;
+  clearedTransactions: number;
+  affectedAccounts: number;
+}> {
+  const supabase = client || createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) {
+    throw new Error('Unauthorized');
+  }
+
+  const [{ data: accounts }, { data: uploads }] = await Promise.all([
+    supabase.from('accounts').select('id').eq('user_id', user.id),
+    supabase.from('statement_uploads').select('id, storage_path').eq('user_id', user.id),
+  ]);
+
+  let clearedUploads = 0;
+  let clearedTransactions = 0;
+
+  if (uploads && uploads.length > 0) {
+    for (const u of uploads) {
+      const res = await deleteUpload(u.id, supabase);
+      clearedUploads++;
+      clearedTransactions += res.deletedTxnCount;
+    }
+  }
+
+  // Paginate any remaining transactions (manual, Gmail, etc.)
+  const remainingIds: string[] = [];
+  const PAGE_SIZE = 1000;
+  let from = 0;
+  while (true) {
+    const q = supabase.from('transactions').select('id').eq('user_id', user.id);
+    const { data: pageRows, error: pageErr } =
+      typeof q.range === 'function' ? await q.range(from, from + PAGE_SIZE - 1) : await q;
+    if (pageErr) {
+      throw new Error(`Failed to query transactions: ${pageErr.message}`);
+    }
+    if (!pageRows || pageRows.length === 0) break;
+    remainingIds.push(...pageRows.map((r: any) => r.id));
+    if (typeof q.range !== 'function' || pageRows.length < PAGE_SIZE) break;
+    from += PAGE_SIZE;
+  }
+
+  const nowIso = new Date().toISOString();
+  const CHUNK_SIZE = 150;
+  for (let i = 0; i < remainingIds.length; i += CHUNK_SIZE) {
+    const chunk = remainingIds.slice(i, i + CHUNK_SIZE);
+
+    try {
+      await supabase
+        .from('invoices')
+        .update({ linked_transaction_id: null, updated_at: nowIso })
+        .eq('user_id', user.id)
+        .in('linked_transaction_id', chunk);
+    } catch {
+      // Best-effort unlink
+    }
+
+    try {
+      await supabase
+        .from('transactions')
+        .update({ transfer_pair_id: null, updated_at: nowIso })
+        .eq('user_id', user.id)
+        .in('transfer_pair_id', chunk);
+    } catch {
+      // Best-effort unlink
+    }
+
+    const { error: delErr } = await supabase
+      .from('transactions')
+      .delete()
+      .eq('user_id', user.id)
+      .in('id', chunk);
+
+    if (delErr) {
+      throw new Error(`Failed to delete transactions: ${delErr.message}`);
+    }
+  }
+
+  clearedTransactions += remainingIds.length;
+
+  // Reset Gmail sync timestamps & logs so re-sync works cleanly after a full ledger wipe
+  await Promise.all([
+    Promise.resolve(supabase.from('gmail_sync_log').delete().eq('user_id', user.id)).catch(() => {}),
+    Promise.resolve(supabase.from('email_parse_errors').delete().eq('user_id', user.id)).catch(() => {}),
+    Promise.resolve(
+      supabase
+        .from('profiles')
+        .update({ gmail_last_synced: null, updated_at: nowIso })
+        .eq('user_id', user.id)
+    ).catch(() => {}),
+  ]);
+
+  const accountIds = (accounts || []).map((a: any) => a.id).filter(Boolean);
+  for (const accId of accountIds) {
+    try {
+      await syncAccountBalance(accId, supabase);
+    } catch (balErr) {
+      console.warn('Balance reset warning after clearing full ledger:', balErr);
+    }
+  }
+
+  try {
+    await supabase.from('audit_log').insert({
+      user_id: user.id,
+      table_name: 'transactions',
+      record_id: user.id,
+      action: 'delete',
+      old_data: {
+        scope: 'all',
+        cleared_uploads: clearedUploads,
+        cleared_transactions: clearedTransactions,
+        affected_accounts: accountIds.length,
+      },
+      new_data: null,
+    });
+  } catch {
+    // Non-blocking audit log
+  }
+
+  return {
+    success: true,
+    clearedUploads,
+    clearedTransactions,
+    affectedAccounts: accountIds.length,
+  };
 }
 
 /**

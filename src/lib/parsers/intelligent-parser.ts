@@ -94,6 +94,7 @@ export function toTitleCase(str: string): string {
     .split(/\s+/)
     .map((word) => {
       if (!word) return '';
+      if (/^\(A\/C$/i.test(word)) return '(A/c';
       const cleanWord = word.replace(/[^a-zA-Z0-9]/g, '');
       if (PRESERVED_ACRONYMS.has(cleanWord.toUpperCase())) {
         return word.toUpperCase();
@@ -364,26 +365,35 @@ export function stripUTRPrefix(narration: string): { narration: string; ref: str
 }
 
 export function extractReference(narration: string, explicitRef?: string): { ref: string; narration: string } {
-  if (explicitRef && explicitRef.trim()) {
+  if (explicitRef && explicitRef.trim() && !/^0+$/.test(explicitRef.trim())) {
     const rawRef = explicitRef.trim();
     const normalized = normalizeReferenceNumber(rawRef);
     const cleanRef = normalized || rawRef;
-    return { ref: cleanRef, narration: narration.replace(rawRef, '').trim() };
-  }
-  // Prefer full alphanumeric bank UTRs (e.g., KKBKR22026101725350598, HDFCR52024110859480657, DOHBH24365007162)
-  const alphaUtr = narration.match(/\b([A-Z]{4,6}[A-Z0-9]\d{9,20})\b/);
-  if (alphaUtr) {
     return {
-      ref: alphaUtr[1].toUpperCase(),
-      narration: narration.trim(),
+      ref: cleanRef,
+      narration: narration.replace(rawRef, '').replace(/[-/\s]+$/, '').trim(),
+    };
+  }
+  // Prefer full alphanumeric bank UTRs (e.g., KKBKR22026101725350598, HDFCR52024110859480657, DOHBH24365007162, MIR2208594654401)
+  const alphaUtr = narration.match(/\b([A-Z]{3}\d{10,20}|[A-Z]{4,6}[A-Z0-9]\d{9,20})\b/);
+  if (alphaUtr) {
+    const utRes = alphaUtr[1].toUpperCase();
+    const escaped = alphaUtr[1].replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const cleanedNarr = narration
+      .replace(new RegExp(`[-/\\s]+${escaped}$`, 'i'), '')
+      .replace(/[-/\s]+$/, '')
+      .trim();
+    return {
+      ref: utRes,
+      narration: cleanedNarr,
     };
   }
   const refMatch = narration.match(/\b(\d{10,16})\b/);
-  if (refMatch) {
+  if (refMatch && !/^0+$/.test(refMatch[1])) {
     const normalized = normalizeReferenceNumber(refMatch[1]) || refMatch[1];
     return {
       ref: normalized,
-      narration: narration.replace(refMatch[0], '').trim(),
+      narration: narration.replace(refMatch[0], '').replace(/[-/\s]+$/, '').trim(),
     };
   }
   return { ref: '', narration };
@@ -517,10 +527,18 @@ export function cleanNarrationPipeline(rawNarration: string, explicitRef?: strin
 
   // First try single-source-of-truth narration parser for standard UPI/IMPS/NEFT/RTGS/CHQ/POS/ATM lines
   const bankParsed = parseBankNarration(joinedWords, explicitRef);
-  const isStandardRail = bankParsed.transactionType !== 'OTHER';
+  const strippedLeadingForRail = joinedWords.replace(
+    /^(?:\d{10,20}\s+)?(?:\d{1,2}[/\-.]\d{1,2}[/\-.]\d{2,4}\s+)?/,
+    ''
+  );
+  const isStandardRail =
+    bankParsed.transactionType !== 'OTHER' ||
+    /^(?:NACH|ACH|SI|EMI|MANDATE)[\/\-\s]/i.test(strippedLeadingForRail);
 
   const { ref: extractedRef, narration: narrWithoutRef } = extractReference(joinedWords, explicitRef);
-  const normalizedExplicit = explicitRef ? normalizeReferenceNumber(explicitRef) || explicitRef.trim() : '';
+  const rawExplicitTrim = explicitRef?.trim() || '';
+  const validExplicit = rawExplicitTrim && !/^0+$/.test(rawExplicitTrim) ? rawExplicitTrim : '';
+  const normalizedExplicit = validExplicit ? normalizeReferenceNumber(validExplicit) || validExplicit : '';
   const finalRef = utrRef || normalizeReferenceNumber(bankParsed.reference) || extractedRef || normalizedExplicit;
 
   let nonRailSource = narrWithoutRef.replace(/^\d{10,20}-(?=[A-Za-z])/, '').trim();
@@ -748,6 +766,10 @@ export async function parsePDFIntelligent(
     pageBalanceX: number | null;
     debitMaxX: number;
     creditMaxX: number;
+    rightAlignDebitMaxX?: number;
+    rightAlignCreditMaxX?: number;
+    rightAlignWdrAnchor?: number;
+    rightAlignDepAnchor?: number;
   }
 
   interface VisualLine {
@@ -966,6 +988,41 @@ export async function parsePDFIntelligent(
           creditMaxX = b.x - 1;
         }
 
+        // Detect right-aligned numeric overhang vs left-aligned column headers (e.g., HDFC 2022/2026 Crystal Reports PDFs)
+        let rightAlignDebitMaxX: number | undefined;
+        let rightAlignCreditMaxX: number | undefined;
+        let rightAlignWdrAnchor: number | undefined;
+        let rightAlignDepAnchor: number | undefined;
+
+        if (w && d && b) {
+          const observedBalanceRights: number[] = [];
+          for (let rIdx = headerLineIdx + 1; rIdx < Math.min(linesMap.length, headerLineIdx + 30); rIdx++) {
+            const rowItems = linesMap[rIdx].items;
+            const rowAmts = rowItems.filter(
+              (it) => it.x >= amtMinX && cleanNumber(it.text) !== null
+            );
+            if (rowAmts.length >= 2) {
+              observedBalanceRights.push(itemRightX(rowAmts[rowAmts.length - 1]));
+            }
+          }
+          if (observedBalanceRights.length > 0) {
+            const sortedRights = [...observedBalanceRights].sort((x, y) => x - y);
+            const medianBalanceRight = sortedRights[Math.floor(sortedRights.length / 2)];
+            if (medianBalanceRight > itemRightX(b) + 4) {
+              const colPitchBD = b.x - d.x;
+              const colPitchDW = d.x - w.x;
+              if (colPitchBD > 10 && colPitchDW > 10) {
+                const depRightAnchor = medianBalanceRight - colPitchBD;
+                const wdrRightAnchor = depRightAnchor - colPitchDW;
+                rightAlignDebitMaxX = (wdrRightAnchor + depRightAnchor) / 2;
+                rightAlignCreditMaxX = (depRightAnchor + medianBalanceRight) / 2;
+                rightAlignWdrAnchor = wdrRightAnchor;
+                rightAlignDepAnchor = depRightAnchor;
+              }
+            }
+          }
+        }
+
         pageBounds = {
           dateMaxX,
           narrMinX,
@@ -978,6 +1035,10 @@ export async function parsePDFIntelligent(
           pageBalanceX,
           debitMaxX,
           creditMaxX,
+          rightAlignDebitMaxX,
+          rightAlignCreditMaxX,
+          rightAlignWdrAnchor,
+          rightAlignDepAnchor,
         };
         fileBounds = pageBounds;
       }
@@ -1219,12 +1280,13 @@ export async function parsePDFIntelligent(
       interface AmtItem {
         num: number;
         x: number;
+        rightX: number;
       }
       const extractedAmts: AmtItem[] = [];
       for (const it of amountItems) {
         const n = cleanNumber(it.text);
         if (n !== null) {
-          extractedAmts.push({ num: n, x: itemMidX(it) });
+          extractedAmts.push({ num: n, x: itemMidX(it), rightX: itemRightX(it) });
         }
       }
 
@@ -1242,7 +1304,22 @@ export async function parsePDFIntelligent(
           const amt = candidateAmounts[0];
           if (hasSeparateDrCrCols && bounds) {
             // Strict column-X assignment from this file's header row (never silently invert via runningBalance!)
-            if (amt.x < bounds.debitMaxX) {
+            if (bounds.rightAlignDebitMaxX !== undefined) {
+              const rx = amt.rightX;
+              if (rx < bounds.rightAlignDebitMaxX) {
+                debit = amt.num;
+              } else if (
+                bounds.rightAlignCreditMaxX !== undefined &&
+                rx < bounds.rightAlignCreditMaxX
+              ) {
+                credit = amt.num;
+              } else {
+                const drDist = Math.abs(rx - (bounds.rightAlignWdrAnchor ?? bounds.pageDebitX!));
+                const crDist = Math.abs(rx - (bounds.rightAlignDepAnchor ?? bounds.pageCreditX!));
+                if (crDist < drDist) credit = amt.num;
+                else debit = amt.num;
+              }
+            } else if (amt.x < bounds.debitMaxX) {
               debit = amt.num;
             } else if (amt.x < bounds.creditMaxX) {
               credit = amt.num;
@@ -1275,8 +1352,13 @@ export async function parsePDFIntelligent(
           if (first.num > 0 && second.num === 0) debit = first.num;
           else if (second.num > 0 && first.num === 0) credit = second.num;
           else if (bounds) {
-            if (first.x < bounds.debitMaxX) debit = first.num;
-            if (second.x >= bounds.debitMaxX) credit = second.num;
+            if (bounds.rightAlignDebitMaxX !== undefined) {
+              if (first.rightX < bounds.rightAlignDebitMaxX) debit = first.num;
+              if (second.rightX >= bounds.rightAlignDebitMaxX) credit = second.num;
+            } else {
+              if (first.x < bounds.debitMaxX) debit = first.num;
+              if (second.x >= bounds.debitMaxX) credit = second.num;
+            }
           } else {
             debit = first.num;
             credit = second.num;
@@ -1412,7 +1494,9 @@ export async function parsePDFIntelligent(
       rawNarration: t.rawNarration,
       referenceNumber: t.reference || null,
     });
-    const normRef = normalizeReferenceNumber(t.reference) || t.reference || null;
+    const nonZeroRefFallback =
+      t.reference && !/^0+$/.test(t.reference.trim()) ? t.reference.trim() : null;
+    const normRef = normalizeReferenceNumber(t.reference) || nonZeroRefFallback || null;
 
     rows.push({
       Date: t.rawDate,
@@ -1481,6 +1565,26 @@ export async function parsePDFIntelligent(
     ? Math.round(Math.abs(summaryClosing! - lastRowBalance!) * 100) / 100
     : 0;
 
+  let openingBalance: number | null = pdfData.openingBalance ?? null;
+  if (openingBalance === null && uploadTransactions.length > 0) {
+    const withBal = uploadTransactions.filter((t) => t.balance !== null && t.balance !== undefined);
+    if (withBal.length > 0) {
+      let isDesc = false;
+      if (withBal.length >= 2) {
+        const t0 = withBal[0];
+        const t1 = withBal[1];
+        const fwd = Math.round((t0.balance! + (t1.credit ?? 0) - (t1.debit ?? 0)) * 100) / 100;
+        const rev = Math.round((t1.balance! + (t0.credit ?? 0) - (t0.debit ?? 0)) * 100) / 100;
+        if (Math.abs(rev - t0.balance!) <= 0.05 && Math.abs(fwd - t1.balance!) > 0.05) {
+          isDesc = true;
+        }
+      }
+      const earliest = isDesc ? withBal[withBal.length - 1] : withBal[0];
+      openingBalance =
+        Math.round((earliest.balance! + (earliest.debit ?? 0) - (earliest.credit ?? 0)) * 100) / 100;
+    }
+  }
+
   return {
     headers,
     rows,
@@ -1490,7 +1594,7 @@ export async function parsePDFIntelligent(
     detected_account_last4: pdfData.accountLast4 || null,
     confidence: 'high',
     suggested_mapping,
-    opening_balance: pdfData.openingBalance,
+    opening_balance: openingBalance,
     closing_balance: closingBalance,
     summary_closing_balance: summaryClosing,
     last_row_balance: lastRowBalance,

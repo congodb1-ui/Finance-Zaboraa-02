@@ -1,6 +1,7 @@
 import React from 'react';
 import type { Transaction } from '../../types/transactions';
 import { formatINR } from '../../types/design-system';
+import { formatTransactionSubtitle } from '../../lib/parsers/bank-transaction';
 import { Button } from '../ui/Button';
 import {
   ArrowRightLeft,
@@ -180,6 +181,19 @@ export const TransactionTable: React.FC<TransactionTableProps> = ({
                   </span>
                 )}
               </div>
+              {(() => {
+                const subtitle =
+                  formatTransactionSubtitle(
+                    tx.description,
+                    tx.raw_description,
+                    tx.reference_number
+                  ) || (tx.reference_number ? `Ref: ${tx.reference_number}` : '');
+                return subtitle ? (
+                  <div className="text-[11px] text-slate-400 pl-9 break-words">
+                    {subtitle}
+                  </div>
+                ) : null;
+              })()}
 
               {/* Line 3: Category badge + Account */}
               <div className="flex items-center justify-between text-xs sm:text-sm pl-9 pt-0.5">
@@ -313,11 +327,19 @@ export const TransactionTable: React.FC<TransactionTableProps> = ({
                         </span>
                       )}
                     </div>
-                    {tx.reference_number && (
-                      <span className="text-[10px] text-slate-400 font-mono block mt-0.5">
-                        Ref: {tx.reference_number}
-                      </span>
-                    )}
+                    {(() => {
+                      const subtitle =
+                        formatTransactionSubtitle(
+                          tx.description,
+                          tx.raw_description,
+                          tx.reference_number
+                        ) || (tx.reference_number ? `Ref: ${tx.reference_number}` : '');
+                      return subtitle ? (
+                        <span className="text-[11px] text-slate-400 block mt-0.5 break-words">
+                          {subtitle}
+                        </span>
+                      ) : null;
+                    })()}
                   </td>
 
                   <td className="py-3 px-3 whitespace-nowrap">

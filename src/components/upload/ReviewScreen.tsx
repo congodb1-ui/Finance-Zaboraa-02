@@ -114,6 +114,7 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
     displayTransactions,
     balanceDiscontinuity,
     mismatchRowIds,
+    derivedOpeningBalance,
     lastChronologicalBalance,
   } = React.useMemo(() => {
     if (!transactions || transactions.length === 0) {
@@ -122,13 +123,14 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
         displayTransactions: [] as StagedTransaction[],
         balanceDiscontinuity: null as { count: number } | null,
         mismatchRowIds: new Set<string>(),
+        derivedOpeningBalance: null as number | null,
         lastChronologicalBalance: null as number | null,
       };
     }
 
     const { ordered, originalDirection } = orderTransactionsChronologically(transactions);
     const rowsWithBalance = ordered.filter(
-      (t) => typeof t.balance === 'number' && !isNaN(t.balance)
+      (t) => t.balance !== null && t.balance !== undefined && Number.isFinite(Number(t.balance))
     );
 
     const mismatches = new Set<string>();
@@ -138,7 +140,10 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
         : null;
 
     for (const row of ordered) {
-      const bal = typeof row.balance === 'number' && Number.isFinite(row.balance) ? row.balance : null;
+      const bal =
+        row.balance !== null && row.balance !== undefined && Number.isFinite(Number(row.balance))
+          ? Number(row.balance)
+          : null;
       if (prevBal !== null && bal !== null) {
         const expected = prevBal + Number(row.credit ?? 0) - Number(row.debit ?? 0);
         if (Math.abs(expected - bal) > 0.01) {
@@ -152,6 +157,16 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
 
     const displayList =
       originalDirection === 'descending' ? [...ordered].reverse() : ordered;
+    const firstWithBal = rowsWithBalance.length > 0 ? rowsWithBalance[0] : null;
+    const derivedOpening =
+      firstWithBal !== null
+        ? Math.round(
+            (Number(firstWithBal.balance) +
+              Number(firstWithBal.debit ?? 0) -
+              Number(firstWithBal.credit ?? 0)) *
+              100
+          ) / 100
+        : null;
     const lastBal =
       rowsWithBalance.length > 0 ? Number(rowsWithBalance[rowsWithBalance.length - 1].balance) : null;
 
@@ -160,12 +175,16 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
       displayTransactions: displayList,
       balanceDiscontinuity: mismatches.size > 0 ? { count: mismatches.size } : null,
       mismatchRowIds: mismatches,
+      derivedOpeningBalance: derivedOpening,
       lastChronologicalBalance: lastBal,
     };
   }, [transactions, upload.opening_balance]);
 
-  const effectiveOpeningBalance =
-    upload.opening_balance !== undefined ? upload.opening_balance : null;
+  const hasExplicitOpeningBalance =
+    upload.opening_balance !== undefined && upload.opening_balance !== null;
+  const effectiveOpeningBalance = hasExplicitOpeningBalance
+    ? upload.opening_balance!
+    : derivedOpeningBalance;
   const effectiveClosingBalance =
     upload.summary_closing_balance !== undefined && upload.summary_closing_balance !== null
       ? upload.summary_closing_balance
@@ -654,7 +673,11 @@ export const ReviewScreen: React.FC<ReviewScreenProps> = ({
                 : '—'}
             </span>
             <span className="text-[11px] text-slate-500 mt-0.5 block">
-              From statement summary
+              {hasExplicitOpeningBalance
+                ? 'From statement summary'
+                : effectiveOpeningBalance !== null
+                  ? 'Derived from statement'
+                  : 'Not available'}
             </span>
           </div>
         </Card>
